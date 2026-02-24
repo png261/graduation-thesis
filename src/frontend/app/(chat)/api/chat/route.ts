@@ -13,16 +13,16 @@ import { auth, type UserType } from "@/app/(auth)/auth";
 import { entitlementsByUserType } from "@/lib/ai/entitlements";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
 import { getLanguageModel } from "@/lib/ai/providers";
-import { createDocument } from "@/lib/ai/tools/create-document";
-import { getWeather } from "@/lib/ai/tools/get-weather";
-import { requestSuggestions } from "@/lib/ai/tools/request-suggestions";
-import { updateDocument } from "@/lib/ai/tools/update-document";
+import { createTofuPlan } from "@/lib/ai/tools/create-tofu-plan";
+import { modifyWorkspaceFiles } from "@/lib/ai/tools/modify-workspace-files";
+import { updateTofuProject } from "@/lib/ai/tools/update-tofu-project";
 import { isProductionEnvironment } from "@/lib/constants";
 import {
   createStreamId,
   deleteChatById,
   ensureUserExists,
   getChatById,
+  getDocumentsByWorkspaceId,
   getMessageCountByUserId,
   getMessagesByChatId,
   saveChat,
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { id, message, messages, selectedChatModel, selectedVisibilityType } =
+    const { id, message, messages, selectedChatModel, selectedVisibilityType, workspaceId } =
       requestBody;
 
     console.log("!!! [DEBUG] POST /api/chat - Request Body Parsed !!!");
@@ -112,6 +112,20 @@ export async function POST(request: Request) {
     const isToolApprovalFlow = Boolean(messages);
 
     const chat = await getChatById({ id });
+    const activeWorkspaceId = workspaceId || chat?.workspaceId;
+    let workspaceDocuments: { id?: string; title: string; content: string }[] = [];
+
+    if (activeWorkspaceId) {
+      const documents = await getDocumentsByWorkspaceId({
+        workspaceId: activeWorkspaceId,
+      });
+      workspaceDocuments = documents.map((d) => ({
+        id: d.id,
+        title: d.title,
+        content: d.content ?? "",
+      }));
+    }
+
     let messagesFromDb: DBMessage[] = [];
     let titlePromise: Promise<string> | null = null;
 
@@ -128,6 +142,7 @@ export async function POST(request: Request) {
         userId: session.user.id,
         title: "New chat",
         visibility: selectedVisibilityType,
+        workspaceId,
       });
       titlePromise = generateTitleFromUserMessage({ message });
     }
@@ -171,16 +186,19 @@ export async function POST(request: Request) {
       execute: async ({ writer: dataStream }) => {
         const result = streamText({
           model: getLanguageModel(selectedChatModel),
-          system: systemPrompt({ selectedChatModel, requestHints }),
+          system: systemPrompt({
+            selectedChatModel,
+            requestHints,
+            documents: workspaceDocuments,
+          }),
           messages: modelMessages,
           stopWhen: stepCountIs(5),
           experimental_activeTools: isReasoningModel
             ? []
             : [
-              "getWeather",
-              "createDocument",
-              "updateDocument",
-              "requestSuggestions",
+              "createTofuPlan",
+              "updateTofuProject",
+              "modifyWorkspaceFiles",
             ],
           providerOptions: isReasoningModel
             ? {
@@ -190,10 +208,21 @@ export async function POST(request: Request) {
             }
             : undefined,
           tools: {
-            getWeather,
-            createDocument: createDocument({ session, dataStream }),
-            updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({ session, dataStream }),
+            createTofuPlan: createTofuPlan({
+              session,
+              dataStream,
+              workspaceId: activeWorkspaceId || undefined,
+            }),
+            updateTofuProject: updateTofuProject({
+              session,
+              dataStream,
+              workspaceId: activeWorkspaceId || undefined,
+            }),
+            modifyWorkspaceFiles: modifyWorkspaceFiles({
+              session,
+              dataStream,
+              workspaceId: activeWorkspaceId || undefined,
+            }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,

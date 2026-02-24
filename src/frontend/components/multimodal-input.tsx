@@ -27,7 +27,7 @@ import {
   ModelSelectorName,
   ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
-import { useArtifact } from "@/hooks/use-artifact";
+import { useEditorSelector, useEditor } from "@/hooks/use-editor";
 import {
   chatModels,
   DEFAULT_CHAT_MODEL,
@@ -89,18 +89,19 @@ function PureMultimodalInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { width } = useWindowSize();
 
-  const { artifact } = useArtifact();
+  const isEditorVisible = useEditorSelector((state) => state.isVisible);
+  const { editor } = useEditor();
   const [mentionableFiles, setMentionableFiles] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!artifact) {
+    if (!editor) {
       setMentionableFiles([]);
       return;
     }
 
-    if (artifact.kind === "terraform") {
+    if (editor.kind === "terraform") {
       try {
-        const parsed = JSON.parse(artifact.content);
+        const parsed = JSON.parse(editor.content);
         if (parsed.files && Array.isArray(parsed.files)) {
           const fileTitles: string[] = parsed.files.map((f: any) => f.title);
           // Extract unique folder paths
@@ -125,20 +126,20 @@ function PureMultimodalInput({
           setMentionableFiles(["main.tf"]);
         }
       } catch {
-        if (artifact.content) {
+        if (editor.content) {
           setMentionableFiles(["main.tf"]);
         } else {
           setMentionableFiles([]);
         }
       }
-    } else if (artifact.kind === "code") {
-      if (artifact.title) {
-        setMentionableFiles([artifact.title]);
+    } else if (editor.kind === "code") {
+      if (editor.title) {
+        setMentionableFiles([editor.title]);
       }
-    } else if (artifact.title) {
-      setMentionableFiles([artifact.title]);
+    } else if (editor.title) {
+      setMentionableFiles([editor.title]);
     }
-  }, [artifact]);
+  }, [editor]);
 
   const adjustHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -431,7 +432,13 @@ function PureMultimodalInput({
   }, [handlePaste]);
 
   return (
-    <div className={cn("relative flex w-full flex-col gap-4", className)}>
+    <div
+      className={cn(
+        "relative flex w-full flex-col gap-4",
+        className,
+        "transition-all"
+      )}
+    >
       {messages.length === 0 &&
         attachments.length === 0 &&
         uploadQueue.length === 0 && (

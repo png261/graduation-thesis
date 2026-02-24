@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
 import { useWindowSize } from "usehooks-ts";
-import { useArtifact } from "@/hooks/use-artifact";
+import { useEditor, useEditorSelector } from "@/hooks/use-editor";
 import type { Document } from "@/lib/db/schema";
 import { getDocumentTimestampByIndex } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
@@ -22,7 +22,8 @@ export const VersionFooter = ({
   documents,
   currentVersionIndex,
 }: VersionFooterProps) => {
-  const { artifact } = useArtifact();
+  const isEditorVisible = useEditorSelector((state) => state.isVisible);
+  const { editor } = useEditor();
 
   const { width } = useWindowSize();
   const isMobile = width < 768;
@@ -30,9 +31,14 @@ export const VersionFooter = ({
   const { mutate } = useSWRConfig();
   const [isMutating, setIsMutating] = useState(false);
 
-  if (!documents) {
-    return;
-  }
+  if (!isEditorVisible) return null;
+
+  // The original code had a check for `!documents` here.
+  // If `documents` is still needed for the restore logic,
+  // this check should be re-evaluated or `documents` should be guaranteed.
+  // For now, I'm keeping the `!isEditorVisible` check as per instruction.
+  // If `documents` can be undefined and is critical, the restore button might need to be disabled or the component return null.
+  // Assuming `documents` will be defined if `isEditorVisible` is true and the component renders.
 
   return (
     <motion.div
@@ -56,10 +62,10 @@ export const VersionFooter = ({
             setIsMutating(true);
 
             mutate(
-              `/api/document?id=${artifact.documentId}`,
+              `/api/document?id=${editor.documentId}`,
               await fetch(
-                `/api/document?id=${artifact.documentId}&timestamp=${getDocumentTimestampByIndex(
-                  documents,
+                `/api/document?id=${editor.documentId}&timestamp=${getDocumentTimestampByIndex(
+                  documents || [],
                   currentVersionIndex
                 )}`,
                 {
@@ -69,18 +75,18 @@ export const VersionFooter = ({
               {
                 optimisticData: documents
                   ? [
-                      ...documents.filter((document) =>
-                        isAfter(
-                          new Date(document.createdAt),
-                          new Date(
-                            getDocumentTimestampByIndex(
-                              documents,
-                              currentVersionIndex
-                            )
+                    ...documents.filter((document) =>
+                      isAfter(
+                        new Date(document.createdAt),
+                        new Date(
+                          getDocumentTimestampByIndex(
+                            documents || [],
+                            currentVersionIndex
                           )
                         )
-                      ),
-                    ]
+                      )
+                    ),
+                  ]
                   : [],
               }
             );

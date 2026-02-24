@@ -1,27 +1,114 @@
 "use client";
 import type { UseChatHelpers } from "@ai-sdk/react";
+import {
+  FileEditIcon,
+  LayersIcon,
+  SparklesIcon as SparklesLucide,
+  TerminalIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { useState } from "react";
 import type { Vote } from "@/lib/db/schema";
 import type { ChatMessage } from "@/lib/types";
 import { cn, sanitizeText } from "@/lib/utils";
+import {
+  ChainOfThought,
+  ChainOfThoughtContent,
+  ChainOfThoughtHeader,
+  ChainOfThoughtSearchResult,
+  ChainOfThoughtSearchResults,
+  ChainOfThoughtStep,
+} from "./ai-elements/chain-of-thought";
+import { Shimmer } from "./ai-elements/shimmer";
 import { useDataStream } from "./data-stream-provider";
-import { DocumentToolResult } from "./document";
-import { DocumentPreview } from "./document-preview";
 import { MessageContent } from "./elements/message";
 import { Response } from "./elements/response";
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "./elements/tool";
 import { SparklesIcon } from "./icons";
 import { MessageActions } from "./message-actions";
 import { MessageEditor } from "./message-editor";
 import { MessageReasoning } from "./message-reasoning";
 import { PreviewAttachment } from "./preview-attachment";
-import { Weather } from "./weather";
+
+// ── Tool metadata ────────────────────────────────────────────────────────────
+
+type ToolMeta = {
+  label: string;
+  icon: LucideIcon;
+  activeVerb: string;
+};
+
+const TOOL_META: Record<string, ToolMeta> = {
+  createTofuPlan: {
+    label: "Create Terraform Plan",
+    icon: LayersIcon,
+    activeVerb: "Planning",
+  },
+  updateTofuProject: {
+    label: "Update Terraform Project",
+    icon: TerminalIcon,
+    activeVerb: "Applying",
+  },
+  modifyWorkspaceFiles: {
+    label: "Edit Workspace Files",
+    icon: FileEditIcon,
+    activeVerb: "Editing",
+  },
+};
+
+function getToolName(type: string) {
+  // AI SDK v6 uses "tool-{toolName}" part types
+  return type.replace(/^tool-call-/, "").replace(/^tool-/, "");
+}
+
+function getToolMeta(type: string): ToolMeta {
+  const name = getToolName(type);
+  return (
+    TOOL_META[name] ?? {
+      label: name.replace(/([A-Z])/g, " $1").trim(),
+      icon: SparklesLucide,
+      activeVerb: "Running",
+    }
+  );
+}
+
+function getStepLabel(type: string, state: string | undefined, input: unknown): string {
+  const meta = getToolMeta(type);
+  if (state === "output-available") return meta.label;
+  return meta.activeVerb + "…";
+}
+
+function getStepDescription(
+  type: string,
+  state: string | undefined,
+  output: unknown
+): string | null {
+  if (state !== "output-available" || !output || typeof output !== "object")
+    return null;
+  const out = output as Record<string, unknown>;
+  if (typeof out.message === "string") return out.message;
+  if (Array.isArray(out.operations))
+    return (out.operations as string[]).slice(0, 3).join(" · ") +
+      (out.operations.length > 3
+        ? ` +${out.operations.length - 3} more`
+        : "");
+  return null;
+}
+
+/** Badges shown beneath a step — file names, URLs, etc. */
+function getStepBadges(type: string, input: unknown): string[] {
+  const name = getToolName(type);
+  if (!input || typeof input !== "object") return [];
+  const inp = input as Record<string, unknown>;
+
+  if (name === "modifyWorkspaceFiles") {
+    const ops = inp.operations as Array<{ filename?: string; path?: string; folder?: string }> | undefined;
+    return ops?.map((o) => o.filename ?? o.path ?? o.folder ?? "").filter(Boolean) ?? [];
+  }
+  if (name === "createTofuPlan" && typeof inp.title === "string") {
+    return [inp.title];
+  }
+  return [];
+}
 
 const PurePreviewMessage = ({
   addToolApprovalResponse,
@@ -104,246 +191,148 @@ const PurePreviewMessage = ({
             </div>
           )}
 
-          {message.parts?.map((part, index) => {
-            const { type } = part;
-            const key = `message-${message.id}-part-${index}`;
+          {(() => {
+            const parts = message.parts ?? [];
+            const rendered: React.ReactNode[] = [];
+            let i = 0;
 
-            if (type === "reasoning") {
-              const hasContent = part.text?.trim().length > 0;
-              const isStreaming = "state" in part && part.state === "streaming";
-              if (hasContent || isStreaming) {
-                return (
-                  <MessageReasoning
-                    isLoading={isLoading || isStreaming}
-                    key={key}
-                    reasoning={part.text || ""}
-                  />
-                );
+            while (i < parts.length) {
+              const part = parts[i];
+              const key = `message-${message.id}-part-${i}`;
+
+              if (part.type === "reasoning") {
+                const hasContent = part.text?.trim().length > 0;
+                const isStreaming = "state" in part && part.state === "streaming";
+                if (hasContent || isStreaming) {
+                  rendered.push(
+                    <MessageReasoning
+                      isLoading={isLoading || isStreaming}
+                      key={key}
+                      reasoning={part.text || ""}
+                    />
+                  );
+                }
+                i++;
+                continue;
               }
-            }
 
-            if (type === "text") {
-              if (mode === "view") {
-                return (
-                  <div key={key}>
-                    <MessageContent
-                      className={cn({
-                        "wrap-break-word w-fit rounded-2xl px-3 py-2 text-right text-white":
-                          message.role === "user",
-                        "bg-transparent px-0 py-0 text-left":
-                          message.role === "assistant",
+              if (part.type.startsWith("tool-")) {
+                // Collect all consecutive tool-call parts
+                const toolGroup: typeof parts = [];
+                const groupStart = i;
+                while (i < parts.length && parts[i].type.startsWith("tool-")) {
+                  toolGroup.push(parts[i]);
+                  i++;
+                }
+                const anyPending = toolGroup.some(
+                  (p) => !("state" in p && p.state === "output-available")
+                );
+                rendered.push(
+                  <ChainOfThought
+                    defaultOpen={true}
+                    key={`tools-${message.id}-${groupStart}`}
+                  >
+                    <ChainOfThoughtHeader>Agent Actions</ChainOfThoughtHeader>
+                    <ChainOfThoughtContent>
+                      {toolGroup.map((tp, ti) => {
+                        if (!("state" in tp)) return null;
+                        const meta = getToolMeta(tp.type);
+                        const Icon = meta.icon;
+                        const isDone = tp.state === "output-available";
+                        const status = isDone ? "complete" : "active";
+                        const label = getStepLabel(tp.type, tp.state, "input" in tp ? tp.input : undefined);
+                        const description = isDone
+                          ? getStepDescription(tp.type, tp.state, "output" in tp ? tp.output : undefined)
+                          : null;
+                        const badges = "input" in tp ? getStepBadges(tp.type, tp.input) : [];
+                        const hasError = tp.state === "output-error";
+
+                        return (
+                          <ChainOfThoughtStep
+                            description={
+                              hasError && "errorText" in tp
+                                ? String(tp.errorText)
+                                : description ?? undefined
+                            }
+                            icon={Icon}
+                            key={`step-${ti}`}
+                            label={
+                              isDone ? (
+                                meta.label
+                              ) : (
+                                <span className="flex items-center gap-1.5">
+                                  <Shimmer>{label}</Shimmer>
+                                </span>
+                              )
+                            }
+                            status={hasError ? "complete" : status}
+                          >
+                            {badges.length > 0 && (
+                              <ChainOfThoughtSearchResults>
+                                {badges.map((b) => (
+                                  <ChainOfThoughtSearchResult key={b}>
+                                    {b}
+                                  </ChainOfThoughtSearchResult>
+                                ))}
+                              </ChainOfThoughtSearchResults>
+                            )}
+                          </ChainOfThoughtStep>
+                        );
                       })}
-                      data-testid="message-content"
-                      style={
-                        message.role === "user"
-                          ? { backgroundColor: "#006cff" }
-                          : undefined
-                      }
-                    >
-                      <Response>{sanitizeText(part.text)}</Response>
-                    </MessageContent>
-                  </div>
+                    </ChainOfThoughtContent>
+                  </ChainOfThought>
                 );
+                continue;
               }
 
-              if (mode === "edit") {
-                return (
-                  <div
-                    className="flex w-full flex-row items-start gap-3"
-                    key={key}
-                  >
-                    <div className="size-8" />
-                    <div className="min-w-0 flex-1">
-                      <MessageEditor
-                        key={message.id}
-                        message={message}
-                        regenerate={regenerate}
-                        setMessages={setMessages}
-                        setMode={setMode}
-                      />
-                    </div>
-                  </div>
-                );
-              }
-            }
-
-            if (type === "tool-getWeather") {
-              const { toolCallId, state } = part;
-              const approvalId = (part as { approval?: { id: string } })
-                .approval?.id;
-              const isDenied =
-                state === "output-denied" ||
-                (state === "approval-responded" &&
-                  (part as { approval?: { approved?: boolean } }).approval
-                    ?.approved === false);
-              const widthClass = "w-[min(100%,450px)]";
-
-              if (state === "output-available") {
-                return (
-                  <div className={widthClass} key={toolCallId}>
-                    <Weather weatherAtLocation={part.output} />
-                  </div>
-                );
-              }
-
-              if (isDenied) {
-                return (
-                  <div className={widthClass} key={toolCallId}>
-                    <Tool className="w-full" defaultOpen={true}>
-                      <ToolHeader
-                        state="output-denied"
-                        type="tool-getWeather"
-                      />
-                      <ToolContent>
-                        <div className="px-4 py-3 text-muted-foreground text-sm">
-                          Weather lookup was denied.
-                        </div>
-                      </ToolContent>
-                    </Tool>
-                  </div>
-                );
-              }
-
-              if (state === "approval-responded") {
-                return (
-                  <div className={widthClass} key={toolCallId}>
-                    <Tool className="w-full" defaultOpen={true}>
-                      <ToolHeader state={state} type="tool-getWeather" />
-                      <ToolContent>
-                        <ToolInput input={part.input} />
-                      </ToolContent>
-                    </Tool>
-                  </div>
-                );
-              }
-
-              return (
-                <div className={widthClass} key={toolCallId}>
-                  <Tool className="w-full" defaultOpen={true}>
-                    <ToolHeader state={state} type="tool-getWeather" />
-                    <ToolContent>
-                      {(state === "input-available" ||
-                        state === "approval-requested") && (
-                        <ToolInput input={part.input} />
-                      )}
-                      {state === "approval-requested" && approvalId && (
-                        <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
-                          <button
-                            className="rounded-md px-3 py-1.5 text-muted-foreground text-sm transition-colors hover:bg-muted hover:text-foreground"
-                            onClick={() => {
-                              addToolApprovalResponse({
-                                id: approvalId,
-                                approved: false,
-                                reason: "User denied weather lookup",
-                              });
-                            }}
-                            type="button"
-                          >
-                            Deny
-                          </button>
-                          <button
-                            className="rounded-md bg-primary px-3 py-1.5 text-primary-foreground text-sm transition-colors hover:bg-primary/90"
-                            onClick={() => {
-                              addToolApprovalResponse({
-                                id: approvalId,
-                                approved: true,
-                              });
-                            }}
-                            type="button"
-                          >
-                            Allow
-                          </button>
-                        </div>
-                      )}
-                    </ToolContent>
-                  </Tool>
-                </div>
-              );
-            }
-
-            if (type === "tool-createDocument") {
-              const { toolCallId } = part;
-
-              if (part.output && "error" in part.output) {
-                return (
-                  <div
-                    className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-500 dark:bg-red-950/50"
-                    key={toolCallId}
-                  >
-                    Error creating document: {String(part.output.error)}
-                  </div>
-                );
-              }
-
-              return (
-                <DocumentPreview
-                  isReadonly={isReadonly}
-                  key={toolCallId}
-                  result={part.output}
-                />
-              );
-            }
-
-            if (type === "tool-updateDocument") {
-              const { toolCallId } = part;
-
-              if (part.output && "error" in part.output) {
-                return (
-                  <div
-                    className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-500 dark:bg-red-950/50"
-                    key={toolCallId}
-                  >
-                    Error updating document: {String(part.output.error)}
-                  </div>
-                );
-              }
-
-              return (
-                <div className="relative" key={toolCallId}>
-                  <DocumentPreview
-                    args={{ ...part.output, isUpdate: true }}
-                    isReadonly={isReadonly}
-                    result={part.output}
-                  />
-                </div>
-              );
-            }
-
-            if (type === "tool-requestSuggestions") {
-              const { toolCallId, state } = part;
-
-              return (
-                <Tool defaultOpen={true} key={toolCallId}>
-                  <ToolHeader state={state} type="tool-requestSuggestions" />
-                  <ToolContent>
-                    {state === "input-available" && (
-                      <ToolInput input={part.input} />
-                    )}
-                    {state === "output-available" && (
-                      <ToolOutput
-                        errorText={undefined}
-                        output={
-                          "error" in part.output ? (
-                            <div className="rounded border p-2 text-red-500">
-                              Error: {String(part.output.error)}
-                            </div>
-                          ) : (
-                            <DocumentToolResult
-                              isReadonly={isReadonly}
-                              result={part.output}
-                              type="request-suggestions"
-                            />
-                          )
+              if (part.type === "text") {
+                if (mode === "view") {
+                  rendered.push(
+                    <div key={key}>
+                      <MessageContent
+                        className={cn({
+                          "wrap-break-word w-fit rounded-2xl px-3 py-2 text-right text-white":
+                            message.role === "user",
+                          "bg-transparent px-0 py-0 text-left":
+                            message.role === "assistant",
+                        })}
+                        data-testid="message-content"
+                        style={
+                          message.role === "user"
+                            ? { backgroundColor: "#006cff" }
+                            : undefined
                         }
-                      />
-                    )}
-                  </ToolContent>
-                </Tool>
-              );
+                      >
+                        <Response>{sanitizeText(part.text)}</Response>
+                      </MessageContent>
+                    </div>
+                  );
+                } else if (mode === "edit") {
+                  rendered.push(
+                    <div
+                      className="flex w-full flex-row items-start gap-3"
+                      key={key}
+                    >
+                      <div className="size-8" />
+                      <div className="min-w-0 flex-1">
+                        <MessageEditor
+                          key={message.id}
+                          message={message}
+                          regenerate={regenerate}
+                          setMessages={setMessages}
+                          setMode={setMode}
+                        />
+                      </div>
+                    </div>
+                  );
+                }
+              }
+
+              i++;
             }
 
-            return null;
-          })}
+            return rendered;
+          })()}
 
           {!isReadonly && (
             <MessageActions
@@ -379,12 +368,7 @@ export const ThinkingMessage = () => {
 
         <div className="flex w-full flex-col gap-2 md:gap-4">
           <div className="flex items-center gap-1 p-0 text-muted-foreground text-sm">
-            <span className="animate-pulse">Thinking</span>
-            <span className="inline-flex">
-              <span className="animate-bounce [animation-delay:0ms]">.</span>
-              <span className="animate-bounce [animation-delay:150ms]">.</span>
-              <span className="animate-bounce [animation-delay:300ms]">.</span>
-            </span>
+            <Shimmer>Thinking</Shimmer>
           </div>
         </div>
       </div>

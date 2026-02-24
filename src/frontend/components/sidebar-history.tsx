@@ -27,6 +27,7 @@ import type { Chat } from "@/lib/db/schema";
 import { fetcher } from "@/lib/utils";
 import { LoaderIcon } from "./icons";
 import { ChatItem } from "./sidebar-history-item";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 type GroupedChats = {
   today: Chat[];
@@ -78,14 +79,16 @@ const groupChatsByDate = (chats: Chat[]): GroupedChats => {
 
 export function getChatHistoryPaginationKey(
   pageIndex: number,
-  previousPageData: ChatHistory
+  previousPageData: ChatHistory,
+  workspaceId?: string
 ) {
   if (previousPageData && previousPageData.hasMore === false) {
     return null;
   }
 
   if (pageIndex === 0) {
-    return `/api/history?limit=${PAGE_SIZE}`;
+    return `/api/history?limit=${PAGE_SIZE}${workspaceId ? `&workspaceId=${workspaceId}` : ""
+      }`;
   }
 
   const firstChatFromPage = previousPageData.chats.at(-1);
@@ -94,7 +97,8 @@ export function getChatHistoryPaginationKey(
     return null;
   }
 
-  return `/api/history?ending_before=${firstChatFromPage.id}&limit=${PAGE_SIZE}`;
+  return `/api/history?ending_before=${firstChatFromPage.id
+    }&limit=${PAGE_SIZE}${workspaceId ? `&workspaceId=${workspaceId}` : ""}`;
 }
 
 export function SidebarHistory({ user }: { user: User | undefined }) {
@@ -102,15 +106,26 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
   const pathname = usePathname();
   const id = pathname?.startsWith("/chat/") ? pathname.split("/")[2] : null;
 
+  const { currentWorkspaceId } = useWorkspace();
+
   const {
     data: paginatedChatHistories,
     setSize,
     isValidating,
     isLoading,
     mutate,
-  } = useSWRInfinite<ChatHistory>(getChatHistoryPaginationKey, fetcher, {
-    fallbackData: [],
-  });
+  } = useSWRInfinite<ChatHistory>(
+    (pageIndex, previousPageData) =>
+      getChatHistoryPaginationKey(
+        pageIndex,
+        previousPageData,
+        currentWorkspaceId
+      ),
+    fetcher,
+    {
+      fallbackData: [],
+    }
+  );
 
   const router = useRouter();
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -120,9 +135,10 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     ? paginatedChatHistories.some((page) => page.hasMore === false)
     : false;
 
-  const hasEmptyChatHistory = paginatedChatHistories
-    ? paginatedChatHistories.every((page) => page.chats.length === 0)
-    : false;
+  const hasEmptyChatHistory =
+    paginatedChatHistories && paginatedChatHistories.length > 0
+      ? paginatedChatHistories.every((page) => page.chats.length === 0)
+      : false;
 
   const handleDelete = () => {
     const chatToDelete = deleteId;
@@ -171,7 +187,7 @@ export function SidebarHistory({ user }: { user: User | undefined }) {
     );
   }
 
-  if (isLoading) {
+  if (isLoading || (isValidating && (!paginatedChatHistories || paginatedChatHistories.length === 0))) {
     return (
       <SidebarGroup>
         <div className="px-2 py-1 text-sidebar-foreground/50 text-xs">

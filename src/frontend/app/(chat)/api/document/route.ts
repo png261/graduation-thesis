@@ -1,5 +1,5 @@
 import { auth } from "@/app/(auth)/auth";
-import type { ArtifactKind } from "@/components/artifact";
+import type { EditorKind } from "@/components/editor";
 import {
   deleteDocumentsByIdAfterTimestamp,
   getDocumentsById,
@@ -56,11 +56,7 @@ export async function POST(request: Request) {
     return new ChatSDKError("not_found:document").toResponse();
   }
 
-  const {
-    content,
-    title,
-    kind,
-  }: { content: string; title: string; kind: ArtifactKind } =
+  const { content, title, kind }: { content: string; title: string; kind: EditorKind } =
     await request.json();
 
   const documents = await getDocumentsById({ id });

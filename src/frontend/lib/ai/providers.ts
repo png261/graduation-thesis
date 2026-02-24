@@ -12,6 +12,6 @@ export function getTitleModel() {
   return google("gemini-2.5-flash-lite") as any;
 }
 
-export function getArtifactModel() {
+export function getEditorModel() {
   return google("gemini-2.5-flash-lite") as any;
 }

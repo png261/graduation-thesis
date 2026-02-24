@@ -64,7 +64,7 @@ export const titleModel = new MockLanguageModelV3({
   }),
 });
 
-export const artifactModel = new MockLanguageModelV3({
+export const editorModel = new MockLanguageModelV3({
   doGenerate: async () => ({
     finishReason: "stop",
     usage: mockUsage,

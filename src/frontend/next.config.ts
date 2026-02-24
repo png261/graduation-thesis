@@ -6,12 +6,7 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       {
-        hostname: "avatar.vercel.sh",
-      },
-      {
-        protocol: "https",
-        //https://nextjs.org/docs/messages/next-image-unconfigured-host
-        hostname: "*.public.blob.vercel-storage.com",
+        hostname: "ui-avatars.com",
       },
     ],
   },
@@ -19,7 +14,11 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/api/terraform/:path*",
-        destination: `${process.env.BACKEND_URL || "http://backend:8000"}/terraform/:path*`,
+        destination: `${process.env.BACKEND_URL || "http://127.0.0.1:8000"}/terraform/:path*`,
+      },
+      {
+        source: "/api/project/:path*",
+        destination: `${process.env.BACKEND_URL || "http://127.0.0.1:8000"}/project/:path*`,
       },
     ];
   },

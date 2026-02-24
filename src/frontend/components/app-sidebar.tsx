@@ -1,147 +1,70 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import type { User } from "next-auth";
 import { useState } from "react";
-import { toast } from "sonner";
-import { useSWRConfig } from "swr";
-import { unstable_serialize } from "swr/infinite";
-import { PlusIcon, TrashIcon } from "@/components/icons";
 import {
-  getChatHistoryPaginationKey,
-  SidebarHistory,
-} from "@/components/sidebar-history";
-import { SidebarUserNav } from "@/components/sidebar-user-nav";
+  MessageSquareIcon,
+  LayoutDashboardIcon,
+  SettingsIcon,
+  PlayIcon,
+  BoxIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarHeader,
-  SidebarMenu,
-  useSidebar,
-} from "@/components/ui/sidebar";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "./ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { SidebarUserNav } from "./sidebar-user-nav";
 
-export function AppSidebar({ user }: { user: User | undefined }) {
-  const router = useRouter();
-  const { setOpenMobile } = useSidebar();
-  const { mutate } = useSWRConfig();
-  const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+export type SidebarTab = "chat" | "dashboard" | "settings" | "run" | "3d";
 
-  const handleDeleteAll = () => {
-    const deletePromise = fetch("/api/history", {
-      method: "DELETE",
-    });
+const toolItems: { id: SidebarTab; icon: typeof MessageSquareIcon; label: string }[] = [
+  { id: "chat", icon: MessageSquareIcon, label: "Chat" },
+  { id: "dashboard", icon: LayoutDashboardIcon, label: "Dashboard" },
+  { id: "settings", icon: SettingsIcon, label: "Settings" },
+  { id: "run", icon: PlayIcon, label: "Run" },
+  { id: "3d", icon: BoxIcon, label: "3D View" },
+];
 
-    toast.promise(deletePromise, {
-      loading: "Deleting all chats...",
-      success: () => {
-        mutate(unstable_serialize(getChatHistoryPaginationKey));
-        setShowDeleteAllDialog(false);
-        router.replace("/");
-        router.refresh();
-        return "All chats deleted successfully";
-      },
-      error: "Failed to delete all chats",
-    });
-  };
-
+export function AppSidebar({
+  user,
+  activeTab,
+  onTabChange,
+}: {
+  user: User | undefined;
+  activeTab: SidebarTab;
+  onTabChange: (tab: SidebarTab) => void;
+}) {
   return (
-    <>
-      <Sidebar className="group-data-[side=left]:border-r-0">
-        <SidebarHeader>
-          <SidebarMenu>
-            <div className="flex flex-row items-center justify-between">
-              <Link
-                className="flex flex-row items-center gap-3"
-                href="/"
-                onClick={() => {
-                  setOpenMobile(false);
-                }}
+    <div className="flex flex-col items-center w-[52px] border-r bg-muted/30 py-3 gap-1 shrink-0 h-dvh">
+      {/* Tool icons */}
+      <div className="flex flex-col items-center gap-1">
+        {toolItems.map((item) => (
+          <Tooltip key={item.id}>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`h-10 w-10 rounded-xl transition-colors ${activeTab === item.id
+                    ? "bg-accent text-accent-foreground"
+                    : ""
+                  }`}
+                onClick={() => onTabChange(item.id)}
               >
-                <span className="cursor-pointer rounded-md px-2 font-semibold text-lg hover:bg-muted">
-                  Chatbot
-                </span>
-              </Link>
-              <div className="flex flex-row gap-1">
-                {user && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        className="h-8 p-1 md:h-fit md:p-2"
-                        onClick={() => setShowDeleteAllDialog(true)}
-                        type="button"
-                        variant="ghost"
-                      >
-                        <TrashIcon />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent align="end" className="hidden md:block">
-                      Delete All Chats
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className="h-8 p-1 md:h-fit md:p-2"
-                      onClick={() => {
-                        setOpenMobile(false);
-                        router.push("/");
-                        router.refresh();
-                      }}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <PlusIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent align="end" className="hidden md:block">
-                    New Chat
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </div>
-          </SidebarMenu>
-        </SidebarHeader>
-        <SidebarContent>
-          <SidebarHistory user={user} />
-        </SidebarContent>
-        <SidebarFooter>{user && <SidebarUserNav user={user} />}</SidebarFooter>
-      </Sidebar>
+                <item.icon size={20} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">{item.label}</TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
 
-      <AlertDialog
-        onOpenChange={setShowDeleteAllDialog}
-        open={showDeleteAllDialog}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete all chats?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete all
-              your chats and remove them from our servers.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteAll}>
-              Delete All
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+      {/* Spacer */}
+      <div className="flex-1" />
+
+      {/* User avatar at bottom */}
+      {user && (
+        <div className="flex flex-col items-center">
+          <SidebarUserNav user={user} />
+        </div>
+      )}
+    </div>
   );
 }

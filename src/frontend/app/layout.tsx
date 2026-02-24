@@ -5,11 +5,12 @@ import { ThemeProvider } from "@/components/theme-provider";
 
 import "./globals.css";
 import { SessionProvider } from "next-auth/react";
+import { WorkspaceProvider } from "@/hooks/use-workspace";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://chat.vercel.ai"),
-  title: "Next.js Chatbot Template",
-  description: "Next.js chatbot template using the AI SDK.",
+  metadataBase: new URL("http://localhost:3000"),
+  title: "InfraChat",
+  description: "AI-powered infrastructure management with OpenTofu.",
 };
 
 export const viewport = {
@@ -79,7 +80,9 @@ export default function RootLayout({
           enableSystem
         >
           <Toaster position="top-center" />
-          <SessionProvider>{children}</SessionProvider>
+          <SessionProvider>
+            <WorkspaceProvider>{children}</WorkspaceProvider>
+          </SessionProvider>
         </ThemeProvider>
       </body>
     </html>

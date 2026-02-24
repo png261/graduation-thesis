@@ -11,6 +11,17 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 
+export const workspace = pgTable("Workspace", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: varchar("name", { length: 255 }).notNull(),
+  userId: uuid("userId")
+    .notNull()
+    .references(() => user.id),
+  createdAt: timestamp("createdAt").notNull().defaultNow(),
+});
+
+export type Workspace = InferSelectModel<typeof workspace>;
+
 export const user = pgTable("User", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   email: varchar("email", { length: 64 }).notNull(),
@@ -26,6 +37,7 @@ export const chat = pgTable("Chat", {
   userId: uuid("userId")
     .notNull()
     .references(() => user.id),
+  workspaceId: uuid("workspaceId").references(() => workspace.id),
   visibility: varchar("visibility", { enum: ["public", "private"] })
     .notNull()
     .default("private"),
@@ -109,14 +121,15 @@ export const document = pgTable(
     createdAt: timestamp("createdAt").notNull(),
     title: text("title").notNull(),
     content: text("content"),
-    kind: varchar("text", {
-      enum: ["text", "code", "image", "sheet", "terraform"],
+    kind: varchar("kind", {
+      enum: ["terraform"],
     })
       .notNull()
-      .default("text"),
+      .default("terraform"),
     userId: uuid("userId")
       .notNull()
       .references(() => user.id),
+    workspaceId: uuid("workspaceId").references(() => workspace.id),
   },
   (table) => {
     return {
@@ -126,6 +139,7 @@ export const document = pgTable(
 );
 
 export type Document = InferSelectModel<typeof document>;
+export type DocumentKind = "terraform";
 
 export const suggestion = pgTable(
   "Suggestion",

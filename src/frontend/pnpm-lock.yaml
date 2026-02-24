@@ -298,7 +298,7 @@ importers:
         specifier: ^4.19.1
         version: 4.19.3
       typescript:
-        specifier: ^5.6.3
+        specifier: ^5.8.2
         version: 5.8.2
       ultracite:
         specifier: ^7.0.11

@@ -3,8 +3,8 @@
 import { useEffect } from "react";
 import { useSWRConfig } from "swr";
 import { unstable_serialize } from "swr/infinite";
-import { initialArtifactData, useArtifact } from "@/hooks/use-artifact";
-import { artifactDefinitions } from "./artifact";
+import { useEditor } from "@/hooks/use-editor";
+import { type UIEditor } from "./create-editor";
 import { useDataStream } from "./data-stream-provider";
 import { getChatHistoryPaginationKey } from "./sidebar-history";
 
@@ -12,7 +12,7 @@ export function DataStreamHandler() {
   const { dataStream, setDataStream } = useDataStream();
   const { mutate } = useSWRConfig();
 
-  const { artifact, setArtifact, setMetadata } = useArtifact();
+  const { setEditor } = useEditor();
 
   useEffect(() => {
     if (!dataStream?.length) {
@@ -23,70 +23,61 @@ export function DataStreamHandler() {
     setDataStream([]);
 
     for (const delta of newDeltas) {
-      // Handle chat title updates
       if (delta.type === "data-chat-title") {
         mutate(unstable_serialize(getChatHistoryPaginationKey));
         continue;
       }
-      const artifactDefinition = artifactDefinitions.find(
-        (currentArtifactDefinition) =>
-          currentArtifactDefinition.kind === artifact.kind
-      );
 
-      if (artifactDefinition?.onStreamPart) {
-        artifactDefinition.onStreamPart({
-          streamPart: delta,
-          setArtifact,
-          setMetadata,
-        });
-      }
-
-      setArtifact((draftArtifact) => {
-        if (!draftArtifact) {
-          return { ...initialArtifactData, status: "streaming" };
-        }
-
+      setEditor((currentEditor: UIEditor) => {
         switch (delta.type) {
           case "data-id":
             return {
-              ...draftArtifact,
+              ...currentEditor,
               documentId: delta.data,
               status: "streaming",
             };
 
           case "data-title":
             return {
-              ...draftArtifact,
+              ...currentEditor,
               title: delta.data,
               status: "streaming",
             };
 
           case "data-kind":
             return {
-              ...draftArtifact,
+              ...currentEditor,
               kind: delta.data,
               status: "streaming",
             };
 
           case "data-clear":
             return {
-              ...draftArtifact,
+              ...currentEditor,
               content: "",
+              status: "streaming",
+            };
+
+          case "data-terraformDelta":
+            return {
+              ...currentEditor,
+              content: delta.data,
+              isVisible: true,
               status: "streaming",
             };
 
           case "data-finish":
             return {
-              ...draftArtifact,
+              ...currentEditor,
               status: "idle",
             };
 
           default:
-            return draftArtifact;
+            return currentEditor;
         }
       });
     }
-  }, [dataStream, setArtifact, setMetadata, artifact, setDataStream, mutate]);
+  }, [dataStream, setEditor, mutate, setDataStream]);
 
   return null;
 }

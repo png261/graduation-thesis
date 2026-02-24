@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useArtifactSelector } from "@/hooks/use-artifact";
+import { useEditorSelector } from "@/hooks/use-editor";
+import { type UIEditor } from "./create-editor";
 import { cn } from "@/lib/utils";
 import { Loader } from "./elements/loader";
 import { CrossSmallIcon, TerminalWindowIcon } from "./icons";
@@ -33,7 +34,7 @@ export function Console({ consoleOutputs, setConsoleOutputs }: ConsoleProps) {
   const [isResizing, setIsResizing] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
-  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
+  const isEditorVisible = useEditorSelector((state: UIEditor) => state.isVisible);
 
   const minHeight = 100;
   const maxHeight = 800;
@@ -72,10 +73,10 @@ export function Console({ consoleOutputs, setConsoleOutputs }: ConsoleProps) {
   }, []);
 
   useEffect(() => {
-    if (!isArtifactVisible) {
+    if (!isEditorVisible) {
       setConsoleOutputs([]);
     }
-  }, [isArtifactVisible, setConsoleOutputs]);
+  }, [isEditorVisible, setConsoleOutputs]);
 
   return consoleOutputs.length > 0 ? (
     <>
@@ -155,8 +156,8 @@ export function Console({ consoleOutputs, setConsoleOutputs }: ConsoleProps) {
                       ? "Initializing..."
                       : consoleOutput.status === "loading_packages"
                         ? consoleOutput.contents.map((content) =>
-                            content.type === "text" ? content.value : null
-                          )
+                          content.type === "text" ? content.value : null
+                        )
                         : null}
                   </div>
                 </div>

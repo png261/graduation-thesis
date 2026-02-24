@@ -25,8 +25,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { ChatMessage } from "@/lib/types";
-import { type ArtifactKind, artifactDefinitions } from "./artifact";
-import type { ArtifactToolbarItem } from "./create-artifact";
+import { type EditorKind, editorDefinitions } from "./editor";
+import type { EditorToolbarItem } from "./create-editor";
 import { ArrowUpIcon, StopIcon, SummarizeIcon } from "./icons";
 
 type ToolProps = {
@@ -259,7 +259,7 @@ export const Tools = ({
   sendMessage: UseChatHelpers<ChatMessage>["sendMessage"];
   isAnimating: boolean;
   setIsToolbarVisible: Dispatch<SetStateAction<boolean>>;
-  tools: ArtifactToolbarItem[];
+  tools: EditorToolbarItem[];
 }) => {
   const [primaryTool, ...secondaryTools] = tools;
 
@@ -308,7 +308,7 @@ const PureToolbar = ({
   status,
   stop,
   setMessages,
-  artifactKind,
+  editorKind,
 }: {
   isToolbarVisible: boolean;
   setIsToolbarVisible: Dispatch<SetStateAction<boolean>>;
@@ -316,7 +316,7 @@ const PureToolbar = ({
   sendMessage: UseChatHelpers<ChatMessage>["sendMessage"];
   stop: UseChatHelpers<ChatMessage>["stop"];
   setMessages: UseChatHelpers<ChatMessage>["setMessages"];
-  artifactKind: ArtifactKind;
+  editorKind: EditorKind;
 }) => {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -360,17 +360,17 @@ const PureToolbar = ({
     }
   }, [status, setIsToolbarVisible]);
 
-  const artifactDefinition = artifactDefinitions.find(
-    (definition) => definition.kind === artifactKind
+  const editorDefinition = editorDefinitions.find(
+    (definition) => definition.kind === editorKind
   );
 
-  if (!artifactDefinition) {
-    throw new Error("Artifact definition not found!");
+  if (!editorDefinition) {
+    return null;
   }
 
-  const toolsByArtifactKind = artifactDefinition.toolbar;
+  const toolsByEditorKind = editorDefinition.toolbar;
 
-  if (toolsByArtifactKind.length === 0) {
+  if (toolsByEditorKind.length === 0) {
     return null;
   }
 
@@ -381,19 +381,19 @@ const PureToolbar = ({
           isToolbarVisible
             ? selectedTool === "adjust-reading-level"
               ? {
-                  opacity: 1,
-                  y: 0,
-                  height: 6 * 43,
-                  transition: { delay: 0 },
-                  scale: 0.95,
-                }
+                opacity: 1,
+                y: 0,
+                height: 6 * 43,
+                transition: { delay: 0 },
+                scale: 0.95,
+              }
               : {
-                  opacity: 1,
-                  y: 0,
-                  height: toolsByArtifactKind.length * 50,
-                  transition: { delay: 0 },
-                  scale: 1,
-                }
+                opacity: 1,
+                y: 0,
+                height: toolsByEditorKind.length * 50,
+                transition: { delay: 0 },
+                scale: 1,
+              }
             : { opacity: 1, y: 0, height: 54, transition: { delay: 0 } }
         }
         className="absolute right-6 bottom-6 flex cursor-pointer flex-col justify-end rounded-full border bg-background p-1.5 shadow-lg"
@@ -453,7 +453,7 @@ const PureToolbar = ({
             sendMessage={sendMessage}
             setIsToolbarVisible={setIsToolbarVisible}
             setSelectedTool={setSelectedTool}
-            tools={toolsByArtifactKind}
+            tools={toolsByEditorKind}
           />
         )}
       </motion.div>
@@ -468,7 +468,7 @@ export const Toolbar = memo(PureToolbar, (prevProps, nextProps) => {
   if (prevProps.isToolbarVisible !== nextProps.isToolbarVisible) {
     return false;
   }
-  if (prevProps.artifactKind !== nextProps.artifactKind) {
+  if (prevProps.editorKind !== nextProps.editorKind) {
     return false;
   }
 

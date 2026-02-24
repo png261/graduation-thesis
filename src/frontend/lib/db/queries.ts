@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import type { ArtifactKind } from "@/components/artifact";
+import type { EditorKind } from "@/components/editor";
 import type { VisibilityType } from "@/components/visibility-selector";
 import { ChatSDKError } from "../errors";
 import { generateUUID } from "../utils";
@@ -30,6 +30,8 @@ import {
   type User,
   user,
   vote,
+  workspace,
+  type Workspace,
 } from "./schema";
 import { generateHashedPassword } from "./utils";
 
@@ -104,8 +106,53 @@ export async function ensureUserExists(
     }
   } catch (error) {
     console.error("Failed to ensure user exists:", error);
-    // Don't throw, let the subsequent operation fail if it must,
-    // or arguably we should throw. But this is a best-effort repair.
+  }
+}
+
+export async function createWorkspace({
+  name,
+  userId,
+}: {
+  name: string;
+  userId: string;
+}) {
+  try {
+    return await db.insert(workspace).values({ name, userId }).returning();
+  } catch (error) {
+    console.error("Database Error:", error);
+    throw new ChatSDKError("bad_request:database", "Failed to create workspace");
+  }
+}
+
+export async function getWorkspacesByUserId({ userId }: { userId: string }) {
+  try {
+    return await db
+      .select()
+      .from(workspace)
+      .where(eq(workspace.userId, userId))
+      .orderBy(desc(workspace.createdAt));
+  } catch (error) {
+    console.error("Database Error:", error);
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get workspaces by user id"
+    );
+  }
+}
+
+export async function getWorkspaceById({ id }: { id: string }) {
+  try {
+    const [selectedWorkspace] = await db
+      .select()
+      .from(workspace)
+      .where(eq(workspace.id, id));
+    return selectedWorkspace;
+  } catch (error) {
+    console.error("Database Error:", error);
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get workspace by id"
+    );
   }
 }
 
@@ -114,11 +161,13 @@ export async function saveChat({
   userId,
   title,
   visibility,
+  workspaceId,
 }: {
   id: string;
   userId: string;
   title: string;
   visibility: VisibilityType;
+  workspaceId?: string;
 }) {
   try {
     return await db.insert(chat).values({
@@ -127,6 +176,7 @@ export async function saveChat({
       userId,
       title,
       visibility,
+      workspaceId,
     });
   } catch (error) {
     console.error("Database Error:", error);
@@ -191,26 +241,33 @@ export async function getChatsByUserId({
   limit,
   startingAfter,
   endingBefore,
+  workspaceId,
 }: {
   id: string;
   limit: number;
   startingAfter: string | null;
   endingBefore: string | null;
+  workspaceId?: string;
 }) {
   try {
     const extendedLimit = limit + 1;
 
-    const query = (whereCondition?: SQL<any>) =>
-      db
+    const query = (whereCondition?: SQL<any>) => {
+      const conditions = [eq(chat.userId, id)];
+      if (whereCondition) {
+        conditions.push(whereCondition);
+      }
+      if (workspaceId) {
+        conditions.push(eq(chat.workspaceId, workspaceId));
+      }
+
+      return db
         .select()
         .from(chat)
-        .where(
-          whereCondition
-            ? and(whereCondition, eq(chat.userId, id))
-            : eq(chat.userId, id)
-        )
+        .where(and(...conditions))
         .orderBy(desc(chat.createdAt))
         .limit(extendedLimit);
+    };
 
     let filteredChats: Chat[] = [];
 
@@ -367,12 +424,14 @@ export async function saveDocument({
   kind,
   content,
   userId,
+  workspaceId,
 }: {
   id: string;
   title: string;
-  kind: ArtifactKind;
+  kind: EditorKind;
   content: string;
   userId: string;
+  workspaceId?: string;
 }) {
   try {
     return await db
@@ -383,12 +442,33 @@ export async function saveDocument({
         kind,
         content,
         userId,
+        workspaceId,
         createdAt: new Date(),
       })
       .returning();
   } catch (error) {
     console.error("Database Error:", error);
     throw new ChatSDKError("bad_request:database", "Failed to save document");
+  }
+}
+
+export async function getDocumentsByWorkspaceId({
+  workspaceId,
+}: {
+  workspaceId: string;
+}) {
+  try {
+    return await db
+      .select()
+      .from(document)
+      .where(eq(document.workspaceId, workspaceId))
+      .orderBy(desc(document.createdAt));
+  } catch (error) {
+    console.error("Database Error:", error);
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to get documents by workspace id"
+    );
   }
 }
 
