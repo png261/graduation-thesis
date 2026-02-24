@@ -29,3 +29,7 @@ __pycache__
 .agent/
 .serena/
 skills-lock.json
+
+# Projects Data
+src/backend/projects/
+/projects/
