@@ -23,3 +23,9 @@ venv
 /venv
 __pycache__
 *.pyc
+
+# AI & Temp files
+.agents/
+.agent/
+.serena/
+skills-lock.json
