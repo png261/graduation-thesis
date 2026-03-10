@@ -1,0 +1,91 @@
+:root {
+  --da-bg: #0b0f14;
+  --da-panel: #111827;
+  --da-elevated: #161d2b;
+  --da-border: #2a3345;
+  --da-text: #e5e7eb;
+  --da-muted: #94a3b8;
+  --da-accent: #3b82f6;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--da-text);
+  background:
+    radial-gradient(circle at 20% -10%, rgba(59, 130, 246, 0.12), transparent 42%),
+    radial-gradient(circle at 90% 15%, rgba(30, 41, 59, 0.5), transparent 48%),
+    linear-gradient(180deg, #0b0f14 0%, #090d12 100%);
+}
+
+#root {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+code,
+pre,
+textarea,
+input.font-mono {
+  font-family: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--da-accent) 70%, transparent);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--da-accent) 40%, transparent);
+  color: #ffffff;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a455d #111827;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #101722;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid #101722;
+  background: #37445c;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

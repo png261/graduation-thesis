@@ -1,0 +1,55 @@
+.context-display-root {
+  display: inline-flex;
+  min-height: 44px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--da-border) 80%, transparent);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--da-panel) 72%, transparent);
+  padding: 0.42rem 0.62rem;
+}
+
+.context-display-label {
+  color: var(--da-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.context-display-track {
+  position: relative;
+  flex: 1;
+  min-width: 68px;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--da-border) 70%, #0b0f14);
+}
+
+.context-display-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2dd4bf 0%, #22d3ee 100%);
+}
+
+.context-display-value,
+.context-display-empty {
+  color: color-mix(in srgb, var(--da-text) 90%, var(--da-muted));
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.context-display-empty {
+  margin-left: auto;
+}
+
+@media (max-width: 980px) {
+  .context-display-root {
+    width: 100%;
+    min-width: 0;
+  }
+}

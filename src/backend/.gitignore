@@ -1,17 +1,3 @@
-# Python
+app/projects
 __pycache__/
-*.py[cod]
-*$py.class
 
-# Virtual Environment
-venv/
-env/
-.env
-
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.*
-
-# Docker
-.dockerignore

@@ -1,0 +1,8 @@
+@import "./styles/base.css";
+@import "./styles/thread.css";
+@import "./styles/assistant.css";
+@import "./styles/context.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

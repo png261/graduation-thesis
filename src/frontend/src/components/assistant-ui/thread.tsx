@@ -1,0 +1,56 @@
+import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
+
+import type { Suggestion } from "../../lib/suggestions";
+import { AssistantMessage } from "./assistant-message";
+import { ThreadComposer } from "./thread-composer";
+
+function UserMessage() {
+  return (
+    <MessagePrimitive.Root className="aui-user-message-root">
+      <div className="aui-user-message-content">
+        <MessagePrimitive.Parts />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+interface ThreadProps {
+  suggestions: Suggestion[];
+  onOpenHistory: () => void;
+}
+
+export function Thread({ suggestions, onOpenHistory }: ThreadProps) {
+  return (
+    <ThreadPrimitive.Root className="aui-thread-root">
+      <ThreadPrimitive.Viewport className="aui-thread-viewport">
+        <ThreadPrimitive.Empty>
+          <div className="aui-thread-welcome-root">
+            <div className="aui-thread-welcome-suggestions">
+              {suggestions.map((suggestion) => (
+                <ThreadPrimitive.Suggestion
+                  key={suggestion.text}
+                  prompt={suggestion.prompt}
+                  send
+                  className="aui-thread-welcome-suggestion"
+                >
+                  {suggestion.text}
+                </ThreadPrimitive.Suggestion>
+              ))}
+            </div>
+          </div>
+        </ThreadPrimitive.Empty>
+
+        <ThreadPrimitive.Messages
+          components={{
+            UserMessage,
+            AssistantMessage,
+          }}
+        />
+
+        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer">
+          <ThreadComposer onOpenHistory={onOpenHistory} />
+        </ThreadPrimitive.ViewportFooter>
+      </ThreadPrimitive.Viewport>
+    </ThreadPrimitive.Root>
+  );
+}

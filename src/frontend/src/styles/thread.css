@@ -1,0 +1,74 @@
+.aui-assistant-message-root {
+  border: 1px solid var(--da-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--da-elevated) 80%, transparent);
+  padding: 10px;
+}
+
+.thread-sidebar {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--da-panel) 90%, #060a11) 0%, var(--da-panel) 100%);
+}
+
+.thread-sidebar .aui-thread-list-root {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.thread-sidebar .aui-thread-list-new {
+  width: 100%;
+  justify-content: flex-start;
+  border: 1px solid var(--da-border);
+  background: color-mix(in srgb, var(--da-elevated) 80%, transparent);
+  color: var(--da-text);
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.thread-sidebar .aui-thread-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 0.55rem;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.thread-sidebar .aui-thread-list-item:hover {
+  background: color-mix(in srgb, var(--da-elevated) 82%, transparent);
+  border-color: color-mix(in srgb, var(--da-border) 70%, transparent);
+}
+
+.thread-sidebar .aui-thread-list-item[data-active="true"],
+.thread-sidebar .aui-thread-list-item[data-current="true"],
+.thread-sidebar .aui-thread-list-item[data-state="active"] {
+  background: color-mix(in srgb, var(--da-accent) 18%, var(--da-elevated));
+  border-color: color-mix(in srgb, var(--da-accent) 45%, var(--da-border));
+}
+
+.thread-sidebar .aui-thread-list-item-trigger {
+  flex: 1;
+  min-width: 0;
+  border-radius: 0.5rem;
+  padding: 0.52rem 0.62rem;
+  text-align: left;
+  color: var(--da-text);
+}
+
+.thread-sidebar .aui-thread-list-item-title {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--da-text) 88%, var(--da-muted));
+}
+
+.thread-sidebar .aui-thread-list-item-archive {
+  color: var(--da-muted);
+}
+
+.thread-sidebar .aui-thread-list-item-archive:hover {
+  color: var(--da-text);
+  background: color-mix(in srgb, var(--da-elevated) 90%, transparent);
+}
