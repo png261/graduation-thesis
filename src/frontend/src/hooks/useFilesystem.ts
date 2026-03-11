@@ -1,11 +1,6 @@
-import { useState, useCallback, useMemo } from "react";
-import {
-  deleteProjectFile,
-  listProjectFiles,
-  readProjectFile,
-  writeProjectFile,
-  type FileEntry,
-} from "../api/projects";
+import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+
+import { deleteProjectFile, listProjectFiles, readProjectFile, writeProjectFile, type FileEntry } from "../api/projects";
 
 export type { FileEntry };
 
@@ -22,7 +17,7 @@ export interface UseFilesystemReturn {
   saveFile: (path: string, content: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
   createFile: (path: string, content?: string) => Promise<void>;
-  setContent: (c: string) => void;
+  setContent: (content: string) => void;
 }
 
 interface UseFilesystemOptions {
@@ -30,16 +25,146 @@ interface UseFilesystemOptions {
   readOnly: boolean;
 }
 
+function normalizePath(path: string) {
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
 function makeFileEntries(fileMap: Record<string, string>): FileEntry[] {
   const now = new Date().toISOString();
-  return Object.keys(fileMap)
-    .sort()
-    .map((path) => ({
-      path,
-      size: fileMap[path].length,
-      modifiedAt: now,
-      createdAt: now,
-    }));
+  return Object.keys(fileMap).sort().map((path) => ({ path, size: fileMap[path].length, modifiedAt: now, createdAt: now }));
+}
+
+function getGuestFilesSnapshotForProject(projectId: string, guestFiles: Record<string, string>) {
+  const filesForProject = guestFileStore.get(projectId) ?? guestFiles;
+  if (!guestFileStore.has(projectId)) guestFileStore.set(projectId, filesForProject);
+  return filesForProject;
+}
+
+function setSelectedFileState(
+  path: string,
+  value: string,
+  setSelectedPath: Dispatch<SetStateAction<string | null>>,
+  setContentState: Dispatch<SetStateAction<string>>,
+  setSavedContent: Dispatch<SetStateAction<string>>,
+) {
+  setSelectedPath(path);
+  setContentState(value);
+  setSavedContent(value);
+}
+
+function clearSelectedFileState(
+  setSelectedPath: Dispatch<SetStateAction<string | null>>,
+  setContentState: Dispatch<SetStateAction<string>>,
+  setSavedContent: Dispatch<SetStateAction<string>>,
+) {
+  setSelectedPath(null);
+  setContentState("");
+  setSavedContent("");
+}
+
+function useFilesystemState() {
+  const [guestFiles, setGuestFiles] = useState<Record<string, string>>({});
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [content, setContentState] = useState("");
+  const [savedContent, setSavedContent] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  return { guestFiles, setGuestFiles, files, setFiles, selectedPath, setSelectedPath, content, setContentState, savedContent, setSavedContent, isLoading, setIsLoading };
+}
+
+type FilesystemState = ReturnType<typeof useFilesystemState>;
+
+function useFetchFilesAction(projectId: string, authenticated: boolean, state: FilesystemState) {
+  return useCallback(async () => {
+    if (!projectId) return;
+    if (!authenticated) {
+      const filesForProject = getGuestFilesSnapshotForProject(projectId, state.guestFiles);
+      state.setFiles(makeFileEntries(filesForProject));
+      const firstPath = Object.keys(filesForProject).sort()[0];
+      if (!state.selectedPath && firstPath) setSelectedFileState(firstPath, filesForProject[firstPath], state.setSelectedPath, state.setContentState, state.setSavedContent);
+      return;
+    }
+    try {
+      state.setFiles(await listProjectFiles(projectId));
+    } catch {
+      // non-fatal
+    }
+  }, [authenticated, projectId, state.guestFiles, state.selectedPath, state.setContentState, state.setFiles, state.setSavedContent, state.setSelectedPath]);
+}
+
+function useOpenFileAction(projectId: string, authenticated: boolean, guestFiles: Record<string, string>, state: FilesystemState) {
+  return useCallback(async (path: string) => {
+    state.setIsLoading(true);
+    try {
+      if (!authenticated) {
+        setSelectedFileState(path, guestFiles[path] ?? "", state.setSelectedPath, state.setContentState, state.setSavedContent);
+        return;
+      }
+      const data = await readProjectFile(projectId, path);
+      setSelectedFileState(path, data, state.setSelectedPath, state.setContentState, state.setSavedContent);
+    } catch {
+      // non-fatal
+    } finally {
+      state.setIsLoading(false);
+    }
+  }, [authenticated, guestFiles, projectId, state]);
+}
+
+function useSaveFileAction(projectId: string, authenticated: boolean, readOnly: boolean, fetchFiles: () => Promise<void>, state: FilesystemState) {
+  return useCallback(async (path: string, newContent: string) => {
+    if (readOnly) return;
+    if (!authenticated) {
+      state.setGuestFiles((previous) => {
+        const next = { ...previous, [path]: newContent };
+        guestFileStore.set(projectId, next);
+        return next;
+      });
+      state.setSavedContent(newContent);
+      return;
+    }
+    await writeProjectFile(projectId, path, newContent);
+    state.setSavedContent(newContent);
+    await fetchFiles();
+  }, [authenticated, fetchFiles, projectId, readOnly, state]);
+}
+
+function useDeleteFileAction(projectId: string, authenticated: boolean, readOnly: boolean, selectedPath: string | null, fetchFiles: () => Promise<void>, state: FilesystemState) {
+  return useCallback(async (path: string) => {
+    if (readOnly) return;
+    if (!authenticated) {
+      state.setGuestFiles((previous) => {
+        const next = { ...previous };
+        delete next[path];
+        guestFileStore.set(projectId, next);
+        return next;
+      });
+      if (selectedPath === path) clearSelectedFileState(state.setSelectedPath, state.setContentState, state.setSavedContent);
+      return;
+    }
+    await deleteProjectFile(projectId, path);
+    if (selectedPath === path) clearSelectedFileState(state.setSelectedPath, state.setContentState, state.setSavedContent);
+    await fetchFiles();
+  }, [authenticated, fetchFiles, projectId, readOnly, selectedPath, state]);
+}
+
+function useCreateFileAction(projectId: string, authenticated: boolean, readOnly: boolean, fetchFiles: () => Promise<void>, openFile: (path: string) => Promise<void>, state: FilesystemState) {
+  return useCallback(async (path: string, initialContent = "") => {
+    if (readOnly) return;
+    const normalised = normalizePath(path);
+    if (!authenticated) {
+      state.setGuestFiles((previous) => {
+        const next = { ...previous, [normalised]: initialContent };
+        guestFileStore.set(projectId, next);
+        return next;
+      });
+      await fetchFiles();
+      await openFile(normalised);
+      return;
+    }
+    await writeProjectFile(projectId, normalised, initialContent);
+    await fetchFiles();
+    await openFile(normalised);
+  }, [authenticated, fetchFiles, openFile, projectId, readOnly, state]);
 }
 
 export function getGuestFilesSnapshot(projectId: string): Array<{ path: string; content: string }> {
@@ -48,158 +173,13 @@ export function getGuestFilesSnapshot(projectId: string): Array<{ path: string; 
 }
 
 export function useFilesystem(projectId: string, options: UseFilesystemOptions): UseFilesystemReturn {
-  const { authenticated, readOnly } = options;
-  const [guestFiles, setGuestFiles] = useState<Record<string, string>>({});
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [content, setContentState] = useState("");
-  const [savedContent, setSavedContent] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-
-  const isDirty = useMemo(() => content !== savedContent, [content, savedContent]);
-
-  const fetchFiles = useCallback(async () => {
-    if (!projectId) return;
-
-    if (!authenticated) {
-      const filesForProject = guestFileStore.get(projectId) ?? guestFiles;
-      if (!guestFileStore.has(projectId)) {
-        guestFileStore.set(projectId, filesForProject);
-      }
-      setFiles(makeFileEntries(filesForProject));
-      const firstPath = Object.keys(filesForProject).sort()[0];
-      if (!selectedPath && firstPath) {
-        const firstContent = filesForProject[firstPath];
-        setSelectedPath(firstPath);
-        setContentState(firstContent);
-        setSavedContent(firstContent);
-      }
-      return;
-    }
-
-    try {
-      const data = await listProjectFiles(projectId);
-      setFiles(data);
-    } catch {
-      // non-fatal
-    }
-  }, [projectId, authenticated, guestFiles, selectedPath]);
-
-  const openFile = useCallback(
-    async (path: string) => {
-      setIsLoading(true);
-      try {
-        if (!authenticated) {
-          const value = guestFiles[path] ?? "";
-          setSelectedPath(path);
-          setContentState(value);
-          setSavedContent(value);
-          return;
-        }
-
-        const data = await readProjectFile(projectId, path);
-        setSelectedPath(path);
-        setContentState(data);
-        setSavedContent(data);
-      } catch {
-        // non-fatal
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [projectId, authenticated, guestFiles],
-  );
-
-  const saveFile = useCallback(
-    async (path: string, newContent: string) => {
-      if (readOnly) return;
-
-      if (!authenticated) {
-        setGuestFiles((prev) => {
-          const next = { ...prev, [path]: newContent };
-          guestFileStore.set(projectId, next);
-          return next;
-        });
-        setSavedContent(newContent);
-        return;
-      }
-
-      await writeProjectFile(projectId, path, newContent);
-      setSavedContent(newContent);
-      await fetchFiles();
-    },
-    [projectId, authenticated, readOnly, fetchFiles],
-  );
-
-  const deleteFile = useCallback(
-    async (path: string) => {
-      if (readOnly) return;
-
-      if (!authenticated) {
-        setGuestFiles((prev) => {
-          const next = { ...prev };
-          delete next[path];
-          guestFileStore.set(projectId, next);
-          return next;
-        });
-        if (selectedPath === path) {
-          setSelectedPath(null);
-          setContentState("");
-          setSavedContent("");
-        }
-        return;
-      }
-
-      await deleteProjectFile(projectId, path);
-      if (selectedPath === path) {
-        setSelectedPath(null);
-        setContentState("");
-        setSavedContent("");
-      }
-      await fetchFiles();
-    },
-    [projectId, authenticated, readOnly, selectedPath, fetchFiles],
-  );
-
-  const createFile = useCallback(
-    async (path: string, initialContent = "") => {
-      if (readOnly) return;
-
-      const normalised = path.startsWith("/") ? path : `/${path}`;
-
-      if (!authenticated) {
-        setGuestFiles((prev) => {
-          const next = { ...prev, [normalised]: initialContent };
-          guestFileStore.set(projectId, next);
-          return next;
-        });
-        await fetchFiles();
-        await openFile(normalised);
-        return;
-      }
-
-      await writeProjectFile(projectId, normalised, initialContent);
-      await fetchFiles();
-      await openFile(normalised);
-    },
-    [projectId, authenticated, readOnly, fetchFiles, openFile],
-  );
-
-  const setContent = useCallback((c: string) => {
-    setContentState(c);
-  }, []);
-
-  return {
-    files,
-    selectedPath,
-    content,
-    isDirty,
-    isLoading,
-    fetchFiles,
-    openFile,
-    saveFile,
-    deleteFile,
-    createFile,
-    setContent,
-  };
+  const state = useFilesystemState();
+  const isDirty = useMemo(() => state.content !== state.savedContent, [state.content, state.savedContent]);
+  const fetchFiles = useFetchFilesAction(projectId, options.authenticated, state);
+  const openFile = useOpenFileAction(projectId, options.authenticated, state.guestFiles, state);
+  const saveFile = useSaveFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, state);
+  const deleteFile = useDeleteFileAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
+  const createFile = useCreateFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, openFile, state);
+  const setContent = useCallback((content: string) => state.setContentState(content), [state]);
+  return { files: state.files, selectedPath: state.selectedPath, content: state.content, isDirty, isLoading: state.isLoading, fetchFiles, openFile, saveFile, deleteFile, createFile, setContent };
 }

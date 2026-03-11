@@ -19,34 +19,32 @@ interface ThreadProps {
   onOpenHistory: () => void;
 }
 
+function ThreadSuggestions({ suggestions }: { suggestions: Suggestion[] }) {
+  return (
+    <div className="aui-thread-welcome-root">
+      <div className="aui-thread-welcome-suggestions">
+        {suggestions.map((suggestion) => (
+          <ThreadPrimitive.Suggestion key={suggestion.text} prompt={suggestion.prompt} send className="aui-thread-welcome-suggestion">
+            {suggestion.text}
+          </ThreadPrimitive.Suggestion>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ThreadMessages() {
+  return <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />;
+}
+
 export function Thread({ suggestions, onOpenHistory }: ThreadProps) {
   return (
     <ThreadPrimitive.Root className="aui-thread-root">
       <ThreadPrimitive.Viewport className="aui-thread-viewport">
         <ThreadPrimitive.Empty>
-          <div className="aui-thread-welcome-root">
-            <div className="aui-thread-welcome-suggestions">
-              {suggestions.map((suggestion) => (
-                <ThreadPrimitive.Suggestion
-                  key={suggestion.text}
-                  prompt={suggestion.prompt}
-                  send
-                  className="aui-thread-welcome-suggestion"
-                >
-                  {suggestion.text}
-                </ThreadPrimitive.Suggestion>
-              ))}
-            </div>
-          </div>
+          <ThreadSuggestions suggestions={suggestions} />
         </ThreadPrimitive.Empty>
-
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-          }}
-        />
-
+        <ThreadMessages />
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer">
           <ThreadComposer onOpenHistory={onOpenHistory} />
         </ThreadPrimitive.ViewportFooter>

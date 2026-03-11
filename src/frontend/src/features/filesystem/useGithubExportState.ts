@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   connectProjectGitHub,
   createGitHubRepository,
   createProjectPullRequest,
   downloadProjectZip,
-  getGitHubLoginUrl,
   getGitHubSession,
   getProjectGitHubStatus,
   listGitHubRepos,
@@ -15,30 +14,32 @@ import {
   type GitHubSession,
   type ProjectGitHubStatus,
 } from "../../api/projects/index";
+import { useAuth } from "../../contexts/AuthContext";
 import { toRepoName } from "./explorer/tree";
 
-export function useGithubExportState({
-  projectId,
-  authenticated,
-  fetchFiles,
-  openFile,
-  pushLog,
-}: {
+interface GithubExportParams {
   projectId: string;
   authenticated: boolean;
   fetchFiles: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
   pushLog: (message: string) => void;
-}) {
-  const [githubStatus, setGithubStatus] = useState<ProjectGitHubStatus | null>(null);
+}
 
+function toErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function useCreateRepoState(projectId: string) {
   const [createRepoOpen, setCreateRepoOpen] = useState(false);
   const [createRepoName, setCreateRepoName] = useState(() => toRepoName(projectId));
   const [createRepoDescription, setCreateRepoDescription] = useState("");
   const [createRepoPrivate, setCreateRepoPrivate] = useState(true);
   const [createRepoBusy, setCreateRepoBusy] = useState(false);
   const [createRepoError, setCreateRepoError] = useState("");
+  return { createRepoOpen, setCreateRepoOpen, createRepoName, setCreateRepoName, createRepoDescription, setCreateRepoDescription, createRepoPrivate, setCreateRepoPrivate, createRepoBusy, setCreateRepoBusy, createRepoError, setCreateRepoError };
+}
 
+function useImportRepoState() {
   const [importRepoOpen, setImportRepoOpen] = useState(false);
   const [importRepoLoading, setImportRepoLoading] = useState(false);
   const [importRepoBusy, setImportRepoBusy] = useState(false);
@@ -47,29 +48,43 @@ export function useGithubExportState({
   const [importRepoList, setImportRepoList] = useState<GitHubRepo[]>([]);
   const [importRepoName, setImportRepoName] = useState("");
   const [importBaseBranch, setImportBaseBranch] = useState("");
+  return { importRepoOpen, setImportRepoOpen, importRepoLoading, setImportRepoLoading, importRepoBusy, setImportRepoBusy, importRepoError, setImportRepoError, importRepoSession, setImportRepoSession, importRepoList, setImportRepoList, importRepoName, setImportRepoName, importBaseBranch, setImportBaseBranch };
+}
 
+function useZipImportState() {
   const [zipImportBusy, setZipImportBusy] = useState(false);
   const [zipImportError, setZipImportError] = useState("");
+  return { zipImportBusy, setZipImportBusy, zipImportError, setZipImportError };
+}
 
+function usePullRequestState() {
   const [prOpen, setPrOpen] = useState(false);
   const [prTitle, setPrTitle] = useState("chore: export code updates");
   const [prDescription, setPrDescription] = useState("");
   const [prBaseBranch, setPrBaseBranch] = useState("main");
   const [prBusy, setPrBusy] = useState(false);
   const [prError, setPrError] = useState("");
+  return { prOpen, setPrOpen, prTitle, setPrTitle, prDescription, setPrDescription, prBaseBranch, setPrBaseBranch, prBusy, setPrBusy, prError, setPrError };
+}
 
-  const [exportError, setExportError] = useState("");
-
-  const refreshAndOpenFirstFile = useCallback(async () => {
+function useRefreshAndOpenFirstFile(projectId: string, fetchFiles: () => Promise<void>, openFile: (path: string) => Promise<void>) {
+  return useCallback(async () => {
     const files = await listProjectFiles(projectId);
     await fetchFiles();
     const firstPath = files[0]?.path;
     if (firstPath) {
       await openFile(firstPath);
     }
-  }, [projectId, fetchFiles, openFile]);
+  }, [fetchFiles, openFile, projectId]);
+}
 
-  const refreshGitHubStatus = useCallback(async () => {
+function useRefreshGitHubStatus(
+  projectId: string,
+  authenticated: boolean,
+  setGithubStatus: (value: ProjectGitHubStatus | null) => void,
+  setPrBaseBranch: (value: string | ((prev: string) => string)) => void,
+) {
+  return useCallback(async () => {
     if (!authenticated) {
       setGithubStatus(null);
       return;
@@ -81,351 +96,529 @@ export function useGithubExportState({
     } catch {
       setGithubStatus(null);
     }
-  }, [projectId, authenticated]);
+  }, [authenticated, projectId, setGithubStatus, setPrBaseBranch]);
+}
 
-  const resetGitHubExportState = useCallback(() => {
-    setCreateRepoName(toRepoName(projectId));
-    setCreateRepoDescription("");
-    setCreateRepoPrivate(true);
-    setCreateRepoError("");
-    setCreateRepoOpen(false);
-
-    setImportRepoOpen(false);
-    setImportRepoLoading(false);
-    setImportRepoBusy(false);
-    setImportRepoError("");
-    setImportRepoSession({ authenticated: false });
-    setImportRepoList([]);
-    setImportRepoName("");
-    setImportBaseBranch("");
-
-    setZipImportBusy(false);
-    setZipImportError("");
-
-    setPrOpen(false);
-    setPrTitle("chore: export code updates");
-    setPrDescription("");
-    setPrError("");
+function useResetGitHubExportState(
+  projectId: string,
+  createRepo: ReturnType<typeof useCreateRepoState>,
+  importRepo: ReturnType<typeof useImportRepoState>,
+  zipImport: ReturnType<typeof useZipImportState>,
+  pullRequest: ReturnType<typeof usePullRequestState>,
+  setExportError: (value: string) => void,
+) {
+  return useCallback(() => {
+    resetCreateRepoState(projectId, createRepo);
+    resetImportRepoState(importRepo);
+    resetZipImportState(zipImport);
+    resetPullRequestState(pullRequest);
     setExportError("");
-  }, [projectId]);
+  }, [createRepo, importRepo, projectId, pullRequest, setExportError, zipImport]);
+}
 
+function resetCreateRepoState(projectId: string, createRepo: ReturnType<typeof useCreateRepoState>) {
+  createRepo.setCreateRepoName(toRepoName(projectId));
+  createRepo.setCreateRepoDescription("");
+  createRepo.setCreateRepoPrivate(true);
+  createRepo.setCreateRepoError("");
+  createRepo.setCreateRepoOpen(false);
+}
+
+function resetImportRepoState(importRepo: ReturnType<typeof useImportRepoState>) {
+  importRepo.setImportRepoOpen(false);
+  importRepo.setImportRepoLoading(false);
+  importRepo.setImportRepoBusy(false);
+  importRepo.setImportRepoError("");
+  importRepo.setImportRepoSession({ authenticated: false });
+  importRepo.setImportRepoList([]);
+  importRepo.setImportRepoName("");
+  importRepo.setImportBaseBranch("");
+}
+
+function resetZipImportState(zipImport: ReturnType<typeof useZipImportState>) {
+  zipImport.setZipImportBusy(false);
+  zipImport.setZipImportError("");
+}
+
+function resetPullRequestState(pullRequest: ReturnType<typeof usePullRequestState>) {
+  pullRequest.setPrOpen(false);
+  pullRequest.setPrTitle("chore: export code updates");
+  pullRequest.setPrDescription("");
+  pullRequest.setPrError("");
+}
+
+function useInitialGitHubExportEffect(projectId: string, resetState: () => void, refreshGitHubStatus: () => Promise<void>) {
   useEffect(() => {
-    resetGitHubExportState();
+    resetState();
     void refreshGitHubStatus();
-  }, [refreshGitHubStatus, resetGitHubExportState]);
+  }, [projectId, refreshGitHubStatus]);
+}
 
-  useEffect(() => {
-    if (!importRepoOpen || !authenticated) return;
-    let cancelled = false;
+function preferredImportRepo(currentName: string, repos: GitHubRepo[]): string {
+  return repos.some((repo) => repo.full_name === currentName) ? currentName : (repos[0]?.full_name ?? "");
+}
 
-    const load = async () => {
-      setImportRepoLoading(true);
-      setImportRepoError("");
-      try {
-        const session = await getGitHubSession();
-        if (cancelled) return;
-        setImportRepoSession(session);
-        if (!session.authenticated) {
-          setImportRepoList([]);
-          setImportRepoName("");
-          setImportBaseBranch("");
-          return;
-        }
+function preferredImportBaseBranch(repos: GitHubRepo[], repoName: string): string {
+  return repos.find((repo) => repo.full_name === repoName)?.default_branch ?? "";
+}
 
-        const repos = await listGitHubRepos();
-        if (cancelled) return;
-        setImportRepoList(repos);
-        const preferredRepo = repos.some((repo) => repo.full_name === importRepoName)
-          ? importRepoName
-          : (repos[0]?.full_name ?? "");
-        setImportRepoName(preferredRepo);
-        const preferredBase = repos.find((repo) => repo.full_name === preferredRepo)?.default_branch ?? "";
-        setImportBaseBranch((prev) => prev || preferredBase);
-      } catch (error: unknown) {
-        if (!cancelled) {
-          setImportRepoError(error instanceof Error ? error.message : "Failed to load GitHub repositories");
-          setImportRepoList([]);
-        }
-      } finally {
-        if (!cancelled) setImportRepoLoading(false);
-      }
-    };
-
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [importRepoOpen, authenticated, importRepoName]);
-
-  const clearExportError = useCallback(() => {
-    setExportError("");
-  }, []);
-
-  const handleDownloadZip = useCallback(async () => {
-    if (!authenticated) {
-      setExportError("Login required to export code.");
+async function loadImportRepoData(
+  importRepoName: string,
+  importRepo: Pick<ReturnType<typeof useImportRepoState>,
+    "setImportRepoLoading" | "setImportRepoError" | "setImportRepoSession" | "setImportRepoList" | "setImportRepoName" | "setImportBaseBranch"
+  >,
+  isCancelled: () => boolean,
+) {
+  importRepo.setImportRepoLoading(true);
+  importRepo.setImportRepoError("");
+  try {
+    const session = await getGitHubSession();
+    if (isCancelled()) return;
+    importRepo.setImportRepoSession(session);
+    if (!session.authenticated) {
+      setUnauthenticatedImportState(importRepo);
       return;
     }
+    const repos = await listGitHubRepos();
+    if (isCancelled()) return;
+    setLoadedImportRepos(importRepoName, repos, importRepo);
+  } catch (error: unknown) {
+    if (isCancelled()) return;
+    importRepo.setImportRepoError(toErrorMessage(error, "Failed to load GitHub repositories"));
+    importRepo.setImportRepoList([]);
+  } finally {
+    if (!isCancelled()) importRepo.setImportRepoLoading(false);
+  }
+}
+
+function setUnauthenticatedImportState(
+  importRepo: Pick<ReturnType<typeof useImportRepoState>, "setImportRepoList" | "setImportRepoName" | "setImportBaseBranch">,
+) {
+  importRepo.setImportRepoList([]);
+  importRepo.setImportRepoName("");
+  importRepo.setImportBaseBranch("");
+}
+
+function setLoadedImportRepos(
+  importRepoName: string,
+  repos: GitHubRepo[],
+  importRepo: Pick<ReturnType<typeof useImportRepoState>, "setImportRepoList" | "setImportRepoName" | "setImportBaseBranch">,
+) {
+  importRepo.setImportRepoList(repos);
+  const repoName = preferredImportRepo(importRepoName, repos);
+  importRepo.setImportRepoName(repoName);
+  const base = preferredImportBaseBranch(repos, repoName);
+  importRepo.setImportBaseBranch((prev) => prev || base);
+}
+
+function useImportRepoLoader(
+  importRepo: ReturnType<typeof useImportRepoState>,
+  authenticated: boolean,
+) {
+  const cancelledRef = useRef(false);
+  const {
+    importRepoOpen,
+    importRepoName,
+    setImportRepoLoading,
+    setImportRepoError,
+    setImportRepoSession,
+    setImportRepoList,
+    setImportRepoName,
+    setImportBaseBranch,
+  } = importRepo;
+  useEffect(() => {
+    if (!importRepoOpen || !authenticated) return;
+    cancelledRef.current = false;
+    const isCancelled = () => cancelledRef.current;
+    void loadImportRepoData(importRepoName, { setImportRepoLoading, setImportRepoError, setImportRepoSession, setImportRepoList, setImportRepoName, setImportBaseBranch }, isCancelled);
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [authenticated, importRepoName, importRepoOpen, setImportBaseBranch, setImportRepoError, setImportRepoList, setImportRepoLoading, setImportRepoName, setImportRepoSession]);
+}
+
+function requireAuthenticated(
+  authenticated: boolean,
+  setError: (value: string) => void,
+  message: string,
+): boolean {
+  if (authenticated) return true;
+  setError(message);
+  return false;
+}
+
+function saveZipBlob(projectId: string, blob: Blob) {
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = `${toRepoName(projectId)}.zip`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+}
+
+function useDownloadZipAction(
+  projectId: string,
+  authenticated: boolean,
+  setExportError: (value: string) => void,
+  pushLog: (message: string) => void,
+) {
+  return useCallback(async () => {
+    if (!requireAuthenticated(authenticated, setExportError, "Login required to export code.")) return;
     setExportError("");
     try {
       const blob = await downloadProjectZip(projectId);
-      const href = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.download = `${toRepoName(projectId)}.zip`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(href);
+      saveZipBlob(projectId, blob);
       pushLog("Exported project as zip archive");
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Failed to export zip";
-      setExportError(message);
+      setExportError(toErrorMessage(error, "Failed to export zip"));
       pushLog("Zip export failed");
     }
-  }, [projectId, pushLog, authenticated]);
+  }, [authenticated, projectId, pushLog, setExportError]);
+}
 
-  const openCreateRepoDialog = useCallback(() => {
-    if (!authenticated) {
-      setExportError("Login required to connect GitHub.");
+function useOpenCreateRepoDialogAction(authenticated: boolean, createRepo: ReturnType<typeof useCreateRepoState>) {
+  return useCallback(() => {
+    if (!requireAuthenticated(authenticated, createRepo.setCreateRepoError, "Login required to connect GitHub.")) return;
+    createRepo.setCreateRepoError("");
+    createRepo.setCreateRepoOpen(true);
+  }, [authenticated, createRepo]);
+}
+
+function useOpenImportRepoDialogAction(authenticated: boolean, importRepo: ReturnType<typeof useImportRepoState>) {
+  return useCallback(() => {
+    if (!requireAuthenticated(authenticated, importRepo.setImportRepoError, "Login required to import from GitHub.")) return;
+    importRepo.setImportRepoError("");
+    importRepo.setImportRepoOpen(true);
+  }, [authenticated, importRepo]);
+}
+
+function useImportRepoLoginAction(login: () => void) {
+  return useCallback(() => {
+    login();
+  }, [login]);
+}
+
+function useImportFromGithubAction(
+  projectId: string,
+  authenticated: boolean,
+  importRepo: ReturnType<typeof useImportRepoState>,
+  refreshAndOpenFirstFile: () => Promise<void>,
+  refreshGitHubStatus: () => Promise<void>,
+  pushLog: (message: string) => void,
+) {
+  const importValidationError = () => getImportValidationError(authenticated, importRepo);
+  return useCallback(async () => {
+    const validationError = importValidationError();
+    if (validationError) {
+      importRepo.setImportRepoError(validationError);
       return;
     }
-    setCreateRepoError("");
-    setCreateRepoOpen(true);
-  }, [authenticated]);
-
-  const openImportRepoDialog = useCallback(() => {
-    if (!authenticated) {
-      setImportRepoError("Login required to import from GitHub.");
-      return;
-    }
-    setImportRepoError("");
-    setImportRepoOpen(true);
-  }, [authenticated]);
-
-  const handleImportRepoLogin = useCallback(() => {
-    window.location.href = getGitHubLoginUrl();
-  }, []);
-
-  const handleImportFromGitHub = useCallback(async () => {
-    if (!authenticated) {
-      setImportRepoError("Login required to import from GitHub.");
-      return;
-    }
-    if (!importRepoSession.authenticated) {
-      setImportRepoError("Login with GitHub before importing a repository.");
-      return;
-    }
-    if (!importRepoName) {
-      setImportRepoError("Select a repository to import.");
-      return;
-    }
-
-    setImportRepoBusy(true);
-    setImportRepoError("");
+    importRepo.setImportRepoBusy(true);
+    importRepo.setImportRepoError("");
     try {
-      const defaultBranch = importRepoList.find((repo) => repo.full_name === importRepoName)?.default_branch || "main";
-      await connectProjectGitHub(
-        projectId,
-        importRepoName,
-        importBaseBranch.trim() || defaultBranch,
-      );
-      await refreshAndOpenFirstFile();
-      await refreshGitHubStatus();
-      setImportRepoOpen(false);
-      pushLog(`Imported repository ${importRepoName}`);
+      await connectProjectGitHub(projectId, importRepo.importRepoName, resolvedImportBaseBranch(importRepo));
+      await finishImportRepository(importRepo.importRepoName, importRepo.setImportRepoOpen, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog);
     } catch (error: unknown) {
-      setImportRepoError(error instanceof Error ? error.message : "Failed to import repository");
+      importRepo.setImportRepoError(toErrorMessage(error, "Failed to import repository"));
     } finally {
-      setImportRepoBusy(false);
+      importRepo.setImportRepoBusy(false);
     }
-  }, [
-    authenticated,
-    importRepoSession.authenticated,
-    importRepoName,
-    importRepoList,
-    importBaseBranch,
-    projectId,
-    refreshAndOpenFirstFile,
-    refreshGitHubStatus,
-    pushLog,
-  ]);
+  }, [importValidationError, importRepo, projectId, pushLog, refreshAndOpenFirstFile, refreshGitHubStatus]);
+}
 
-  const handleUploadZip = useCallback(async (file: File) => {
-    if (!authenticated) {
-      setZipImportError("Login required to upload ZIP.");
-      return;
-    }
+function getImportValidationError(authenticated: boolean, importRepo: ReturnType<typeof useImportRepoState>): string | null {
+  if (!authenticated) return "Login required to import from GitHub.";
+  if (!importRepo.importRepoSession.authenticated) return "Login with GitHub before importing a repository.";
+  if (!importRepo.importRepoName) return "Select a repository to import.";
+  return null;
+}
+
+function resolvedImportBaseBranch(importRepo: ReturnType<typeof useImportRepoState>): string {
+  const defaultBranch = importRepo.importRepoList.find((repo) => repo.full_name === importRepo.importRepoName)?.default_branch || "main";
+  return importRepo.importBaseBranch.trim() || defaultBranch;
+}
+
+async function finishImportRepository(
+  repoName: string,
+  setImportRepoOpen: (value: boolean) => void,
+  refreshAndOpenFirstFile: () => Promise<void>,
+  refreshGitHubStatus: () => Promise<void>,
+  pushLog: (message: string) => void,
+) {
+  await refreshAndOpenFirstFile();
+  await refreshGitHubStatus();
+  setImportRepoOpen(false);
+  pushLog(`Imported repository ${repoName}`);
+}
+
+function useUploadZipAction(
+  projectId: string,
+  authenticated: boolean,
+  zipImport: ReturnType<typeof useZipImportState>,
+  refreshAndOpenFirstFile: () => Promise<void>,
+  pushLog: (message: string) => void,
+) {
+  return useCallback(async (file: File) => {
+    if (!requireAuthenticated(authenticated, zipImport.setZipImportError, "Login required to upload ZIP.")) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
-      setZipImportError("Please select a .zip file.");
+      zipImport.setZipImportError("Please select a .zip file.");
       return;
     }
-
-    setZipImportBusy(true);
-    setZipImportError("");
+    zipImport.setZipImportBusy(true);
+    zipImport.setZipImportError("");
     try {
       const result = await uploadProjectZip(projectId, file);
       await refreshAndOpenFirstFile();
       pushLog(`Imported ZIP archive (${result.imported_files} files)`);
     } catch (error: unknown) {
-      setZipImportError(error instanceof Error ? error.message : "Failed to import ZIP");
+      zipImport.setZipImportError(toErrorMessage(error, "Failed to import ZIP"));
     } finally {
-      setZipImportBusy(false);
+      zipImport.setZipImportBusy(false);
     }
-  }, [authenticated, projectId, refreshAndOpenFirstFile, pushLog]);
+  }, [authenticated, projectId, pushLog, refreshAndOpenFirstFile, zipImport]);
+}
 
-  const openPullRequestDialog = useCallback(() => {
-    if (!authenticated) {
-      setExportError("Login required to create pull requests.");
-      return;
-    }
-    setPrError("");
-    setPrBaseBranch(githubStatus?.base_branch || "main");
-    setPrOpen(true);
-  }, [authenticated, githubStatus?.base_branch]);
+function useOpenPullRequestDialogAction(
+  authenticated: boolean,
+  githubStatus: ProjectGitHubStatus | null,
+  setExportError: (value: string) => void,
+  pullRequest: ReturnType<typeof usePullRequestState>,
+) {
+  return useCallback(() => {
+    if (!requireAuthenticated(authenticated, setExportError, "Login required to create pull requests.")) return;
+    pullRequest.setPrError("");
+    pullRequest.setPrBaseBranch(githubStatus?.base_branch || "main");
+    pullRequest.setPrOpen(true);
+  }, [authenticated, githubStatus?.base_branch, pullRequest, setExportError]);
+}
 
-  const handleCreateGitHubRepository = useCallback(async () => {
-    if (!authenticated) {
-      setCreateRepoError("Login required to connect GitHub.");
-      return;
-    }
-    if (!createRepoName.trim()) {
-      setCreateRepoError("Repository name is required.");
-      return;
-    }
-    if (githubStatus?.connected) {
-      setCreateRepoError("This project is already connected to a repository.");
-      return;
-    }
+function createRepositoryValidationError(
+  authenticated: boolean,
+  githubConnected: boolean,
+  repoName: string,
+): string | null {
+  if (!authenticated) return "Login required to connect GitHub.";
+  if (!repoName.trim()) return "Repository name is required.";
+  if (githubConnected) return "This project is already connected to a repository.";
+  return null;
+}
 
-    setCreateRepoBusy(true);
-    setCreateRepoError("");
+async function createAndConnectRepository(
+  projectId: string,
+  createRepo: ReturnType<typeof useCreateRepoState>,
+  login: () => void,
+): Promise<string | null> {
+  const session = await getGitHubSession();
+  if (!session.authenticated) {
+    login();
+    return null;
+  }
+  const repo = await createGitHubRepository(
+    createRepo.createRepoName.trim(),
+    createRepo.createRepoDescription.trim(),
+    createRepo.createRepoPrivate,
+  );
+  await connectProjectGitHub(projectId, repo.full_name, repo.default_branch || "main");
+  return repo.full_name;
+}
+
+function useCreateRepositoryAction(
+  projectId: string,
+  authenticated: boolean,
+  githubStatus: ProjectGitHubStatus | null,
+  createRepo: ReturnType<typeof useCreateRepoState>,
+  refreshAndOpenFirstFile: () => Promise<void>,
+  refreshGitHubStatus: () => Promise<void>,
+  pushLog: (message: string) => void,
+  login: () => void,
+) {
+  const validationError = createRepositoryValidationError(authenticated, Boolean(githubStatus?.connected), createRepo.createRepoName);
+  return useCallback(async () => {
+    if (validationError) {
+      createRepo.setCreateRepoError(validationError);
+      return;
+    }
+    createRepo.setCreateRepoBusy(true);
+    createRepo.setCreateRepoError("");
     try {
-      const session = await getGitHubSession();
-      if (!session.authenticated) {
-        window.location.href = getGitHubLoginUrl();
-        return;
-      }
-
-      const repo = await createGitHubRepository(
-        createRepoName.trim(),
-        createRepoDescription.trim(),
-        createRepoPrivate,
-      );
-      await connectProjectGitHub(projectId, repo.full_name, repo.default_branch || "main");
-      await refreshAndOpenFirstFile();
-      await refreshGitHubStatus();
-      setCreateRepoOpen(false);
-      pushLog(`Created and connected GitHub repo ${repo.full_name}`);
+      const repoName = await createAndConnectRepository(projectId, createRepo, login);
+      if (!repoName) return;
+      await finishCreateRepository(repoName, createRepo.setCreateRepoOpen, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog);
     } catch (error: unknown) {
-      setCreateRepoError(error instanceof Error ? error.message : "Failed to create GitHub repository");
+      createRepo.setCreateRepoError(toErrorMessage(error, "Failed to create GitHub repository"));
     } finally {
-      setCreateRepoBusy(false);
+      createRepo.setCreateRepoBusy(false);
     }
-  }, [
-    createRepoName,
-    createRepoDescription,
-    createRepoPrivate,
-    authenticated,
-    githubStatus?.connected,
-    projectId,
-    refreshAndOpenFirstFile,
-    refreshGitHubStatus,
-    pushLog,
-  ]);
+  }, [createRepo, login, projectId, pushLog, refreshAndOpenFirstFile, refreshGitHubStatus, validationError]);
+}
 
-  const handleCreatePullRequest = useCallback(async () => {
-    if (!authenticated) {
-      setPrError("Login required to create pull requests.");
-      return;
-    }
-    if (!githubStatus?.connected) {
-      setPrError("Connect this project to a repository first.");
-      return;
-    }
-    if (!prTitle.trim()) {
-      setPrError("Pull request title is required.");
-      return;
-    }
+async function finishCreateRepository(
+  repoName: string,
+  setCreateRepoOpen: (value: boolean) => void,
+  refreshAndOpenFirstFile: () => Promise<void>,
+  refreshGitHubStatus: () => Promise<void>,
+  pushLog: (message: string) => void,
+) {
+  await refreshAndOpenFirstFile();
+  await refreshGitHubStatus();
+  setCreateRepoOpen(false);
+  pushLog(`Created and connected GitHub repo ${repoName}`);
+}
 
-    setPrBusy(true);
-    setPrError("");
+function createPullRequestValidationError(
+  authenticated: boolean,
+  githubStatus: ProjectGitHubStatus | null,
+  prTitle: string,
+): string | null {
+  if (!authenticated) return "Login required to create pull requests.";
+  if (!githubStatus?.connected) return "Connect this project to a repository first.";
+  if (!prTitle.trim()) return "Pull request title is required.";
+  return null;
+}
+
+function useCreatePullRequestAction(
+  projectId: string,
+  authenticated: boolean,
+  githubStatus: ProjectGitHubStatus | null,
+  pullRequest: ReturnType<typeof usePullRequestState>,
+  refreshGitHubStatus: () => Promise<void>,
+  pushLog: (message: string) => void,
+) {
+  const validationError = createPullRequestValidationError(authenticated, githubStatus, pullRequest.prTitle);
+  return useCallback(async () => {
+    if (validationError) {
+      pullRequest.setPrError(validationError);
+      return;
+    }
+    pullRequest.setPrBusy(true);
+    pullRequest.setPrError("");
     try {
-      const result = await createProjectPullRequest(
-        projectId,
-        prTitle.trim(),
-        prDescription,
-        prBaseBranch.trim() || githubStatus.base_branch || "main",
-      );
-      setPrOpen(false);
+      const baseBranch = pullRequest.prBaseBranch.trim() || githubStatus?.base_branch || "main";
+      const result = await createProjectPullRequest(projectId, pullRequest.prTitle.trim(), pullRequest.prDescription, baseBranch);
+      pullRequest.setPrOpen(false);
       await refreshGitHubStatus();
       pushLog(`Created pull request #${result.number}: ${result.url}`);
       if (result.url) window.open(result.url, "_blank", "noopener,noreferrer");
     } catch (error: unknown) {
-      setPrError(error instanceof Error ? error.message : "Failed to create pull request");
+      pullRequest.setPrError(toErrorMessage(error, "Failed to create pull request"));
     } finally {
-      setPrBusy(false);
+      pullRequest.setPrBusy(false);
     }
-  }, [
-    authenticated,
-    githubStatus,
-    prTitle,
-    prDescription,
-    prBaseBranch,
-    projectId,
-    refreshGitHubStatus,
-    pushLog,
-  ]);
+  }, [githubStatus, projectId, pullRequest, pushLog, refreshGitHubStatus, validationError]);
+}
 
+function createRepoPublicState(createRepo: ReturnType<typeof useCreateRepoState>) {
+  return {
+    createRepoOpen: createRepo.createRepoOpen,
+    setCreateRepoOpen: createRepo.setCreateRepoOpen,
+    createRepoName: createRepo.createRepoName,
+    setCreateRepoName: createRepo.setCreateRepoName,
+    createRepoDescription: createRepo.createRepoDescription,
+    setCreateRepoDescription: createRepo.setCreateRepoDescription,
+    createRepoPrivate: createRepo.createRepoPrivate,
+    setCreateRepoPrivate: createRepo.setCreateRepoPrivate,
+    createRepoBusy: createRepo.createRepoBusy,
+    createRepoError: createRepo.createRepoError,
+  };
+}
+
+function importRepoPublicState(importRepo: ReturnType<typeof useImportRepoState>, zipImport: ReturnType<typeof useZipImportState>) {
+  return {
+    importRepoOpen: importRepo.importRepoOpen,
+    setImportRepoOpen: importRepo.setImportRepoOpen,
+    importRepoLoading: importRepo.importRepoLoading,
+    importRepoBusy: importRepo.importRepoBusy,
+    importRepoError: importRepo.importRepoError,
+    importRepoSession: importRepo.importRepoSession,
+    importRepoList: importRepo.importRepoList,
+    importRepoName: importRepo.importRepoName,
+    setImportRepoName: importRepo.setImportRepoName,
+    importBaseBranch: importRepo.importBaseBranch,
+    setImportBaseBranch: importRepo.setImportBaseBranch,
+    zipImportBusy: zipImport.zipImportBusy,
+    zipImportError: zipImport.zipImportError,
+  };
+}
+
+function pullRequestPublicState(pullRequest: ReturnType<typeof usePullRequestState>) {
+  return {
+    prOpen: pullRequest.prOpen,
+    setPrOpen: pullRequest.setPrOpen,
+    prTitle: pullRequest.prTitle,
+    setPrTitle: pullRequest.setPrTitle,
+    prDescription: pullRequest.prDescription,
+    setPrDescription: pullRequest.setPrDescription,
+    prBaseBranch: pullRequest.prBaseBranch,
+    setPrBaseBranch: pullRequest.setPrBaseBranch,
+    prBusy: pullRequest.prBusy,
+    prError: pullRequest.prError,
+  };
+}
+
+function useGithubExportActions(params: {
+  projectId: string;
+  authenticated: boolean;
+  githubStatus: ProjectGitHubStatus | null;
+  setExportError: (value: string) => void;
+  createRepo: ReturnType<typeof useCreateRepoState>;
+  importRepo: ReturnType<typeof useImportRepoState>;
+  zipImport: ReturnType<typeof useZipImportState>;
+  pullRequest: ReturnType<typeof usePullRequestState>;
+  refreshAndOpenFirstFile: () => Promise<void>;
+  refreshGitHubStatus: () => Promise<void>;
+  pushLog: (message: string) => void;
+  login: () => void;
+}) {
+  return {
+    handleDownloadZip: useDownloadZipAction(params.projectId, params.authenticated, params.setExportError, params.pushLog),
+    openCreateRepoDialog: useOpenCreateRepoDialogAction(params.authenticated, params.createRepo),
+    openImportRepoDialog: useOpenImportRepoDialogAction(params.authenticated, params.importRepo),
+    handleImportRepoLogin: useImportRepoLoginAction(params.login),
+    handleImportFromGitHub: useImportFromGithubAction(params.projectId, params.authenticated, params.importRepo, params.refreshAndOpenFirstFile, params.refreshGitHubStatus, params.pushLog),
+    handleUploadZip: useUploadZipAction(params.projectId, params.authenticated, params.zipImport, params.refreshAndOpenFirstFile, params.pushLog),
+    openPullRequestDialog: useOpenPullRequestDialogAction(params.authenticated, params.githubStatus, params.setExportError, params.pullRequest),
+    handleCreateGitHubRepository: useCreateRepositoryAction(params.projectId, params.authenticated, params.githubStatus, params.createRepo, params.refreshAndOpenFirstFile, params.refreshGitHubStatus, params.pushLog, params.login),
+    handleCreatePullRequest: useCreatePullRequestAction(params.projectId, params.authenticated, params.githubStatus, params.pullRequest, params.refreshGitHubStatus, params.pushLog),
+  };
+}
+
+function buildGithubExportResult(
+  githubStatus: ProjectGitHubStatus | null,
+  exportError: string,
+  clearExportError: () => void,
+  createRepo: ReturnType<typeof useCreateRepoState>,
+  importRepo: ReturnType<typeof useImportRepoState>,
+  zipImport: ReturnType<typeof useZipImportState>,
+  pullRequest: ReturnType<typeof usePullRequestState>,
+  actions: ReturnType<typeof useGithubExportActions>,
+) {
   return {
     githubStatus,
     exportError,
     clearExportError,
-
-    createRepoOpen,
-    setCreateRepoOpen,
-    createRepoName,
-    setCreateRepoName,
-    createRepoDescription,
-    setCreateRepoDescription,
-    createRepoPrivate,
-    setCreateRepoPrivate,
-    createRepoBusy,
-    createRepoError,
-
-    importRepoOpen,
-    setImportRepoOpen,
-    importRepoLoading,
-    importRepoBusy,
-    importRepoError,
-    importRepoSession,
-    importRepoList,
-    importRepoName,
-    setImportRepoName,
-    importBaseBranch,
-    setImportBaseBranch,
-    zipImportBusy,
-    zipImportError,
-
-    prOpen,
-    setPrOpen,
-    prTitle,
-    setPrTitle,
-    prDescription,
-    setPrDescription,
-    prBaseBranch,
-    setPrBaseBranch,
-    prBusy,
-    prError,
-
-    handleDownloadZip,
-    openCreateRepoDialog,
-    openImportRepoDialog,
-    handleImportRepoLogin,
-    handleImportFromGitHub,
-    handleUploadZip,
-    openPullRequestDialog,
-    handleCreateGitHubRepository,
-    handleCreatePullRequest,
+    ...createRepoPublicState(createRepo),
+    ...importRepoPublicState(importRepo, zipImport),
+    ...pullRequestPublicState(pullRequest),
+    ...actions,
   };
+}
+
+export function useGithubExportState({ projectId, authenticated, fetchFiles, openFile, pushLog }: GithubExportParams) {
+  const { login } = useAuth();
+  const [githubStatus, setGithubStatus] = useState<ProjectGitHubStatus | null>(null);
+  const [exportError, setExportError] = useState("");
+  const createRepo = useCreateRepoState(projectId);
+  const importRepo = useImportRepoState();
+  const zipImport = useZipImportState();
+  const pullRequest = usePullRequestState();
+  const refreshAndOpenFirstFile = useRefreshAndOpenFirstFile(projectId, fetchFiles, openFile);
+  const refreshGitHubStatus = useRefreshGitHubStatus(projectId, authenticated, setGithubStatus, pullRequest.setPrBaseBranch);
+  const resetState = useResetGitHubExportState(projectId, createRepo, importRepo, zipImport, pullRequest, setExportError);
+  useInitialGitHubExportEffect(projectId, resetState, refreshGitHubStatus);
+  useImportRepoLoader(importRepo, authenticated);
+  const clearExportError = useCallback(() => setExportError(""), []);
+  const actions = useGithubExportActions({ projectId, authenticated, githubStatus, setExportError, createRepo, importRepo, zipImport, pullRequest, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog, login });
+  return buildGithubExportResult(githubStatus, exportError, clearExportError, createRepo, importRepo, zipImport, pullRequest, actions);
 }

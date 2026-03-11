@@ -30,6 +30,7 @@ _TOFU_ENV_BLOCKLIST: tuple[str, ...] = (
     "TF_CLI_ARGS_apply",
     "TF_CLI_ARGS_graph",
 )
+_VAR_FILE_SUFFIXES: tuple[str, ...] = (".tfvars", ".tfvars.json", ".auto.tfvars", ".auto.tfvars.json")
 
 
 def required_credential_fields(provider: str | None) -> list[str]:
@@ -92,32 +93,19 @@ def opentofu_env(provider: str, creds: dict[str, str]) -> dict[str, str]:
     raise ValueError(f"Unsupported provider '{provider}'")
 
 
-def collect_module_var_files(*, project_root: Path, module_dir: Path, module: str) -> list[Path]:
-    candidates: list[Path] = []
+def _add_default_var_files(candidates: list[Path], base: Path) -> None:
+    for name in _VAR_FILE_NAMES:
+        candidates.append(base / name)
+    candidates.extend(sorted(base.glob("*.auto.tfvars")))
+    candidates.extend(sorted(base.glob("*.auto.tfvars.json")))
 
-    def _add_defaults(base: Path) -> None:
-        for name in _VAR_FILE_NAMES:
-            candidates.append(base / name)
-        candidates.extend(sorted(base.glob("*.auto.tfvars")))
-        candidates.extend(sorted(base.glob("*.auto.tfvars.json")))
 
-    _add_defaults(project_root)
-    for suffix in (".tfvars", ".tfvars.json", ".auto.tfvars", ".auto.tfvars.json"):
-        candidates.append(project_root / f"{module}{suffix}")
+def _add_module_named_var_files(candidates: list[Path], base: Path, module: str) -> None:
+    for suffix in _VAR_FILE_SUFFIXES:
+        candidates.append(base / f"{module}{suffix}")
 
-    env_root = project_root / "environments"
-    _add_defaults(env_root)
-    for suffix in (".tfvars", ".tfvars.json", ".auto.tfvars", ".auto.tfvars.json"):
-        candidates.append(env_root / f"{module}{suffix}")
 
-    if env_root.exists():
-        for env_dir in sorted(path for path in env_root.iterdir() if path.is_dir()):
-            _add_defaults(env_dir)
-            for suffix in (".tfvars", ".tfvars.json", ".auto.tfvars", ".auto.tfvars.json"):
-                candidates.append(env_dir / f"{module}{suffix}")
-
-    _add_defaults(module_dir)
-
+def _existing_unique_paths(candidates: list[Path]) -> list[Path]:
     seen: set[Path] = set()
     result: list[Path] = []
     for path in candidates:
@@ -129,6 +117,24 @@ def collect_module_var_files(*, project_root: Path, module_dir: Path, module: st
         seen.add(resolved)
         result.append(resolved)
     return result
+
+
+def collect_module_var_files(*, project_root: Path, module_dir: Path, module: str) -> list[Path]:
+    candidates: list[Path] = []
+    _add_default_var_files(candidates, project_root)
+    _add_module_named_var_files(candidates, project_root, module)
+
+    env_root = project_root / "environments"
+    _add_default_var_files(candidates, env_root)
+    _add_module_named_var_files(candidates, env_root, module)
+
+    if env_root.exists():
+        for env_dir in sorted(path for path in env_root.iterdir() if path.is_dir()):
+            _add_default_var_files(candidates, env_dir)
+            _add_module_named_var_files(candidates, env_dir, module)
+
+    _add_default_var_files(candidates, module_dir)
+    return _existing_unique_paths(candidates)
 
 
 def parse_selector_json(content: str) -> dict[str, Any] | None:

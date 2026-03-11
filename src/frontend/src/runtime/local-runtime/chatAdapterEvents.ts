@@ -45,40 +45,38 @@ function mapPolicyIssue(raw: unknown): PolicyCheckIssue | null {
   if (!raw || typeof raw !== "object") return null;
   const issue = raw as Record<string, unknown>;
   const source = issue.source === "secret" ? "secret" : "misconfig";
-  const severity = typeof issue.severity === "string" ? issue.severity : "UNKNOWN";
-  const message =
-    typeof issue.message === "string" && issue.message
-      ? issue.message
-      : typeof issue.title === "string" && issue.title
-        ? issue.title
-        : "Security issue found";
-
+  const severity = readString(issue.severity, "UNKNOWN");
+  const message = readIssueMessage(issue);
   return {
     source,
     severity,
     message,
-    title: typeof issue.title === "string" ? issue.title : undefined,
-    ruleId:
-      typeof issue.rule_id === "string"
-        ? issue.rule_id
-        : typeof issue.ruleId === "string"
-          ? issue.ruleId
-          : undefined,
-    path: typeof issue.path === "string" ? issue.path : undefined,
-    line: typeof issue.line === "number" ? issue.line : undefined,
-    endLine:
-      typeof issue.end_line === "number"
-        ? issue.end_line
-        : typeof issue.endLine === "number"
-          ? issue.endLine
-          : undefined,
-    referenceUrl:
-      typeof issue.reference_url === "string"
-        ? issue.reference_url
-        : typeof issue.referenceUrl === "string"
-          ? issue.referenceUrl
-          : undefined,
+    title: readOptionalString(issue.title),
+    ruleId: readOptionalString(issue.rule_id) ?? readOptionalString(issue.ruleId),
+    path: readOptionalString(issue.path),
+    line: readOptionalNumber(issue.line),
+    endLine: readOptionalNumber(issue.end_line) ?? readOptionalNumber(issue.endLine),
+    referenceUrl: readOptionalString(issue.reference_url) ?? readOptionalString(issue.referenceUrl),
   } satisfies PolicyCheckIssue;
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function readIssueMessage(issue: Record<string, unknown>): string {
+  const message = readOptionalString(issue.message);
+  if (message) return message;
+  const title = readOptionalString(issue.title);
+  return title || "Security issue found";
 }
 
 function parsePolicySummary(event: Record<string, unknown>, issues: PolicyCheckIssue[]): PolicyCheckSummary {

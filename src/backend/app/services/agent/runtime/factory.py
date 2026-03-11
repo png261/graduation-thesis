@@ -14,7 +14,6 @@ from deepagents.backends import FilesystemBackend
 from app import db
 from app.core.config import Settings
 from app.models import Project
-from app.services.project import credentials as project_credentials
 from app.services.project import files as project_files
 from app.services.model.factory import create_chat_model
 
@@ -32,7 +31,7 @@ def invalidate_agent(project_id: str) -> None:
 
 
 async def _load_provider_context(project_id: str) -> str:
-    """Return a system-prompt section describing the project's cloud provider and credentials."""
+    """Return a system-prompt section describing provider and variable-only credential usage."""
     try:
         async with db.get_session() as session:
             result = await session.execute(select(Project).where(Project.id == project_id))
@@ -46,25 +45,19 @@ async def _load_provider_context(project_id: str) -> str:
             "gcloud": "Google Cloud Platform",
         }.get(project.provider, project.provider)
         lines = [f"## Cloud Provider\nProvider: {provider_label}"]
-
-        creds = project_credentials.parse_credentials(project.credentials)
-        if creds:
-            lines.append("Credentials available:")
-            for key, value in creds.items():
-                if value:
-                    lines.append(f"  - {key}: {value}")
-            if project.provider == "aws":
-                lines.append(
-                    "\nUse these values in the OpenTofu AWS provider block "
-                    "(access_key, secret_key, region)."
-                )
-            elif project.provider == "gcloud":
-                lines.append(
-                    "\nUse these values in the OpenTofu Google provider block "
-                    "(project, region, credentials)."
-                )
-        else:
-            lines.append("No credentials configured yet — the user may add them via project settings.")
+        lines.append(
+            "Never include raw credentials in code or prompts. Use Terraform variables only."
+        )
+        if project.provider == "aws":
+            lines.append("Credential variables to reference:")
+            lines.append("  - var.aws_access_key_id")
+            lines.append("  - var.aws_secret_access_key")
+            lines.append("  - var.aws_region")
+        elif project.provider == "gcloud":
+            lines.append("Credential variables to reference:")
+            lines.append("  - var.gcp_project_id")
+            lines.append("  - var.gcp_region")
+            lines.append("  - var.gcp_credentials_json")
 
         return "\n".join(lines)
     except Exception:

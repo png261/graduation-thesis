@@ -12,7 +12,6 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app import db
 from app.routers import github as github_router
-from app.routers import auth as auth_router
 from app.routers import auth_dependencies as auth_deps
 from app.routers import projects as projects_router
 from app.models import Project, Thread, User
@@ -37,7 +36,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Deep Agents API", version="0.1.0", lifespan=lifespan)
 app.include_router(projects_router.router)
 app.include_router(github_router.router)
-app.include_router(auth_router.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,13 +54,10 @@ async def health() -> dict:
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(
     payload: ChatRequest,
-    user: User | None = Depends(auth_deps.get_current_user_optional),
+    user: User = Depends(auth_deps.require_current_user),
 ) -> ChatResponse:
     await _validate_chat_access(payload, user=user)
-    if user is None:
-        response_text = await chat_service.generate_basic_response(payload, settings)
-    else:
-        response_text = await chat_service.generate_response(payload, settings)
+    response_text = await chat_service.generate_response(payload, settings)
     return ChatResponse(text=response_text, thread_id=payload.thread_id)
 
 
@@ -70,7 +65,7 @@ async def chat(
 async def chat_stream(
     payload: ChatRequest,
     request: Request,
-    user: User | None = Depends(auth_deps.get_current_user_optional),
+    user: User = Depends(auth_deps.require_current_user),
 ) -> StreamingResponse:
     await _validate_chat_access(payload, user=user)
     chat_service.ensure_settings(settings)
@@ -78,10 +73,7 @@ async def chat_stream(
 
     async def event_stream():
         try:
-            if user is None:
-                streamer = chat_service.stream_basic_response(payload, settings, request)
-            else:
-                streamer = chat_service.stream_response(payload, settings, request)
+            streamer = chat_service.stream_response(payload, settings, request)
             async for event in streamer:
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception:
@@ -102,17 +94,10 @@ async def chat_stream(
 async def _validate_chat_access(
     payload: ChatRequest,
     *,
-    user: User | None,
+    user: User,
 ) -> None:
     if not payload.project_id:
-        return
-
-    if user is None:
-        auth_deps.raise_http_error(
-            401,
-            code="login_required",
-            message="Login required",
-        )
+        auth_deps.raise_http_error(400, code="project_required", message="Project ID is required")
 
     async with db.get_session() as session:
         project_result = await session.execute(

@@ -4,14 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncGenerator
 
-from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
-from app.models import AuthIdentity, GitHubAccount, GitHubSession, Project, User
+from app.core.config import get_settings
+from app.models import Project, User
 from app.routers import auth_dependencies as auth_deps
 from app.routers.http_errors import error_detail, raise_http_error
+import app.services.clerk as clerk_service
 from app.services.github import auth as github_auth
 from app.services.github import projects as github_projects
 
@@ -40,59 +41,53 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_github_session_id(request: Request) -> str | None:
-    # Keep session-cookie access centralized in one dependency.
-    return request.cookies.get(github_auth.SESSION_COOKIE)
-
-
 @dataclass(slots=True)
-class GitHubSessionContext:
-    session_id: str | None
-    github_session: GitHubSession | None
-    account: GitHubAccount | None
+class GitHubAuthContext:
+    user: User
+    access_token: str
+    login: str
+    github_user_id: str
+    scopes: list[str]
 
 
-async def get_github_session_context(
-    session: AsyncSession = Depends(get_db_session),
-    session_id: str | None = Depends(get_github_session_id),
-) -> GitHubSessionContext:
-    gh_session, account = await github_auth.get_valid_session_account(
-        session,
-        session_id=session_id,
+async def get_optional_github_auth_context(
+    user: User = Depends(auth_deps.require_current_user),
+) -> GitHubAuthContext | None:
+    settings = get_settings()
+    try:
+        oauth = clerk_service.get_github_oauth_token(settings=settings, user_id=user.id)
+    except clerk_service.ClerkError as exc:
+        raise_http_error(500, code="auth_config_error", message=str(exc))
+    except Exception:
+        return None
+
+    if oauth is None:
+        return None
+
+    try:
+        gh_user = await github_auth.github_get_user(oauth.token)
+    except github_auth.GitHubAuthError:
+        return None
+
+    return GitHubAuthContext(
+        user=user,
+        access_token=oauth.token,
+        login=str(gh_user.get("login") or ""),
+        github_user_id=str(gh_user.get("id") or oauth.provider_user_id or ""),
+        scopes=oauth.scopes,
     )
-    return GitHubSessionContext(
-        session_id=session_id,
-        github_session=gh_session,
-        account=account,
-    )
 
 
-async def require_authenticated_github_account(
-    current_user: User = Depends(auth_deps.require_current_user),
-    session: AsyncSession = Depends(get_db_session),
-    session_ctx: GitHubSessionContext = Depends(get_github_session_context),
-) -> GitHubAccount:
-    if session_ctx.account is None:
+async def require_authenticated_github_context(
+    ctx: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
+) -> GitHubAuthContext:
+    if ctx is None:
         raise_http_error(
             401,
             code="github_login_required",
             message="GitHub login required",
         )
-    identity_result = await session.execute(
-        select(AuthIdentity).where(
-            AuthIdentity.user_id == current_user.id,
-            AuthIdentity.provider == "github",
-            AuthIdentity.github_account_id == session_ctx.account.id,
-        )
-    )
-    identity = identity_result.scalar_one_or_none()
-    if identity is None:
-        raise_http_error(
-            401,
-            code="github_login_required",
-            message="GitHub login required",
-        )
-    return session_ctx.account
+    return ctx
 
 
 async def get_project_or_404(
@@ -104,71 +99,57 @@ async def get_project_or_404(
 @dataclass(slots=True)
 class ProjectGitHubStatusContext:
     project: Project
-    session_account: GitHubAccount | None
-    connected_account: GitHubAccount | None
+    github_auth: GitHubAuthContext | None
 
 
 async def get_project_github_status_context(
     project: Project = Depends(get_project_or_404),
-    session: AsyncSession = Depends(get_db_session),
-    session_ctx: GitHubSessionContext = Depends(get_github_session_context),
+    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
 ) -> ProjectGitHubStatusContext:
-    connected_account = (
-        await session.get(GitHubAccount, project.github_account_id)
-        if project.github_account_id
-        else None
-    )
     return ProjectGitHubStatusContext(
         project=project,
-        session_account=session_ctx.account,
-        connected_account=connected_account,
+        github_auth=github_auth,
     )
 
 
 @dataclass(slots=True)
 class ProjectAccountContext:
     project: Project
-    account: GitHubAccount
+    github_auth: GitHubAuthContext
 
 
 async def require_project_and_authenticated_account(
     project: Project = Depends(get_project_or_404),
-    account: GitHubAccount = Depends(require_authenticated_github_account),
+    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
 ) -> ProjectAccountContext:
-    return ProjectAccountContext(project=project, account=account)
+    return ProjectAccountContext(project=project, github_auth=github_auth)
 
 
 async def require_project_with_connected_account(
     project: Project = Depends(get_project_or_404),
-    session: AsyncSession = Depends(get_db_session),
+    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
 ) -> ProjectAccountContext:
-    if not project.github_account_id:
+    if not project.github_repo_full_name:
         raise_http_error(
             400,
             code="project_not_connected",
             message="Project is not connected to GitHub",
         )
-    account = await session.get(GitHubAccount, project.github_account_id)
-    if account is None:
-        raise_http_error(
-            404,
-            code="connected_account_not_found",
-            message="Connected GitHub account not found",
-        )
-    return ProjectAccountContext(project=project, account=account)
+    return ProjectAccountContext(project=project, github_auth=github_auth)
 
 
 @dataclass(slots=True)
 class ProjectDisconnectContext:
     project: Project
-    session_account: GitHubAccount | None
+    github_auth: GitHubAuthContext | None
 
 
 async def get_project_disconnect_context(
     project: Project = Depends(get_project_or_404),
-    session_ctx: GitHubSessionContext = Depends(get_github_session_context),
+    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
 ) -> ProjectDisconnectContext:
     return ProjectDisconnectContext(
         project=project,
-        session_account=session_ctx.account,
+        github_auth=github_auth,
     )
+

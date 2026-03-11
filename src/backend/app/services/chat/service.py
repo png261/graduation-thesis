@@ -86,6 +86,174 @@ def _project_id(payload: ChatRequest) -> str:
     return payload.project_id or "default"
 
 
+def _tool_start_event(tool_call: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "tool.start",
+        "toolCallId": tool_call["toolCallId"],
+        "toolName": tool_call["toolName"],
+        "args": tool_call["args"],
+        "argsText": tool_call["argsText"],
+    }
+
+
+def _update_usage_from_ai_message(message: AIMessage, usage_state: dict[str, tuple[int, int] | None]) -> None:
+    extracted_usage = extract_usage_from_message(message)
+    if extracted_usage is not None:
+        usage_state["tokens"] = extracted_usage
+
+
+def _ai_message_events(
+    message: AIMessage,
+    seen_tool_calls: set[str],
+    tool_call_map: dict[str, dict[str, Any]],
+    usage_state: dict[str, tuple[int, int] | None],
+) -> list[dict[str, Any]]:
+    _update_usage_from_ai_message(message, usage_state)
+    events: list[dict[str, Any]] = []
+    for tool_call in normalize_tool_calls(message):
+        tool_call_id = tool_call["toolCallId"]
+        if tool_call_id in seen_tool_calls:
+            continue
+        seen_tool_calls.add(tool_call_id)
+        tool_call_map[tool_call_id] = tool_call
+        events.append(_tool_start_event(tool_call))
+    return events
+
+
+def _tool_result_candidates(tool_result: dict[str, Any], tool_args: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    result = tool_result.get("result")
+    if isinstance(result, dict):
+        result_path = result.get("path")
+        if isinstance(result_path, str) and result_path:
+            candidates.append(result_path)
+    arg_path = tool_args.get("path")
+    if isinstance(arg_path, str) and arg_path:
+        candidates.append(arg_path)
+    return candidates
+
+
+def _tool_result_event(tool_result: dict[str, Any], tool_name: str, tool_args: dict[str, Any], tool_args_text: str) -> dict[str, Any]:
+    artifact = tool_result["result"].get("artifact") if isinstance(tool_result["result"], dict) else None
+    return {
+        "type": "tool.result",
+        "toolCallId": tool_result["toolCallId"],
+        "toolName": tool_name,
+        "args": tool_args,
+        "argsText": tool_args_text,
+        "result": tool_result["result"],
+        "isError": tool_result["isError"],
+        "artifact": artifact,
+    }
+
+
+def _file_event_from_artifact(artifact: Any) -> dict[str, Any] | None:
+    if not isinstance(artifact, dict) or not artifact.get("dataBase64"):
+        return None
+    return {
+        "type": "file",
+        "filename": artifact.get("filename"),
+        "mimeType": artifact.get("mimeType"),
+        "dataBase64": artifact.get("dataBase64"),
+    }
+
+
+def _tool_message_events(
+    message: ToolMessage,
+    tool_call_map: dict[str, dict[str, Any]],
+    changed_paths: set[str],
+) -> list[dict[str, Any]]:
+    tool_result = parse_tool_result(message)
+    tool_meta = tool_call_map.get(tool_result["toolCallId"], {})
+    tool_name = str(tool_meta.get("toolName") or "tool")
+    tool_args = tool_meta.get("args") if isinstance(tool_meta.get("args"), dict) else {}
+    tool_args_text = str(tool_meta.get("argsText") or "")
+    if tool_name in {"write_file", "edit_file", "delete_file"}:
+        changed_paths.update(_tool_result_candidates(tool_result, tool_args))
+
+    result_event = _tool_result_event(tool_result, tool_name, tool_args, tool_args_text)
+    artifact_event = _file_event_from_artifact(result_event["artifact"])
+    return [result_event] + ([artifact_event] if artifact_event else [])
+
+
+def _usage_event(
+    usage_tokens: tuple[int, int] | None,
+    *,
+    model_id: str | None,
+    model_context_window: int | None,
+) -> dict[str, Any]:
+    prompt_tokens, completion_tokens = usage_tokens or (0, 0)
+    return {
+        "type": "usage",
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "modelId": model_id,
+        "modelContextWindow": model_context_window,
+    }
+
+
+async def _policy_result_event(project_id: str) -> dict[str, Any]:
+    try:
+        checks = await policy_checks.run_project_policy_checks(project_id)
+    except Exception as exc:
+        checks = {
+            "issues": [],
+            "summary": {"total": 0, "bySeverity": {}},
+            "scanError": {"code": "policy_check_failed", "message": str(exc) or "Policy checks failed"},
+        }
+    return {
+        "type": "policy.check.result",
+        "issues": checks.get("issues", []),
+        "summary": checks.get("summary", {"total": 0, "bySeverity": {}}),
+        "scanError": checks.get("scanError"),
+    }
+
+
+async def _emit_policy_events(project_id: str, changed_paths: set[str]) -> AsyncIterator[dict[str, Any]]:
+    if not changed_paths:
+        return
+    sorted_paths = sorted(changed_paths)
+    yield {"type": "policy.check.start", "changedPaths": sorted_paths}
+    result_event = await _policy_result_event(project_id)
+    yield {**result_event, "changedPaths": sorted_paths}
+
+
+def _new_stream_state() -> dict[str, Any]:
+    return {
+        "seen_tool_calls": set(),
+        "tool_call_map": {},
+        "changed_paths": set(),
+        "buffers": {"text": "", "reasoning": ""},
+        "usage_state": {"tokens": None},
+        "interrupted": False,
+    }
+
+
+async def _stream_agent_events(
+    agent: Any,
+    *,
+    messages: list[dict[str, Any]],
+    config: dict[str, Any],
+    request: Request,
+    state: dict[str, Any],
+) -> AsyncIterator[dict[str, Any]]:
+    async for chunk in agent.astream({"messages": messages}, config, stream_mode=["messages", "updates"]):
+        if await request.is_disconnected():
+            state["interrupted"] = True
+            break
+        for message in extract_messages_from_obj(chunk):
+            if isinstance(message, AIMessage):
+                for event in _ai_message_events(message, state["seen_tool_calls"], state["tool_call_map"], state["usage_state"]):
+                    yield event
+                continue
+            if isinstance(message, ToolMessage):
+                for event in _tool_message_events(message, state["tool_call_map"], state["changed_paths"]):
+                    yield event
+                continue
+            for event in extract_text_events(message, state["buffers"]):
+                yield event
+
+
 async def generate_response(payload: ChatRequest, settings: Settings) -> str:
     ensure_settings(settings)
     ensure_payload(payload)
@@ -123,122 +291,22 @@ async def stream_response(
     agent = await get_agent(settings, _project_id(payload))
     messages = _to_langchain_messages(payload)
     config = _make_config(payload)
-    seen_tool_calls: set[str] = set()
-    tool_call_map: dict[str, dict[str, Any]] = {}
-    changed_paths: set[str] = set()
-    buffers = {"text": "", "reasoning": ""}
-    stream_interrupted = False
-    usage_tokens: tuple[int, int] | None = None
+    state = _new_stream_state()
     model_id, model_context_window = _resolve_model_info(settings)
 
-    async for chunk in agent.astream(
-        {"messages": messages},
-        config,
-        stream_mode=["messages", "updates"],
-    ):
-        if await request.is_disconnected():
-            stream_interrupted = True
-            break
+    async for event in _stream_agent_events(agent, messages=messages, config=config, request=request, state=state):
+        yield event
 
-        for message in extract_messages_from_obj(chunk):
-            if isinstance(message, AIMessage):
-                extracted_usage = extract_usage_from_message(message)
-                if extracted_usage is not None:
-                    usage_tokens = extracted_usage
-
-                for tool_call in normalize_tool_calls(message):
-                    tool_call_id = tool_call["toolCallId"]
-                    if tool_call_id in seen_tool_calls:
-                        continue
-                    seen_tool_calls.add(tool_call_id)
-                    tool_call_map[tool_call_id] = tool_call
-                    yield {
-                        "type": "tool.start",
-                        "toolCallId": tool_call_id,
-                        "toolName": tool_call["toolName"],
-                        "args": tool_call["args"],
-                        "argsText": tool_call["argsText"],
-                    }
-            if isinstance(message, ToolMessage):
-                tool_result = parse_tool_result(message)
-                tool_meta = tool_call_map.get(tool_result["toolCallId"], {})
-                tool_name = str(tool_meta.get("toolName") or "tool")
-                tool_args = tool_meta.get("args") or {}
-                tool_args_text = tool_meta.get("argsText") or ""
-                artifact = None
-                if isinstance(tool_result["result"], dict):
-                    artifact = tool_result["result"].get("artifact")
-                if tool_name in {"write_file", "edit_file", "delete_file"}:
-                    candidates: list[str] = []
-                    if isinstance(tool_result["result"], dict):
-                        result_path = tool_result["result"].get("path")
-                        if isinstance(result_path, str) and result_path:
-                            candidates.append(result_path)
-                    if isinstance(tool_args, dict):
-                        arg_path = tool_args.get("path")
-                        if isinstance(arg_path, str) and arg_path:
-                            candidates.append(arg_path)
-                    for candidate in candidates:
-                        changed_paths.add(candidate)
-                yield {
-                    "type": "tool.result",
-                    "toolCallId": tool_result["toolCallId"],
-                    "toolName": tool_name,
-                    "args": tool_args,
-                    "argsText": tool_args_text,
-                    "result": tool_result["result"],
-                    "isError": tool_result["isError"],
-                    "artifact": artifact,
-                }
-                if isinstance(artifact, dict) and artifact.get("dataBase64"):
-                    yield {
-                        "type": "file",
-                        "filename": artifact.get("filename"),
-                        "mimeType": artifact.get("mimeType"),
-                        "dataBase64": artifact.get("dataBase64"),
-                    }
-                continue
-
-            for event in extract_text_events(message, buffers):
-                yield event
-
-    if stream_interrupted or await request.is_disconnected():
+    if state["interrupted"] or await request.is_disconnected():
         return
 
-    if changed_paths:
-        sorted_paths = sorted(changed_paths)
-        yield {
-            "type": "policy.check.start",
-            "changedPaths": sorted_paths,
-        }
-
-        try:
-            checks = await policy_checks.run_project_policy_checks(_project_id(payload))
-        except Exception as exc:
-            checks = {
-                "issues": [],
-                "summary": {"total": 0, "bySeverity": {}},
-                "scanError": {"code": "policy_check_failed", "message": str(exc) or "Policy checks failed"},
-            }
-        yield {
-            "type": "policy.check.result",
-            "issues": checks.get("issues", []),
-            "summary": checks.get("summary", {"total": 0, "bySeverity": {}}),
-            "scanError": checks.get("scanError"),
-            "changedPaths": sorted_paths,
-        }
+    async for event in _emit_policy_events(_project_id(payload), state["changed_paths"]):
+        yield event
 
     if await request.is_disconnected():
         return
 
-    prompt_tokens, completion_tokens = usage_tokens or (0, 0)
-    yield {
-        "type": "usage",
-        "promptTokens": prompt_tokens,
-        "completionTokens": completion_tokens,
-        "modelId": model_id,
-        "modelContextWindow": model_context_window,
-    }
+    yield _usage_event(state["usage_state"]["tokens"], model_id=model_id, model_context_window=model_context_window)
 
 
 async def stream_basic_response(

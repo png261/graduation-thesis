@@ -1,191 +1,341 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 
 import {
   applyOpenTofuDeployStream,
   getOpenTofuStatus,
   planOpenTofuDeployStream,
+  type OpenTofuStatus,
 } from "../../../api/projects/index";
 import { readSseJson } from "../../../lib/sse";
 import type { WorkflowProblem, WorkflowProblemMode } from "../types";
 
-export function useWorkflowRunner({
-  projectId,
-  authenticated,
-  pushLog,
-}: {
-  projectId: string;
-  authenticated: boolean;
-  pushLog: (message: string) => void;
-}) {
-  const [workflowBusy, setWorkflowBusy] = useState<"plan" | "apply" | null>(null);
-  const [workflowError, setWorkflowError] = useState("");
-  const [workflowTab, setWorkflowTab] = useState<"logs" | "problems">("logs");
-  const [workflowProblems, setWorkflowProblems] = useState<WorkflowProblem[]>([]);
+type WorkflowMode = "plan" | "apply";
+type WorkflowTab = "logs" | "problems";
+type SseEvent = Record<string, unknown>;
 
-  const appendProblems = useCallback(
-    (
-      problems: Array<Omit<WorkflowProblem, "id" | "at">>,
-      options?: { switchToProblems?: boolean },
-    ) => {
-      if (problems.length === 0) return;
-      const stamp = new Date().toLocaleTimeString([], { hour12: false });
-      setWorkflowProblems((prev) => [
-        ...problems.map((problem, idx) => ({
-          ...problem,
-          id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
-          at: stamp,
-        })),
-        ...prev,
-      ].slice(0, 120));
-      if (options?.switchToProblems ?? true) {
-        setWorkflowTab("problems");
-      }
-    },
-    [],
-  );
+function createProblemId(index: number) {
+  return `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
-  const pushProblem = useCallback(
-    (
-      mode: WorkflowProblemMode,
-      message: string,
-      options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">,
-    ) => {
-      appendProblems(
-        [
-          {
-            mode,
-            message,
-            module: options?.module,
-            stage: options?.stage,
-            severity: options?.severity,
-            path: options?.path,
-            line: options?.line,
-            ruleId: options?.ruleId,
-            source: options?.source,
-          },
-        ],
-        { switchToProblems: true },
-      );
-    },
-    [appendProblems],
-  );
+function appendProblemRecords(
+  previous: WorkflowProblem[],
+  problems: Array<Omit<WorkflowProblem, "id" | "at">>,
+  stamp: string,
+) {
+  const next = problems.map((problem, index) => ({ ...problem, id: createProblemId(index), at: stamp }));
+  return [...next, ...previous].slice(0, 120);
+}
 
-  const resetWorkflow = useCallback(() => {
+function useAppendProblems(
+  setWorkflowProblems: Dispatch<SetStateAction<WorkflowProblem[]>>,
+  setWorkflowTab: Dispatch<SetStateAction<WorkflowTab>>,
+) {
+  return useCallback((problems: Array<Omit<WorkflowProblem, "id" | "at">>, options?: { switchToProblems?: boolean }) => {
+    if (problems.length < 1) return;
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    setWorkflowProblems((previous) => appendProblemRecords(previous, problems, stamp));
+    if (options?.switchToProblems ?? true) setWorkflowTab("problems");
+  }, [setWorkflowProblems, setWorkflowTab]);
+}
+
+function usePushProblem(
+  appendProblems: (problems: Array<Omit<WorkflowProblem, "id" | "at">>, options?: { switchToProblems?: boolean }) => void,
+) {
+  return useCallback((mode: WorkflowProblemMode, message: string, options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">) => {
+    appendProblems([{ mode, message, module: options?.module, stage: options?.stage, severity: options?.severity, path: options?.path, line: options?.line, ruleId: options?.ruleId, source: options?.source }], { switchToProblems: true });
+  }, [appendProblems]);
+}
+
+function useResetWorkflow(
+  setWorkflowBusy: Dispatch<SetStateAction<WorkflowMode | null>>,
+  setWorkflowError: Dispatch<SetStateAction<string>>,
+  setWorkflowTab: Dispatch<SetStateAction<WorkflowTab>>,
+  setWorkflowProblems: Dispatch<SetStateAction<WorkflowProblem[]>>,
+) {
+  return useCallback(() => {
     setWorkflowBusy(null);
     setWorkflowError("");
     setWorkflowTab("logs");
     setWorkflowProblems([]);
-  }, []);
+  }, [setWorkflowBusy, setWorkflowError, setWorkflowProblems, setWorkflowTab]);
+}
 
-  const handleRunWorkflow = useCallback(
-    async (mode: "plan" | "apply") => {
-      if (workflowBusy) return;
-      if (!authenticated) {
-        const message = "Login required to run OpenTofu workflows.";
-        setWorkflowError(message);
-        pushLog(`Error: ${message}`);
-        pushProblem(mode, message);
-        return;
-      }
+function getActionLabel(mode: WorkflowMode) {
+  return mode === "apply" ? "apply" : "plan";
+}
 
-      const actionLabel = mode === "apply" ? "apply" : "plan";
-      setWorkflowBusy(mode);
-      setWorkflowError("");
-      setWorkflowTab("logs");
-      setWorkflowProblems([]);
-      pushLog(`Starting workflow: ${actionLabel}`);
+function getMissingCredentialMessage(status: OpenTofuStatus) {
+  if (!status.missing_credentials || status.missing_credentials.length < 1) {
+    return "Missing required cloud credentials.";
+  }
+  return `Missing credentials: ${status.missing_credentials.join(", ")}`;
+}
 
-      try {
-        const status = await getOpenTofuStatus(projectId);
-        if (!status.opentofu_available) {
-          throw new Error("OpenTofu workflow is unavailable. Configure runners first.");
-        }
-        if (mode === "apply" && !status.credential_ready) {
-          const missing =
-            status.missing_credentials && status.missing_credentials.length > 0
-              ? `Missing credentials: ${status.missing_credentials.join(", ")}`
-              : "Missing required cloud credentials.";
-          throw new Error(missing);
-        }
+function ensureWorkflowReady(status: OpenTofuStatus, mode: WorkflowMode) {
+  if (!status.opentofu_available) throw new Error("OpenTofu workflow is unavailable. Configure runners first.");
+  if (mode === "apply" && !status.credential_ready) throw new Error(getMissingCredentialMessage(status));
+  if (!status.modules || status.modules.length < 1) throw new Error("No OpenTofu modules found for this project.");
+  return status.modules;
+}
 
-        const selectedModules = status.modules ?? [];
-        if (selectedModules.length === 0) {
-          throw new Error("No OpenTofu modules found for this project.");
-        }
+async function getSelectedModules(projectId: string, mode: WorkflowMode) {
+  const status = await getOpenTofuStatus(projectId);
+  return ensureWorkflowReady(status, mode);
+}
 
-        const response =
-          mode === "apply"
-            ? await applyOpenTofuDeployStream(projectId, selectedModules, "")
-            : await planOpenTofuDeployStream(projectId, selectedModules, "");
+async function requestWorkflowStream(projectId: string, mode: WorkflowMode, selectedModules: string[]) {
+  if (mode === "apply") return applyOpenTofuDeployStream(projectId, selectedModules, "");
+  return planOpenTofuDeployStream(projectId, selectedModules, "");
+}
 
-        if (!response.ok || !response.body) {
-          throw new Error(`${mode === "apply" ? "Apply" : "Plan"} request failed (${response.status})`);
-        }
+function ensureStreamResponse(response: Response, mode: WorkflowMode) {
+  if (response.ok && response.body) return;
+  const label = mode === "apply" ? "Apply" : "Plan";
+  throw new Error(`${label} request failed (${response.status})`);
+}
 
-        for await (const event of readSseJson(response)) {
-          const type = String(event?.type ?? "");
-          if (type === "deploy.start" || type === "plan.start") {
-            const prefix = type === "plan.start" ? "Starting plan" : "Starting deploy";
-            pushLog(`${prefix}: ${(event.modules ?? []).join(", ")}`);
-            continue;
-          }
-          if (type === "module.start") {
-            pushLog(`==> Module: ${String(event.module ?? "")}`);
-            continue;
-          }
-          if (type === "log") {
-            pushLog(String(event.line ?? ""));
-            continue;
-          }
-          if (type === "module.done") {
-            const moduleName = String(event.module ?? "");
-            const statusText = String(event.status ?? "");
-            const stage = typeof event.stage === "string" ? event.stage : undefined;
-            pushLog(`Module ${moduleName}: ${statusText}`);
-            if (statusText === "failed") {
-              const reason =
-                (typeof event.reason === "string" && event.reason) ||
-                (typeof event.message === "string" && event.message) ||
-                (stage ? `stage ${stage}` : "unknown reason");
-              const problemMessage = `Module ${moduleName} failed: ${reason}`;
-              setWorkflowError(problemMessage);
-              pushProblem(mode, problemMessage, { module: moduleName, stage });
-            }
-            continue;
-          }
-          if (type === "error") {
-            const message = String(event.message ?? "Workflow failed");
-            setWorkflowError(message);
-            pushLog(`Error: ${message}`);
-            pushProblem(mode, message, {
-              module: typeof event.module === "string" ? event.module : undefined,
-              stage: typeof event.stage === "string" ? event.stage : undefined,
-            });
-            continue;
-          }
-          if (type === "deploy.done" || type === "plan.done") {
-            const ok = event.status === "ok";
-            pushLog(ok ? `Workflow ${actionLabel} completed` : `Workflow ${actionLabel} failed`);
-            if (!ok) {
-              const message = `Workflow ${actionLabel} failed`;
-              setWorkflowError(message);
-              pushProblem(mode, message);
-            }
-          }
-        }
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : `Failed to run ${actionLabel}`;
-        setWorkflowError(message);
-        pushLog(`Error: ${message}`);
-        pushProblem(mode, message);
-      } finally {
-        setWorkflowBusy(null);
-      }
-    },
-    [projectId, authenticated, pushLog, pushProblem, workflowBusy],
-  );
+function toEvent(value: unknown): SseEvent {
+  return typeof value === "object" && value !== null ? (value as SseEvent) : {};
+}
 
+function asString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => String(entry));
+}
+
+function resolveModuleFailureReason(event: SseEvent, stage: string | undefined) {
+  const reason = asString(event.reason);
+  if (reason) return reason;
+  const message = asString(event.message);
+  if (message) return message;
+  return stage ? `stage ${stage}` : "unknown reason";
+}
+
+function handleWorkflowStartEvent(event: SseEvent, pushLog: (message: string) => void) {
+  const type = asString(event.type);
+  const prefix = type === "plan.start" ? "Starting plan" : "Starting deploy";
+  pushLog(`${prefix}: ${asStringArray(event.modules).join(", ")}`);
+}
+
+function handleModuleDoneEvent(args: {
+  event: SseEvent;
+  mode: WorkflowMode;
+  pushLog: (message: string) => void;
+  pushProblem: (mode: WorkflowProblemMode, message: string, options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">) => void;
+  setWorkflowError: (value: string) => void;
+}) {
+  const moduleName = asString(args.event.module);
+  const statusText = asString(args.event.status);
+  const stage = asString(args.event.stage) || undefined;
+  args.pushLog(`Module ${moduleName}: ${statusText}`);
+  if (statusText !== "failed") return;
+  const reason = resolveModuleFailureReason(args.event, stage);
+  const message = `Module ${moduleName} failed: ${reason}`;
+  args.setWorkflowError(message);
+  args.pushProblem(args.mode, message, { module: moduleName, stage });
+}
+
+function handleWorkflowErrorEvent(args: {
+  event: SseEvent;
+  mode: WorkflowMode;
+  pushLog: (message: string) => void;
+  pushProblem: (mode: WorkflowProblemMode, message: string, options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">) => void;
+  setWorkflowError: (value: string) => void;
+}) {
+  const message = asString(args.event.message, "Workflow failed");
+  args.setWorkflowError(message);
+  args.pushLog(`Error: ${message}`);
+  args.pushProblem(args.mode, message, {
+    module: asString(args.event.module) || undefined,
+    stage: asString(args.event.stage) || undefined,
+  });
+}
+
+function handleWorkflowDoneEvent(args: {
+  event: SseEvent;
+  mode: WorkflowMode;
+  actionLabel: string;
+  pushLog: (message: string) => void;
+  pushProblem: (mode: WorkflowProblemMode, message: string) => void;
+  setWorkflowError: (value: string) => void;
+}) {
+  const ok = args.event.status === "ok";
+  args.pushLog(ok ? `Workflow ${args.actionLabel} completed` : `Workflow ${args.actionLabel} failed`);
+  if (ok) return;
+  const message = `Workflow ${args.actionLabel} failed`;
+  args.setWorkflowError(message);
+  args.pushProblem(args.mode, message);
+}
+
+function handleWorkflowEvent(args: {
+  rawEvent: unknown;
+  mode: WorkflowMode;
+  actionLabel: string;
+  pushLog: (message: string) => void;
+  pushProblem: (mode: WorkflowProblemMode, message: string, options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">) => void;
+  setWorkflowError: (value: string) => void;
+}) {
+  const event = toEvent(args.rawEvent);
+  const type = asString(event.type);
+  if (type === "deploy.start" || type === "plan.start") return handleWorkflowStartEvent(event, args.pushLog);
+  if (type === "module.start") return args.pushLog(`==> Module: ${asString(event.module)}`);
+  if (type === "log") return args.pushLog(asString(event.line));
+  if (type === "module.done") return handleModuleDoneEvent({ event, mode: args.mode, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
+  if (type === "error") return handleWorkflowErrorEvent({ event, mode: args.mode, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
+  if (type === "deploy.done" || type === "plan.done") {
+    handleWorkflowDoneEvent({ event, mode: args.mode, actionLabel: args.actionLabel, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
+  }
+}
+
+function startWorkflowRun(
+  mode: WorkflowMode,
+  actionLabel: string,
+  setWorkflowBusy: (value: WorkflowMode | null) => void,
+  setWorkflowError: (value: string) => void,
+  setWorkflowTab: (value: WorkflowTab) => void,
+  setWorkflowProblems: (value: WorkflowProblem[]) => void,
+  pushLog: (message: string) => void,
+) {
+  setWorkflowBusy(mode);
+  setWorkflowError("");
+  setWorkflowTab("logs");
+  setWorkflowProblems([]);
+  pushLog(`Starting workflow: ${actionLabel}`);
+}
+
+function handleWorkflowFailure(
+  error: unknown,
+  actionLabel: string,
+  mode: WorkflowMode,
+  setWorkflowError: (value: string) => void,
+  pushLog: (message: string) => void,
+  pushProblem: (mode: WorkflowProblemMode, message: string) => void,
+) {
+  const message = error instanceof Error ? error.message : `Failed to run ${actionLabel}`;
+  setWorkflowError(message);
+  pushLog(`Error: ${message}`);
+  pushProblem(mode, message);
+}
+
+function handleAuthRequiredRun(
+  mode: WorkflowMode,
+  setWorkflowError: (value: string) => void,
+  pushLog: (message: string) => void,
+  pushProblem: PushProblemFn,
+) {
+  const message = "Login required to run OpenTofu workflows.";
+  setWorkflowError(message);
+  pushLog(`Error: ${message}`);
+  pushProblem(mode, message);
+}
+
+type UseWorkflowRunnerArgs = {
+  projectId: string;
+  authenticated: boolean;
+  pushLog: (message: string) => void;
+};
+
+type PushProblemFn = (
+  mode: WorkflowProblemMode,
+  message: string,
+  options?: Omit<WorkflowProblem, "id" | "at" | "mode" | "message">,
+) => void;
+
+async function runWorkflowStream(args: {
+  projectId: string;
+  mode: WorkflowMode;
+  actionLabel: string;
+  pushLog: (message: string) => void;
+  pushProblem: PushProblemFn;
+  setWorkflowError: (value: string) => void;
+}) {
+  const selectedModules = await getSelectedModules(args.projectId, args.mode);
+  const response = await requestWorkflowStream(args.projectId, args.mode, selectedModules);
+  ensureStreamResponse(response, args.mode);
+  for await (const rawEvent of readSseJson(response)) {
+    handleWorkflowEvent({
+      rawEvent,
+      mode: args.mode,
+      actionLabel: args.actionLabel,
+      pushLog: args.pushLog,
+      pushProblem: args.pushProblem,
+      setWorkflowError: args.setWorkflowError,
+    });
+  }
+}
+
+function useRunWorkflow(args: {
+  projectId: string;
+  authenticated: boolean;
+  workflowBusy: WorkflowMode | null;
+  pushLog: (message: string) => void;
+  pushProblem: PushProblemFn;
+  setWorkflowBusy: (value: WorkflowMode | null) => void;
+  setWorkflowError: (value: string) => void;
+  setWorkflowTab: (value: WorkflowTab) => void;
+  setWorkflowProblems: (value: WorkflowProblem[]) => void;
+}) {
+  return useCallback(async (mode: WorkflowMode) => {
+    if (args.workflowBusy) return;
+    if (!args.authenticated) return handleAuthRequiredRun(mode, args.setWorkflowError, args.pushLog, args.pushProblem);
+    const actionLabel = getActionLabel(mode);
+    startWorkflowRun(mode, actionLabel, args.setWorkflowBusy, args.setWorkflowError, args.setWorkflowTab, args.setWorkflowProblems, args.pushLog);
+    try {
+      await runWorkflowStream({ projectId: args.projectId, mode, actionLabel, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
+    } catch (error: unknown) {
+      handleWorkflowFailure(error, actionLabel, mode, args.setWorkflowError, args.pushLog, args.pushProblem);
+    } finally {
+      args.setWorkflowBusy(null);
+    }
+  }, [args]);
+}
+
+function buildWorkflowRunnerResult(params: {
+  workflowBusy: WorkflowMode | null;
+  workflowError: string;
+  workflowTab: WorkflowTab;
+  setWorkflowTab: Dispatch<SetStateAction<WorkflowTab>>;
+  workflowProblems: WorkflowProblem[];
+  handleRunWorkflow: (mode: WorkflowMode) => Promise<void>;
+  appendProblems: (problems: Array<Omit<WorkflowProblem, "id" | "at">>, options?: { switchToProblems?: boolean }) => void;
+  resetWorkflow: () => void;
+}) {
   return {
+    workflowBusy: params.workflowBusy,
+    workflowError: params.workflowError,
+    workflowTab: params.workflowTab,
+    setWorkflowTab: params.setWorkflowTab,
+    workflowProblems: params.workflowProblems,
+    handleRunWorkflow: params.handleRunWorkflow,
+    appendProblems: params.appendProblems,
+    resetWorkflow: params.resetWorkflow,
+  };
+}
+
+export function useWorkflowRunner({ projectId, authenticated, pushLog }: UseWorkflowRunnerArgs) {
+  const [workflowBusy, setWorkflowBusy] = useState<WorkflowMode | null>(null);
+  const [workflowError, setWorkflowError] = useState("");
+  const [workflowTab, setWorkflowTab] = useState<WorkflowTab>("logs");
+  const [workflowProblems, setWorkflowProblems] = useState<WorkflowProblem[]>([]);
+  const appendProblems = useAppendProblems(setWorkflowProblems, setWorkflowTab);
+  const pushProblem = usePushProblem(appendProblems);
+  const resetWorkflow = useResetWorkflow(setWorkflowBusy, setWorkflowError, setWorkflowTab, setWorkflowProblems);
+  const handleRunWorkflow = useRunWorkflow({
+    projectId,
+    authenticated,
+    workflowBusy,
+    pushLog,
+    pushProblem,
+    setWorkflowBusy,
+    setWorkflowError,
+    setWorkflowTab,
+    setWorkflowProblems,
+  });
+  return buildWorkflowRunnerResult({
     workflowBusy,
     workflowError,
     workflowTab,
@@ -194,5 +344,5 @@ export function useWorkflowRunner({
     handleRunWorkflow,
     appendProblems,
     resetWorkflow,
-  };
+  });
 }

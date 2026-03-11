@@ -71,52 +71,61 @@ def extract_text_events(message: BaseMessage, buffer: dict[str, str]) -> list[di
     return events
 
 
+def _tool_call_from_dict(call: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    tool_call_id = call.get("id") or call.get("tool_call_id")
+    name = call.get("name")
+    args = call.get("args")
+    args_text = call.get("args_text")
+    function = call.get("function")
+    if isinstance(function, dict):
+        name = name or function.get("name")
+        args_text = args_text or function.get("arguments")
+    return tool_call_id, name, args, args_text
+
+
+def _tool_call_from_obj(call: Any) -> tuple[Any, Any, Any, Any]:
+    return (
+        getattr(call, "id", None) or getattr(call, "tool_call_id", None),
+        getattr(call, "name", None) or getattr(call, "tool_name", None),
+        getattr(call, "args", None),
+        getattr(call, "args_text", None),
+    )
+
+
+def _normalize_tool_args(args: Any, args_text: Any) -> tuple[Any, str]:
+    if args is None and isinstance(args_text, str):
+        try:
+            args = json.loads(args_text)
+        except json.JSONDecodeError:
+            args = {"raw": args_text}
+    if args_text is None:
+        try:
+            args_text = json.dumps(args or {}, ensure_ascii=False)
+        except TypeError:
+            args_text = str(args)
+    return args or {}, str(args_text or "")
+
+
+def _normalize_single_tool_call(call: Any, index: int) -> dict[str, Any]:
+    tool_call_id, name, args, args_text = (
+        _tool_call_from_dict(call) if isinstance(call, dict) else _tool_call_from_obj(call)
+    )
+    parsed_args, parsed_text = _normalize_tool_args(args, args_text)
+    return {
+        "toolCallId": tool_call_id or f"tool-{index}",
+        "toolName": name or "tool",
+        "args": parsed_args,
+        "argsText": parsed_text,
+    }
+
+
 def normalize_tool_calls(message: BaseMessage) -> list[dict[str, Any]]:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls is None:
         tool_calls = getattr(message, "additional_kwargs", {}).get("tool_calls")
     if not tool_calls:
         return []
-
-    normalized: list[dict[str, Any]] = []
-    for call in tool_calls:
-        if isinstance(call, dict):
-            tool_call_id = call.get("id") or call.get("tool_call_id")
-            name = call.get("name")
-            args = call.get("args")
-            args_text = call.get("args_text")
-
-            function = call.get("function")
-            if isinstance(function, dict):
-                name = name or function.get("name")
-                args_text = args_text or function.get("arguments")
-        else:
-            tool_call_id = getattr(call, "id", None) or getattr(call, "tool_call_id", None)
-            name = getattr(call, "name", None) or getattr(call, "tool_name", None)
-            args = getattr(call, "args", None)
-            args_text = getattr(call, "args_text", None)
-
-        if args is None and isinstance(args_text, str):
-            try:
-                args = json.loads(args_text)
-            except json.JSONDecodeError:
-                args = {"raw": args_text}
-
-        if args_text is None:
-            try:
-                args_text = json.dumps(args or {}, ensure_ascii=False)
-            except TypeError:
-                args_text = str(args)
-
-        normalized.append(
-            {
-                "toolCallId": tool_call_id or f"tool-{len(normalized)}",
-                "toolName": name or "tool",
-                "args": args or {},
-                "argsText": args_text or "",
-            }
-        )
-    return normalized
+    return [_normalize_single_tool_call(call, idx) for idx, call in enumerate(tool_calls)]
 
 
 def parse_tool_result(message: ToolMessage) -> dict[str, Any]:

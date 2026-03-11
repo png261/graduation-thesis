@@ -7,40 +7,46 @@ import httpx
 from .auth_common import GITHUB_API_URL, GitHubAuthError
 
 
+def _detail_from_item(item: dict[str, Any]) -> str | None:
+    item_msg = str(item.get("message", "")).strip()
+    if item_msg:
+        return item_msg
+    parts = [str(item.get(key, "")).strip() for key in ("resource", "field", "code")]
+    values = [part for part in parts if part]
+    return "/".join(values) if values else None
+
+
+def _error_details(errors: Any) -> list[str]:
+    if isinstance(errors, str) and errors.strip():
+        return [errors.strip()]
+    if not isinstance(errors, list):
+        return []
+    details: list[str] = []
+    for item in errors:
+        if isinstance(item, str):
+            details.append(item)
+            continue
+        if isinstance(item, dict):
+            detail = _detail_from_item(item)
+            if detail:
+                details.append(detail)
+    return details
+
+
+def _append_docs(message: str, payload: dict[str, Any]) -> str:
+    doc = str(payload.get("documentation_url", "")).strip()
+    return f"{message} ({doc})" if doc else message
+
+
 def _format_github_error(payload: Any) -> str:
     if not isinstance(payload, dict):
         return str(payload)
 
     message = str(payload.get("message", "")).strip() or "GitHub API error"
-    errors = payload.get("errors")
-    details: list[str] = []
-    if isinstance(errors, list):
-        for item in errors:
-            if isinstance(item, str):
-                details.append(item)
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_msg = str(item.get("message", "")).strip()
-            if item_msg:
-                details.append(item_msg)
-                continue
-            resource = str(item.get("resource", "")).strip()
-            field = str(item.get("field", "")).strip()
-            code = str(item.get("code", "")).strip()
-            parts = [part for part in (resource, field, code) if part]
-            if parts:
-                details.append("/".join(parts))
-    elif isinstance(errors, str) and errors.strip():
-        details.append(errors.strip())
-
+    details = _error_details(payload.get("errors"))
     if details:
         message = f"{message}: {'; '.join(details)}"
-
-    doc = str(payload.get("documentation_url", "")).strip()
-    if doc:
-        message = f"{message} ({doc})"
-    return message
+    return _append_docs(message, payload)
 
 
 async def _github_get(access_token: str, path: str, params: dict[str, Any] | None = None) -> Any:
@@ -59,6 +65,33 @@ async def _github_get(access_token: str, path: str, params: dict[str, Any] | Non
             msg = (response.text or "").strip() or f"GitHub API request failed ({response.status_code})"
         raise GitHubAuthError(msg)
     return response.json()
+
+
+def _github_headers(access_token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {access_token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+async def _github_post(access_token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=25) as client:
+        response = await client.post(
+            f"{GITHUB_API_URL}{path}",
+            json=payload,
+            headers=_github_headers(access_token),
+        )
+    if response.status_code >= 400:
+        try:
+            message = _format_github_error(response.json())
+        except Exception:
+            message = (response.text or "").strip() or f"GitHub API request failed ({response.status_code})"
+        raise GitHubAuthError(message)
+    data = response.json()
+    if not isinstance(data, dict):
+        raise GitHubAuthError("Invalid GitHub response")
+    return data
 
 
 async def github_get_user(access_token: str) -> dict[str, Any]:
@@ -110,28 +143,11 @@ async def github_create_pull_request(
     head: str,
     base: str,
 ) -> dict[str, Any]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {access_token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
     payload = {"title": title, "body": body, "head": head, "base": base}
-    async with httpx.AsyncClient(timeout=25) as client:
-        response = await client.post(
-            f"{GITHUB_API_URL}/repos/{repo_full_name}/pulls",
-            json=payload,
-            headers=headers,
-        )
-    if response.status_code >= 400:
-        try:
-            msg = _format_github_error(response.json())
-        except Exception:
-            msg = (response.text or "").strip() or f"Create pull request failed ({response.status_code})"
-        raise GitHubAuthError(f"Create pull request failed: {msg}")
-    data = response.json()
-    if not isinstance(data, dict):
-        raise GitHubAuthError("Invalid PR response")
-    return data
+    try:
+        return await _github_post(access_token, f"/repos/{repo_full_name}/pulls", payload)
+    except GitHubAuthError as exc:
+        raise GitHubAuthError(f"Create pull request failed: {exc}") from exc
 
 
 async def github_create_repo(
@@ -145,31 +161,13 @@ async def github_create_repo(
     if not repo_name:
         raise GitHubAuthError("Repository name is required")
 
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {access_token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
     payload = {
         "name": repo_name,
         "description": (description or "").strip(),
         "private": bool(private),
         "auto_init": False,
     }
-    async with httpx.AsyncClient(timeout=25) as client:
-        response = await client.post(
-            f"{GITHUB_API_URL}/user/repos",
-            json=payload,
-            headers=headers,
-        )
-    if response.status_code >= 400:
-        try:
-            msg = _format_github_error(response.json())
-        except Exception:
-            msg = (response.text or "").strip() or f"Create repository failed ({response.status_code})"
-        raise GitHubAuthError(f"Create repository failed: {msg}")
-
-    data = response.json()
-    if not isinstance(data, dict):
-        raise GitHubAuthError("Invalid repository response")
-    return data
+    try:
+        return await _github_post(access_token, "/user/repos", payload)
+    except GitHubAuthError as exc:
+        raise GitHubAuthError(f"Create repository failed: {exc}") from exc

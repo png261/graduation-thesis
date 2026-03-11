@@ -183,12 +183,7 @@ export interface ProjectGitHubStatus {
   repo_full_name: string | null;
   base_branch: string | null;
   working_branch: string | null;
-  github_account_id: string | null;
   connected_at: string | null;
-  session_authenticated: boolean;
-  session_login: string | null;
-  connected_account_login: string | null;
-  session_account_matches: boolean;
 }
 
 export interface PullRequestResult {

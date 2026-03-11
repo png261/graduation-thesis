@@ -1,7 +1,6 @@
-"""Shared auth dependencies for app-session based access control."""
+"""Shared auth dependencies backed by Clerk Bearer token verification."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import AsyncGenerator
 
 from fastapi import Depends, Request
@@ -9,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
-from app.models import Project, User, UserSession
-from app.routers.http_errors import error_detail, raise_http_error
-from app.services.auth import service as auth_service
+from app.core.config import get_settings
+from app.models import Project, User
+from app.routers.http_errors import raise_http_error
+import app.services.clerk as clerk_service
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -19,43 +19,47 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_app_session_id(request: Request) -> str | None:
-    return request.cookies.get(auth_service.APP_SESSION_COOKIE)
-
-
-@dataclass(slots=True)
-class CurrentSessionContext:
-    session_id: str | None
-    session: UserSession | None
-    user: User | None
-
-
-async def get_current_session_context(
-    session_id: str | None = Depends(get_app_session_id),
-) -> CurrentSessionContext:
-    if not session_id:
-        return CurrentSessionContext(session_id=None, session=None, user=None)
-
+async def _ensure_user_exists(clerk_user_id: str) -> User:
     async with db.get_session() as session:
-        user_session, user = await auth_service.get_valid_user_session(
-            session,
-            session_id=session_id,
+        user = await session.get(User, clerk_user_id)
+        if user is not None:
+            return user
+
+        fallback_email = f"clerk-{clerk_user_id}@users.local"
+        user = User(
+            id=clerk_user_id,
+            email=fallback_email,
+            name=f"user-{clerk_user_id[:8]}",
+            avatar_url=None,
         )
-    return CurrentSessionContext(session_id=session_id, session=user_session, user=user)
+        session.add(user)
+        await session.flush()
+        return user
 
 
-async def get_current_user_optional(
-    ctx: CurrentSessionContext = Depends(get_current_session_context),
-) -> User | None:
-    return ctx.user
+async def get_current_user_optional(request: Request) -> User | None:
+    settings = get_settings()
+    try:
+        session = clerk_service.authenticate_bearer(
+            settings=settings,
+            headers=request.headers,
+        )
+    except clerk_service.ClerkError as exc:
+        raise_http_error(500, code="auth_config_error", message=str(exc))
+    except Exception:
+        return None
+
+    if session is None:
+        return None
+    return await _ensure_user_exists(session.user_id)
 
 
 async def require_current_user(
-    ctx: CurrentSessionContext = Depends(get_current_session_context),
+    user: User | None = Depends(get_current_user_optional),
 ) -> User:
-    if ctx.user is None:
+    if user is None:
         raise_http_error(401, code="login_required", message="Login required")
-    return ctx.user
+    return user
 
 
 async def get_owned_project_or_404(

@@ -29,7 +29,6 @@ Skip the task file only for single-sentence answers or trivial lookups.
 - `opentofu_preview_deploy` — propose which OpenTofu modules to deploy (with rationale)
 - `opentofu_apply_deploy` — apply selected modules. This requires two-step confirmation:
   first call with `confirm=false`, then ask user and call again with `confirm=true`.
-- `github_create_pull_request` — create a GitHub pull request from local workspace changes
 - File tools (provided by the backend): `write_file`, `edit_file`, `read_file`,
   `ls`, `glob`, `grep` — read, write, and manage files inside the project workspace
 

@@ -1,5 +1,12 @@
 export const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+type TokenGetter = () => Promise<string | null> | string | null;
+let authTokenGetter: TokenGetter | null = null;
+
+export function setAuthTokenGetter(getter: TokenGetter | null): void {
+  authTokenGetter = getter;
+}
+
 async function parseErrorResponse(res: Response): Promise<string> {
   let data: unknown = null;
   try {
@@ -33,5 +40,12 @@ export async function apiJson<T>(res: Response): Promise<T> {
 }
 
 export async function apiRequest(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${API_URL}${path}`, init);
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has("Authorization") && authTokenGetter) {
+    const token = await authTokenGetter();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+  }
+  return fetch(`${API_URL}${path}`, { ...init, headers });
 }

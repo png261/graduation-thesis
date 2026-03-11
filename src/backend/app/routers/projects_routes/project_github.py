@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.routers import github_dependencies as github_deps
 from app.services.agent import invalidate_agent
 from app.services.github import auth as github_auth
@@ -25,6 +24,25 @@ class GitHubPullRequestBody(BaseModel):
     base_branch: str | None = None
 
 
+def _connect_response(payload: dict, login: str) -> dict:
+    return {
+        "ok": True,
+        **payload,
+        "session_authenticated": True,
+        "session_login": login,
+        "connected_account_login": login,
+        "session_account_matches": True,
+    }
+
+
+def _raise_route_auth_error(exc: github_auth.GitHubAuthError, *, code: str) -> None:
+    raise github_deps.to_github_auth_http_exception(
+        exc,
+        status_code=400,
+        code=code,
+    )
+
+
 @router.get("/{project_id}/github")
 async def project_github_status(
     context: github_deps.ProjectGitHubStatusContext = Depends(
@@ -34,16 +52,10 @@ async def project_github_status(
     payload = github_projects.connection_payload(context.project)
     payload.update(
         {
-            "session_authenticated": context.session_account is not None,
-            "session_login": context.session_account.login if context.session_account else None,
-            "connected_account_login": (
-                context.connected_account.login if context.connected_account else None
-            ),
-            "session_account_matches": bool(
-                context.session_account
-                and context.project.github_account_id
-                and context.session_account.id == context.project.github_account_id
-            ),
+            "session_authenticated": context.github_auth is not None,
+            "session_login": context.github_auth.login if context.github_auth else None,
+            "connected_account_login": context.github_auth.login if context.github_auth else None,
+            "session_account_matches": bool(context.github_auth and payload.get("connected")),
         }
     )
     return payload
@@ -58,34 +70,21 @@ async def connect_project_github(
         github_deps.require_project_and_authenticated_account
     ),
 ) -> dict:
-    settings = get_settings()
     try:
         payload = await github_projects.connect_project_repository(
             session,
-            settings=settings,
             project=context.project,
-            account=context.account,
+            access_token=context.github_auth.access_token,
             repo_full_name=body.repo_full_name,
             base_branch=body.base_branch,
         )
     except github_projects.GitHubProjectError as exc:
         github_deps.raise_github_project_http_error(exc)
     except github_auth.GitHubAuthError as exc:
-        raise github_deps.to_github_auth_http_exception(
-            exc,
-            status_code=400,
-            code="github_connect_failed",
-        )
+        _raise_route_auth_error(exc, code="github_connect_failed")
 
     invalidate_agent(project_id)
-    return {
-        "ok": True,
-        **payload,
-        "session_authenticated": True,
-        "session_login": context.account.login,
-        "connected_account_login": context.account.login,
-        "session_account_matches": True,
-    }
+    return _connect_response(payload, context.github_auth.login)
 
 
 @router.post("/{project_id}/github/disconnect")
@@ -105,8 +104,8 @@ async def disconnect_project_github(
     return {
         "ok": True,
         **payload,
-        "session_authenticated": context.session_account is not None,
-        "session_login": context.session_account.login if context.session_account else None,
+        "session_authenticated": context.github_auth is not None,
+        "session_login": context.github_auth.login if context.github_auth else None,
         "connected_account_login": None,
         "session_account_matches": False,
     }
@@ -121,13 +120,12 @@ async def create_project_pull_request(
         github_deps.require_project_with_connected_account
     ),
 ) -> dict:
-    settings = get_settings()
     try:
         return await github_projects.create_project_pull_request(
             session,
-            settings=settings,
             project=context.project,
-            account=context.account,
+            access_token=context.github_auth.access_token,
+            github_login=context.github_auth.login,
             title=body.title,
             body=body.description,
             base_branch=body.base_branch,
@@ -135,8 +133,4 @@ async def create_project_pull_request(
     except github_projects.GitHubProjectError as exc:
         github_deps.raise_github_project_http_error(exc)
     except github_auth.GitHubAuthError as exc:
-        raise github_deps.to_github_auth_http_exception(
-            exc,
-            status_code=400,
-            code="github_pull_request_failed",
-        )
+        _raise_route_auth_error(exc, code="github_pull_request_failed")

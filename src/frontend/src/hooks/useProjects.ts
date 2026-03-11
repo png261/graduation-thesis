@@ -1,11 +1,6 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import {
-  createProject as createProjectApi,
-  deleteProject as deleteProjectApi,
-  listProjects,
-  type CloudProvider,
-  type Project,
-} from "../api/projects";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+
+import { createProject as createProjectApi, deleteProject as deleteProjectApi, listProjects, type CloudProvider, type Project } from "../api/projects";
 
 interface UseProjectsOptions {
   authenticated: boolean;
@@ -16,142 +11,137 @@ function currentProjectKey(userId: string) {
   return `da_current_project:${userId}`;
 }
 
-function makeGuestProject(name: string, id?: string): Project {
-  return {
-    id: id ?? `guest-${crypto.randomUUID()}`,
-    name,
-    provider: "aws",
-    createdAt: new Date().toISOString(),
-  };
+function resolveCurrentProjectId(params: {
+  loaded: Project[];
+  storageKey: string | null;
+  activeCurrentId: string;
+}) {
+  const stored = params.storageKey ? localStorage.getItem(params.storageKey) : null;
+  const storedExists = stored && params.loaded.some((project) => project.id === stored);
+  const keepCurrent = !!params.activeCurrentId && params.loaded.some((project) => project.id === params.activeCurrentId);
+  return storedExists ? stored! : keepCurrent ? params.activeCurrentId : params.loaded[0].id;
+}
+
+function setGuestProjectState(setProjects: (value: Project[]) => void, setCurrentProjectIdState: (value: string) => void, setLoading: (value: boolean) => void) {
+  setProjects([]);
+  setCurrentProjectIdState("");
+  setLoading(false);
+}
+
+async function runProjectsLoad(args: {
+  storageKey: string | null;
+  activeCurrentId: () => string;
+  setProjects: Dispatch<SetStateAction<Project[]>>;
+  setCurrentProjectIdState: Dispatch<SetStateAction<string>>;
+  isInvalid: () => boolean;
+}) {
+  let loaded = await listProjects();
+  if (args.isInvalid()) return;
+  if (loaded.length < 1) loaded = [await createProjectApi("My Project", "aws")];
+  if (args.isInvalid()) return;
+  args.setProjects(loaded);
+  const currentId = resolveCurrentProjectId({ loaded, storageKey: args.storageKey, activeCurrentId: args.activeCurrentId() });
+  args.setCurrentProjectIdState(currentId);
+  if (args.storageKey) localStorage.setItem(args.storageKey, currentId);
+}
+
+function useProjectsLoadEffect(args: {
+  authenticated: boolean;
+  storageKey: string | null;
+  setProjects: Dispatch<SetStateAction<Project[]>>;
+  setCurrentProjectIdState: Dispatch<SetStateAction<string>>;
+  setLoading: Dispatch<SetStateAction<boolean>>;
+  currentProjectIdRef: MutableRefObject<string>;
+  loadSeqRef: MutableRefObject<number>;
+}) {
+  const { authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, currentProjectIdRef, loadSeqRef } = args;
+  useEffect(() => {
+    let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+    };
+    const loadSeq = ++loadSeqRef.current;
+    const isInvalid = () => cancelled || loadSeq !== loadSeqRef.current;
+    if (!authenticated) {
+      setGuestProjectState(setProjects, setCurrentProjectIdState, setLoading);
+      return cancel;
+    }
+    setLoading(true);
+    void runProjectsLoad({ storageKey, activeCurrentId: () => currentProjectIdRef.current, setProjects, setCurrentProjectIdState, isInvalid })
+      .catch((error) => console.error("useProjects: failed to load", error))
+      .finally(() => {
+        if (!isInvalid()) setLoading(false);
+      });
+    return cancel;
+  }, [authenticated, currentProjectIdRef, loadSeqRef, setCurrentProjectIdState, setLoading, setProjects, storageKey]);
+}
+
+function useSetCurrentProjectId(storageKey: string | null, setCurrentProjectIdState: Dispatch<SetStateAction<string>>) {
+  return useCallback((id: string) => {
+    if (storageKey) localStorage.setItem(storageKey, id);
+    setCurrentProjectIdState(id);
+  }, [setCurrentProjectIdState, storageKey]);
+}
+
+function useCreateProjectAction(args: {
+  authenticated: boolean;
+  loadSeqRef: MutableRefObject<number>;
+  setProjects: Dispatch<SetStateAction<Project[]>>;
+  setCurrentProjectId: (id: string) => void;
+}) {
+  return useCallback(async (name: string, provider: CloudProvider = "aws") => {
+    if (!args.authenticated) throw new Error("Login required");
+    args.loadSeqRef.current += 1;
+    const project = await createProjectApi(name || "Untitled Project", provider);
+    args.setProjects((previous) => [...previous, project]);
+    args.setCurrentProjectId(project.id);
+    return project;
+  }, [args]);
+}
+
+function useRenameProjectAction(setProjects: Dispatch<SetStateAction<Project[]>>) {
+  return useCallback((id: string, name: string) => {
+    setProjects((previous) => previous.map((project) => (project.id === id ? { ...project, name: name.trim() || project.name } : project)));
+  }, [setProjects]);
+}
+
+function useDeleteProjectAction(args: {
+  authenticated: boolean;
+  currentProjectId: string;
+  storageKey: string | null;
+  setProjects: Dispatch<SetStateAction<Project[]>>;
+  setCurrentProjectIdState: Dispatch<SetStateAction<string>>;
+}) {
+  return useCallback(async (id: string) => {
+    if (!args.authenticated) throw new Error("Login required");
+    await deleteProjectApi(id);
+    args.setProjects((previous) => {
+      const next = previous.filter((project) => project.id !== id);
+      if (next.length < 1) return previous;
+      if (args.currentProjectId !== id) return next;
+      const nextId = next[0].id;
+      if (args.storageKey) localStorage.setItem(args.storageKey, nextId);
+      args.setCurrentProjectIdState(nextId);
+      return next;
+    });
+  }, [args]);
 }
 
 export function useProjects({ authenticated, userId }: UseProjectsOptions) {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [currentProjectId, setCurrentProjectIdState] = useState<string>("");
+  const [currentProjectId, setCurrentProjectIdState] = useState("");
   const [loading, setLoading] = useState(true);
   const loadSeqRef = useRef(0);
   const currentProjectIdRef = useRef("");
-
-  const storageKey = useMemo(
-    () => (authenticated && userId ? currentProjectKey(userId) : null),
-    [authenticated, userId],
-  );
-
+  const storageKey = useMemo(() => (authenticated && userId ? currentProjectKey(userId) : null), [authenticated, userId]);
   useEffect(() => {
     currentProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadSeq = ++loadSeqRef.current;
-
-    if (!authenticated) {
-      const guestProject = makeGuestProject("Guest Session", "guest-session");
-      setProjects([guestProject]);
-      setCurrentProjectIdState(guestProject.id);
-      setLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setLoading(true);
-    (async () => {
-      try {
-        let loaded = await listProjects();
-        if (cancelled || loadSeq !== loadSeqRef.current) return;
-
-        if (loaded.length === 0) {
-          const def = await createProjectApi("My Project", "aws");
-          loaded = [def];
-        }
-
-        if (cancelled || loadSeq !== loadSeqRef.current) return;
-
-        setProjects(loaded);
-
-        const stored = storageKey ? localStorage.getItem(storageKey) : null;
-        const exists = stored && loaded.some((p) => p.id === stored);
-        const activeCurrentId = currentProjectIdRef.current;
-        const keepCurrent =
-          !!activeCurrentId && loaded.some((project) => project.id === activeCurrentId);
-        const currentId = exists ? stored! : keepCurrent ? activeCurrentId : loaded[0].id;
-        setCurrentProjectIdState(currentId);
-        if (storageKey) localStorage.setItem(storageKey, currentId);
-      } catch (err) {
-        console.error("useProjects: failed to load", err);
-      } finally {
-        if (!cancelled && loadSeq === loadSeqRef.current) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authenticated, userId, storageKey]);
-
-  const setCurrentProjectId = useCallback(
-    (id: string) => {
-      if (storageKey) localStorage.setItem(storageKey, id);
-      setCurrentProjectIdState(id);
-    },
-    [storageKey],
-  );
-
-  const createProject = useCallback(
-    async (name: string, provider: CloudProvider = "aws"): Promise<Project> => {
-      if (!authenticated) {
-        const project = makeGuestProject(name || "Guest Project");
-        setProjects((prev) => [...prev, project]);
-        setCurrentProjectIdState(project.id);
-        return project;
-      }
-
-      // Invalidate in-flight initial loads so they cannot overwrite this explicit selection.
-      loadSeqRef.current += 1;
-      const project = await createProjectApi(name || "Untitled Project", provider);
-      setProjects((prev) => [...prev, project]);
-      setCurrentProjectId(project.id);
-      return project;
-    },
-    [authenticated, setCurrentProjectId],
-  );
-
-  const renameProject = useCallback((id: string, name: string) => {
-    setProjects((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, name: name.trim() || p.name } : p)),
-    );
-  }, []);
-
-  const deleteProject = useCallback(
-    async (id: string) => {
-      if (authenticated) {
-        await deleteProjectApi(id);
-      }
-      setProjects((prev) => {
-        const next = prev.filter((p) => p.id !== id);
-        if (next.length === 0) return prev;
-        if (currentProjectId === id) {
-          const nextId = next[0].id;
-          if (storageKey) localStorage.setItem(storageKey, nextId);
-          setCurrentProjectIdState(nextId);
-        }
-        return next;
-      });
-    },
-    [authenticated, currentProjectId, storageKey],
-  );
-
-  const currentProject = projects.find((p) => p.id === currentProjectId) ?? projects[0];
-
-  return {
-    projects,
-    loading,
-    currentProject,
-    currentProjectId,
-    setCurrentProjectId,
-    createProject,
-    renameProject,
-    deleteProject,
-  };
+  useProjectsLoadEffect({ authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, currentProjectIdRef, loadSeqRef });
+  const setCurrentProjectId = useSetCurrentProjectId(storageKey, setCurrentProjectIdState);
+  const createProject = useCreateProjectAction({ authenticated, loadSeqRef, setProjects, setCurrentProjectId });
+  const renameProject = useRenameProjectAction(setProjects);
+  const deleteProject = useDeleteProjectAction({ authenticated, currentProjectId, storageKey, setProjects, setCurrentProjectIdState });
+  const currentProject = projects.find((project) => project.id === currentProjectId) ?? projects[0];
+  return { projects, loading, currentProject, currentProjectId, setCurrentProjectId, createProject, renameProject, deleteProject };
 }

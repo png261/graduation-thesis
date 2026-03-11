@@ -1,52 +1,64 @@
-# Graduation Thesis Project
+# DeepAgents Infrastructure Workspace
 
-This project contains the source code for the graduation thesis. It is structured into frontend and backend components.
+Monorepo gồm frontend React/Vite và backend FastAPI cho workflow hạ tầng (OpenTofu), GitHub integration, và agent chat.
 
 ## Structure
 
-- `src/frontend`: Next.js frontend application.
-- `src/backend`: Python/FastAPI backend API (or relevant backend).
-- `references`: Thesis references (PDFs, docs).
+- `src/frontend`: React + Vite UI, Clerk auth client, assistant runtime adapters
+- `src/backend`: FastAPI API, Clerk bearer auth, project/git/opentofu services
+- `scripts`: repo-level quality checks (bao gồm function-length checker)
 
-## Installation & Deployment
+## Prerequisites
 
-### Prerequisites
+- Node.js 18+
+- Python 3.11+
+- PostgreSQL 14+
+- Docker (optional, cho integration migration tests)
 
-- Node.js (v18+)
-- Python (v3.10+)
-- Docker & Docker Compose (optional)
-- pnpm (recommended for frontend)
+## Frontend (local)
 
-### Running Locally
+```bash
+cd src/frontend
+npm install
+npm run dev
+```
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/png261/graduation-thesis.git
-    cd graduation-thesis
-    ```
+## Backend (local)
 
-2.  **Frontend:**
-    ```bash
-    cd src/frontend
-    pnpm install
-    # Create .env.local based on .env.example
-    pnpm dev
-    ```
-    Access at `http://localhost:3000`.
+```bash
+cd src/backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+uvicorn app.main:app --reload
+```
 
-3.  **Backend:**
-    ```bash
-    cd src/backend
-    python -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    pip install -r requirements.txt
-    uvicorn main:app --reload
-    ```
-    Access API at `http://localhost:8000`.
+## Environment
 
-## Features
-- AI Chat Interface (Gemini integration)
-- Thesis Management System (placeholder)
+- Frontend: `src/frontend/.env.example`
+- Backend: `src/backend/.env.example`
 
-## References
-See the `/references` directory for related papers and documentation.
+Auth flow là Clerk-only (GitHub OAuth qua Clerk). Legacy `/api/auth/*` đã bị loại bỏ.
+
+## Legacy Auth Schema Migration
+
+Để drop legacy auth tables/columns sau khi chuyển Clerk-only:
+
+```bash
+cd src/backend
+source .venv/bin/activate
+python scripts/migrate_drop_legacy_auth_schema.py --database-url "$DATABASE_URL"
+```
+
+## Quality Gates
+
+```bash
+# Function length (backend + frontend)
+python3 scripts/check_function_lengths.py --target all
+
+# Frontend
+cd src/frontend && npm run verify
+
+# Backend
+cd src/backend && PYTHONPATH=. .venv/bin/pytest -q
+```

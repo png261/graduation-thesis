@@ -4,9 +4,9 @@ import type {
   ToolCallMessagePart,
 } from "@assistant-ui/react";
 
-import { API_URL } from "../../api/client";
-import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { persistThread } from "../../api/projects";
+import { apiRequest } from "../../api/client";
+import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { readSseJson } from "../../lib/sse";
 import {
   parsePolicyCheckResultEvent,
@@ -25,6 +25,33 @@ const MUTATING_TOOL_NAMES = new Set([
   "delete_path",
 ]);
 
+interface AdapterDeps {
+  getProjectId: () => string;
+  authenticated: boolean;
+  notifyFileChanged: (path?: string) => void;
+  notifyPolicyCheck: (event: PolicyCheckEvent) => void;
+}
+
+interface StreamState {
+  parts: ThreadAssistantMessagePart[];
+  toolCallIndex: Map<string, number>;
+  textIndex: number | null;
+  reasoningIndex: number | null;
+  usageEvent: UsageEventPayload | null;
+}
+
+type StreamEvent = Record<string, unknown>;
+
+type AdapterRunInput = Parameters<ChatModelAdapter["run"]>[0];
+type InferRunResult<T> = T extends Promise<infer R>
+  ? R
+  : T extends AsyncGenerator<infer R, void, unknown>
+    ? R
+    : never;
+type ChatRunResult = InferRunResult<ReturnType<ChatModelAdapter["run"]>>;
+
+type HandlerResult = { output?: ChatRunResult; done?: boolean; completion?: ChatRunResult };
+
 function normalizeChangedPath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -35,245 +62,276 @@ function normalizeChangedPath(value: unknown): string | undefined {
 function extractChangedPaths(result: unknown): string[] {
   if (!result || typeof result !== "object") return [];
   const payload = result as Record<string, unknown>;
+  const candidates = collectChangedPathCandidates(payload);
+  return [...new Set(candidates)];
+}
+
+function collectChangedPathCandidates(payload: Record<string, unknown>): string[] {
   const candidates: string[] = [];
-
   const list = payload.changed_paths;
-  if (Array.isArray(list)) {
-    for (const item of list) {
-      const normalized = normalizeChangedPath(item);
-      if (normalized) candidates.push(normalized);
-    }
-  }
+  if (Array.isArray(list)) addArrayChangedPaths(candidates, list);
+  addKeyChangedPaths(candidates, payload);
+  return candidates;
+}
 
+function addArrayChangedPaths(candidates: string[], values: unknown[]) {
+  for (const item of values) {
+    const normalized = normalizeChangedPath(item);
+    if (normalized) candidates.push(normalized);
+  }
+}
+
+function addKeyChangedPaths(candidates: string[], payload: Record<string, unknown>) {
   for (const key of ["path", "source_path", "destination_path"] as const) {
     const normalized = normalizeChangedPath(payload[key]);
     if (normalized) candidates.push(normalized);
   }
-
-  return [...new Set(candidates)];
-}
-
-function appendDeltaPart(
-  parts: ThreadAssistantMessagePart[],
-  index: number | null,
-  type: "text" | "reasoning",
-  delta: string,
-): number {
-  if (index === null) {
-    parts.push({ type, text: delta });
-    return parts.length - 1;
-  }
-
-  const current = parts[index] as ThreadAssistantMessagePart & { text?: string };
-  parts[index] = {
-    ...current,
-    type,
-    text: `${current.text ?? ""}${delta}`,
-  };
-  return index;
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
 }
 
-export function createChatModelAdapter({
-  getProjectId,
-  authenticated,
-  notifyFileChanged,
-  notifyPolicyCheck,
-}: {
-  getProjectId: () => string;
-  authenticated: boolean;
-  notifyFileChanged: (path?: string) => void;
-  notifyPolicyCheck: (event: PolicyCheckEvent) => void;
-}): ChatModelAdapter {
+function appendDeltaPart(state: StreamState, key: "textIndex" | "reasoningIndex", type: "text" | "reasoning", delta: string) {
+  const index = state[key];
+  if (index === null) {
+    state.parts.push({ type, text: delta });
+    state[key] = state.parts.length - 1;
+    return;
+  }
+
+  const current = state.parts[index] as ThreadAssistantMessagePart & { text?: string };
+  state.parts[index] = { ...current, type, text: `${current.text ?? ""}${delta}` };
+}
+
+function emitState(state: StreamState): ChatRunResult {
+  return { content: [...state.parts] };
+}
+
+function resolveBackendThreadId(id: string | undefined) {
+  return id ?? crypto.randomUUID();
+}
+
+function persistNewThreadIfNeeded(input: AdapterRunInput, deps: AdapterDeps, backendThreadId: string) {
+  if (!deps.authenticated || input.unstable_threadId) return;
+  persistThread(deps.getProjectId(), backendThreadId, "").catch(() => {});
+}
+
+function buildPayload(input: AdapterRunInput, deps: AdapterDeps, backendThreadId: string) {
   return {
-    async *run({ messages, abortSignal, unstable_threadId }) {
-      const backendThreadId = unstable_threadId ?? crypto.randomUUID();
+    ...(deps.authenticated ? { project_id: deps.getProjectId() } : {}),
+    ...(deps.authenticated ? { thread_id: backendThreadId } : {}),
+    messages: input.messages.map((message) => ({
+      role: message.role,
+      content: message.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+    })),
+  };
+}
 
-      if (authenticated && !unstable_threadId) {
-        persistThread(getProjectId(), backendThreadId, "").catch(() => {});
-      }
+async function openChatStream(payload: unknown, signal: AbortSignal | undefined) {
+  const response = await apiRequest("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok || !response.body) throw new Error(`API error (${response.status})`);
+  return response;
+}
 
-      const payload = {
-        ...(authenticated ? { project_id: getProjectId() } : {}),
-        ...(authenticated ? { thread_id: backendThreadId } : {}),
-        messages: messages.map((message) => ({
-          role: message.role,
-          content: message.content
-            .map((part) => (part.type === "text" ? part.text : ""))
-            .join(""),
-        })),
-      };
+function createInitialState(): StreamState {
+  return {
+    parts: [],
+    toolCallIndex: new Map<string, number>(),
+    textIndex: null,
+    reasoningIndex: null,
+    usageEvent: null,
+  };
+}
 
-      const response = await fetch(`${API_URL}/api/chat/stream`, {
-        method: "POST",
-        credentials: authenticated ? "include" : "omit",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: abortSignal,
-      });
+function resolveEventType(event: StreamEvent) {
+  return event.type ?? (event.delta ? "text.delta" : null);
+}
 
-      if (!response.ok || !response.body) {
-        throw new Error(`API error (${response.status})`);
-      }
+function toStreamEvent(rawEvent: unknown): StreamEvent {
+  return (rawEvent ?? {}) as StreamEvent;
+}
 
-      const parts: ThreadAssistantMessagePart[] = [];
-      const toolCallIndex = new Map<string, number>();
-      let textIndex: number | null = null;
-      let reasoningIndex: number | null = null;
-      let usageEvent: UsageEventPayload | null = null;
+function handleTextDelta(state: StreamState, event: StreamEvent): HandlerResult {
+  const delta = String(event.delta ?? "");
+  if (!delta) return {};
+  appendDeltaPart(state, "textIndex", "text", delta);
+  return { output: emitState(state) };
+}
 
-      const emit = () => ({ content: [...parts] });
+function handleReasoningDelta(state: StreamState, event: StreamEvent): HandlerResult {
+  const delta = String(event.delta ?? "");
+  if (!delta) return {};
+  appendDeltaPart(state, "reasoningIndex", "reasoning", delta);
+  return { output: emitState(state) };
+}
 
-      for await (const rawEvent of readSseJson(response)) {
-        const event = (rawEvent ?? {}) as Record<string, unknown>;
-        const type = event.type ?? (event.delta ? "text.delta" : null);
+function buildToolCallPart(event: StreamEvent): ToolCallMessagePart {
+  return {
+    type: "tool-call",
+    toolCallId: String(event.toolCallId ?? ""),
+    toolName: String(event.toolName ?? "tool"),
+    args: asJsonObject(event.args) as ToolCallMessagePart["args"],
+    argsText: (event.argsText as string | undefined) ?? JSON.stringify(event.args ?? {}, null, 2),
+  };
+}
 
-        if (type === "error") {
-          throw new Error((event.message as string | undefined) ?? "stream_failed");
-        }
+function handleToolStart(state: StreamState, event: StreamEvent): HandlerResult {
+  const part = buildToolCallPart(event);
+  if (!part.toolCallId) return {};
+  state.toolCallIndex.set(part.toolCallId, state.parts.length);
+  state.parts.push(part);
+  return { output: emitState(state) };
+}
 
-        if (type === "text.delta") {
-          const delta = String(event.delta ?? "");
-          if (!delta) continue;
-          textIndex = appendDeltaPart(parts, textIndex, "text", delta);
-          yield emit();
-          continue;
-        }
+function buildToolResultPart(event: StreamEvent): ToolCallMessagePart {
+  return {
+    ...buildToolCallPart(event),
+    result: event.result,
+    isError: (event.isError as boolean | undefined) ?? false,
+    artifact: event.artifact,
+  };
+}
 
-        if (type === "reasoning.delta") {
-          const delta = String(event.delta ?? "");
-          if (!delta) continue;
-          reasoningIndex = appendDeltaPart(parts, reasoningIndex, "reasoning", delta);
-          yield emit();
-          continue;
-        }
+function upsertToolResult(state: StreamState, updated: ToolCallMessagePart) {
+  const index = state.toolCallIndex.get(updated.toolCallId);
+  if (index === undefined) {
+    state.toolCallIndex.set(updated.toolCallId, state.parts.length);
+    state.parts.push(updated);
+    return;
+  }
 
-        if (type === "tool.start") {
-          const toolCallId = String(event.toolCallId ?? "");
-          if (!toolCallId) continue;
+  const existing = state.parts[index] as ToolCallMessagePart;
+  state.parts[index] = {
+    ...existing,
+    ...updated,
+    toolName: existing.toolName ?? updated.toolName,
+    args: existing.args ?? updated.args,
+    argsText: existing.argsText ?? updated.argsText,
+  };
+}
 
-          const part: ToolCallMessagePart = {
-            type: "tool-call",
-            toolCallId,
-            toolName: String(event.toolName ?? "tool"),
-            args: asJsonObject(event.args) as ToolCallMessagePart["args"],
-            argsText: (event.argsText as string | undefined) ?? JSON.stringify(event.args ?? {}, null, 2),
-          };
-          toolCallIndex.set(toolCallId, parts.length);
-          parts.push(part);
-          yield emit();
-          continue;
-        }
+function notifyChangedPaths(deps: AdapterDeps, paths: string[]) {
+  if (paths.length < 1) return deps.notifyFileChanged();
+  for (const path of paths) deps.notifyFileChanged(path);
+}
 
-        if (type === "tool.result") {
-          const toolCallId = String(event.toolCallId ?? "");
-          if (!toolCallId) continue;
+function handleMutatingToolEffects(deps: AdapterDeps, event: StreamEvent) {
+  const toolName = String(event.toolName ?? "");
+  if (!MUTATING_TOOL_NAMES.has(toolName)) return;
+  notifyChangedPaths(deps, extractChangedPaths(event.result));
+}
 
-          const index = toolCallIndex.get(toolCallId);
-          const updated: ToolCallMessagePart = {
-            type: "tool-call",
-            toolCallId,
-            toolName: String(event.toolName ?? "tool"),
-            args: asJsonObject(event.args) as ToolCallMessagePart["args"],
-            argsText: (event.argsText as string | undefined) ?? JSON.stringify(event.args ?? {}, null, 2),
-            result: event.result,
-            isError: (event.isError as boolean | undefined) ?? false,
-            artifact: event.artifact,
-          };
+function handleToolResult(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const updated = buildToolResultPart(event);
+  if (!updated.toolCallId) return {};
+  upsertToolResult(state, updated);
+  handleMutatingToolEffects(deps, event);
+  return { output: emitState(state) };
+}
 
-          if (index === undefined) {
-            toolCallIndex.set(toolCallId, parts.length);
-            parts.push(updated);
-          } else {
-            const existing = parts[index] as ToolCallMessagePart;
-            parts[index] = {
-              ...existing,
-              ...updated,
-              toolName: existing.toolName ?? updated.toolName,
-              args: existing.args ?? updated.args,
-              argsText: existing.argsText ?? updated.argsText,
-            };
-          }
+function handleFile(state: StreamState, event: StreamEvent): HandlerResult {
+  state.parts.push({
+    type: "file",
+    filename: (event.filename as string | undefined) ?? undefined,
+    mimeType: (event.mimeType as string | undefined) ?? "application/octet-stream",
+    data: (event.dataBase64 as string | undefined) ?? "",
+  });
+  return { output: emitState(state) };
+}
 
-          yield emit();
+function handlePolicyStart(deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  deps.notifyPolicyCheck(parsePolicyCheckStartEvent(event));
+  return {};
+}
 
-          const toolName = String(event.toolName ?? "");
-          if (MUTATING_TOOL_NAMES.has(toolName)) {
-            const changedPaths = extractChangedPaths(event.result);
-            if (changedPaths.length === 0) {
-              notifyFileChanged();
-            } else {
-              for (const path of changedPaths) {
-                notifyFileChanged(path);
-              }
-            }
-          }
-          continue;
-        }
+function handlePolicyResult(deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  deps.notifyPolicyCheck(parsePolicyCheckResultEvent(event));
+  return {};
+}
 
-        if (type === "file") {
-          parts.push({
-            type: "file",
-            filename: (event.filename as string | undefined) ?? undefined,
-            mimeType: (event.mimeType as string | undefined) ?? "application/octet-stream",
-            data: (event.dataBase64 as string | undefined) ?? "",
-          });
-          yield emit();
-          continue;
-        }
+function handleUsage(state: StreamState, event: StreamEvent): HandlerResult {
+  state.usageEvent = parseUsageEvent(event);
+  return {};
+}
 
-        if (type === "policy.check.start") {
-          notifyPolicyCheck(parsePolicyCheckStartEvent(event));
-          continue;
-        }
+function buildDoneMetadata(usageEvent: UsageEventPayload | null) {
+  if (!usageEvent) return undefined;
+  const custom = buildUsageCustomMetadata(usageEvent);
+  return {
+    steps: [{ usage: { promptTokens: usageEvent.promptTokens, completionTokens: usageEvent.completionTokens } }],
+    ...(Object.keys(custom).length > 0 ? { custom } : {}),
+  };
+}
 
-        if (type === "policy.check.result") {
-          notifyPolicyCheck(parsePolicyCheckResultEvent(event));
-          continue;
-        }
+function buildUsageCustomMetadata(usageEvent: UsageEventPayload) {
+  const custom: Record<string, string | number> = {};
+  if (usageEvent.modelId) custom.modelId = usageEvent.modelId;
+  if (usageEvent.modelContextWindow !== null && usageEvent.modelContextWindow !== undefined) {
+    custom.modelContextWindow = usageEvent.modelContextWindow;
+  }
+  return custom;
+}
 
-        if (type === "usage") {
-          usageEvent = parseUsageEvent(event);
-          continue;
-        }
+function handleDone(state: StreamState): HandlerResult {
+  return {
+    done: true,
+    completion: {
+      content: [...state.parts],
+      status: { type: "complete", reason: "stop" },
+      metadata: buildDoneMetadata(state.usageEvent),
+    },
+  };
+}
 
-        if (type === "done") {
-          const customMetadata: Record<string, string | number> = {};
-          if (usageEvent?.modelId) {
-            customMetadata.modelId = usageEvent.modelId;
-          }
-          if (usageEvent?.modelContextWindow !== null && usageEvent?.modelContextWindow !== undefined) {
-            customMetadata.modelContextWindow = usageEvent.modelContextWindow;
-          }
-          const metadata =
-            usageEvent === null
-              ? undefined
-              : {
-                  steps: [
-                    {
-                      usage: {
-                        promptTokens: usageEvent.promptTokens,
-                        completionTokens: usageEvent.completionTokens,
-                      },
-                    },
-                  ],
-                  ...(Object.keys(customMetadata).length > 0 ? { custom: customMetadata } : {}),
-                };
+function handleStreamEvent(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const type = resolveEventType(event);
+  if (type === "error") throw new Error((event.message as string | undefined) ?? "stream_failed");
+  if (type === "text.delta") return handleTextDelta(state, event);
+  if (type === "reasoning.delta") return handleReasoningDelta(state, event);
+  if (type === "tool.start") return handleToolStart(state, event);
+  if (type === "tool.result") return handleToolResult(state, deps, event);
+  if (type === "file") return handleFile(state, event);
+  if (type === "policy.check.start") return handlePolicyStart(deps, event);
+  if (type === "policy.check.result") return handlePolicyResult(deps, event);
+  if (type === "usage") return handleUsage(state, event);
+  if (type === "done") return handleDone(state);
+  return {};
+}
 
-          yield {
-            content: [...parts],
-            status: { type: "complete", reason: "stop" },
-            metadata,
-          };
-          return;
-        }
-      }
+async function* streamChatEvents(
+  response: Response,
+  deps: AdapterDeps,
+  state: StreamState,
+): AsyncGenerator<ChatRunResult, void, unknown> {
+  for await (const rawEvent of readSseJson(response)) {
+    const handled = handleStreamEvent(state, deps, toStreamEvent(rawEvent));
+    if (handled.output) yield handled.output;
+    if (!handled.done) continue;
+    if (handled.completion) yield handled.completion;
+    return;
+  }
+}
+
+async function* runChatAdapter(deps: AdapterDeps, input: AdapterRunInput): AsyncGenerator<ChatRunResult, void, unknown> {
+  const backendThreadId = resolveBackendThreadId(input.unstable_threadId ?? undefined);
+  persistNewThreadIfNeeded(input, deps, backendThreadId);
+  const payload = buildPayload(input, deps, backendThreadId);
+  const response = await openChatStream(payload, input.abortSignal);
+  const state = createInitialState();
+  yield* streamChatEvents(response, deps, state);
+}
+
+export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {
+  return {
+    run(input) {
+      return runChatAdapter(deps, input);
     },
   };
 }

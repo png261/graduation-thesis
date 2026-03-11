@@ -34,6 +34,57 @@ def _normalise_zip_name(raw_name: str) -> str:
     return posix.as_posix()
 
 
+def _project_not_empty_error() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "project_not_empty", "message": "Project already has files"},
+    )
+
+
+def _zip_http_error(code: str, message: str, status_code: int = 400) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _normalised_zip_paths(entries: list[zipfile.ZipInfo]) -> list[str]:
+    paths = [_normalise_zip_name(info.filename) for info in entries]
+    if paths:
+        return paths
+    raise _zip_http_error("zip_empty", "Zip archive has no importable files")
+
+
+def _decode_zip_entries(
+    zf: zipfile.ZipFile,
+    raw_entries: list[zipfile.ZipInfo],
+    relative_paths: list[str],
+) -> list[tuple[str, str]]:
+    decoded: list[tuple[str, str]] = []
+    for info, rel_path in zip(raw_entries, relative_paths, strict=True):
+        try:
+            text = zf.read(info).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _zip_http_error("zip_non_utf8", f"File '{rel_path}' is not valid UTF-8 text") from exc
+        decoded.append((f"/{rel_path}", text))
+    return decoded
+
+
+def _extract_zip_entries(archive_bytes: bytes) -> list[tuple[str, str]]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), mode="r") as zf:
+            raw_entries = [
+                info for info in zf.infolist() if not info.is_dir() and info.filename and not info.filename.endswith("/")
+            ]
+            return _decode_zip_entries(zf, raw_entries, _normalised_zip_paths(raw_entries))
+    except zipfile.BadZipFile as exc:
+        raise _zip_http_error("zip_invalid", "Uploaded file is not a valid zip archive") from exc
+    except ValueError as exc:
+        raise _zip_http_error("zip_invalid_path", str(exc)) from exc
+
+
+def _write_imported_files(project_id: str, decoded_entries: list[tuple[str, str]]) -> None:
+    for path, content in decoded_entries:
+        project_files.write_text(project_id, path, content)
+
+
 @router.get("/{project_id}/memory")
 async def get_memory(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
     try:
@@ -169,59 +220,10 @@ async def import_zip_file(
     file: UploadFile = File(...),
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
-    existing = project_files.list_files(project.id)
-    if existing:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "project_not_empty", "message": "Project already has files"},
-        )
-
-    archive_bytes = await file.read()
-    try:
-        with zipfile.ZipFile(io.BytesIO(archive_bytes), mode="r") as zf:
-            raw_file_entries = [
-                info
-                for info in zf.infolist()
-                if not info.is_dir() and info.filename and not info.filename.endswith("/")
-            ]
-
-            normalised_paths: list[str] = []
-            for info in raw_file_entries:
-                normalised_paths.append(_normalise_zip_name(info.filename))
-
-            if not normalised_paths:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"code": "zip_empty", "message": "Zip archive has no importable files"},
-                )
-
-            # Validate/decode everything first so import is all-or-nothing.
-            decoded_entries: list[tuple[str, str]] = []
-            for info, rel_path in zip(raw_file_entries, normalised_paths, strict=True):
-                try:
-                    text = zf.read(info).decode("utf-8")
-                except UnicodeDecodeError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "code": "zip_non_utf8",
-                            "message": f"File '{rel_path}' is not valid UTF-8 text",
-                        },
-                    ) from exc
-                decoded_entries.append((f"/{rel_path}", text))
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "zip_invalid", "message": "Uploaded file is not a valid zip archive"},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"code": "zip_invalid_path", "message": str(exc)},
-        ) from exc
-
-    for path, content in decoded_entries:
-        project_files.write_text(project.id, path, content)
+    if project_files.list_files(project.id):
+        raise _project_not_empty_error()
+    decoded_entries = _extract_zip_entries(await file.read())
+    _write_imported_files(project.id, decoded_entries)
     invalidate_agent(project.id)
     return {"ok": True, "imported_files": len(decoded_entries)}
 

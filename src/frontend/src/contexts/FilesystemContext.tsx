@@ -1,5 +1,5 @@
 import { createContext, useContext, useRef } from "react";
-import type { PropsWithChildren } from "react";
+import type { MutableRefObject, PropsWithChildren } from "react";
 
 type RefreshCallback = (path?: string) => void;
 type PolicyCheckCallback = (event: PolicyCheckEvent) => void;
@@ -50,48 +50,37 @@ interface FilesystemContextValue {
 
 const FilesystemContext = createContext<FilesystemContextValue | null>(null);
 
+function createCallbackNotifier<T>(callbacksRef: MutableRefObject<Set<(payload: T) => void>>) {
+  return (payload: T) => {
+    for (const callback of callbacksRef.current) callback(payload);
+  };
+}
+
+function createCallbackRegistrar<T>(callbacksRef: MutableRefObject<Set<(payload: T) => void>>) {
+  return (callback: (payload: T) => void) => {
+    callbacksRef.current.add(callback);
+    return () => callbacksRef.current.delete(callback);
+  };
+}
+
+function useCallbackRegistry<T>() {
+  const callbacksRef = useRef<Set<(payload: T) => void>>(new Set());
+  return {
+    notify: createCallbackNotifier(callbacksRef),
+    register: createCallbackRegistrar(callbacksRef),
+  };
+}
+
 export function FilesystemContextProvider({ children }: PropsWithChildren) {
-  const callbacksRef = useRef<Set<RefreshCallback>>(new Set());
-  const policyCallbacksRef = useRef<Set<PolicyCheckCallback>>(new Set());
-
-  const notifyFileChanged = (path?: string) => {
-    for (const cb of callbacksRef.current) {
-      cb(path);
-    }
+  const refreshRegistry = useCallbackRegistry<string | undefined>();
+  const policyRegistry = useCallbackRegistry<PolicyCheckEvent>();
+  const value: FilesystemContextValue = {
+    notifyFileChanged: refreshRegistry.notify as RefreshCallback,
+    registerRefreshCallback: refreshRegistry.register as (fn: RefreshCallback) => () => void,
+    notifyPolicyCheck: policyRegistry.notify as PolicyCheckCallback,
+    registerPolicyCheckCallback: policyRegistry.register as (fn: PolicyCheckCallback) => () => void,
   };
-
-  const registerRefreshCallback = (fn: RefreshCallback) => {
-    callbacksRef.current.add(fn);
-    return () => {
-      callbacksRef.current.delete(fn);
-    };
-  };
-
-  const notifyPolicyCheck = (event: PolicyCheckEvent) => {
-    for (const cb of policyCallbacksRef.current) {
-      cb(event);
-    }
-  };
-
-  const registerPolicyCheckCallback = (fn: PolicyCheckCallback) => {
-    policyCallbacksRef.current.add(fn);
-    return () => {
-      policyCallbacksRef.current.delete(fn);
-    };
-  };
-
-  return (
-    <FilesystemContext.Provider
-      value={{
-        notifyFileChanged,
-        registerRefreshCallback,
-        notifyPolicyCheck,
-        registerPolicyCheckCallback,
-      }}
-    >
-      {children}
-    </FilesystemContext.Provider>
-  );
+  return <FilesystemContext.Provider value={value}>{children}</FilesystemContext.Provider>;
 }
 
 export function useFilesystemContext(): FilesystemContextValue {

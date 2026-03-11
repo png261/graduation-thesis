@@ -25,43 +25,20 @@ class Settings(BaseSettings):
         default="postgresql://postgres:postgres@localhost:5432/deepagents",
         alias="DATABASE_URL",
     )
-    github_client_id: str | None = Field(default=None, alias="GITHUB_CLIENT_ID")
-    github_client_secret: str | None = Field(default=None, alias="GITHUB_CLIENT_SECRET")
-    github_oauth_redirect_uri: str = Field(
-        default="http://localhost:8000/api/github/callback",
-        alias="GITHUB_OAUTH_REDIRECT_URI",
-    )
-    github_auth_oauth_redirect_uri: str = Field(
-        default="http://localhost:8000/api/auth/github/callback",
-        alias="GITHUB_AUTH_OAUTH_REDIRECT_URI",
-    )
-    github_oauth_success_redirect: str = Field(
-        default="http://localhost:5173",
-        alias="GITHUB_OAUTH_SUCCESS_REDIRECT",
-    )
-    github_token_encryption_key: str | None = Field(
-        default=None, alias="GITHUB_TOKEN_ENCRYPTION_KEY"
-    )
-    github_session_ttl_hours: int = Field(default=24 * 7, alias="GITHUB_SESSION_TTL_HOURS")
-    google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
-    google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
-    google_oauth_redirect_uri: str = Field(
-        default="http://localhost:8000/api/auth/google/callback",
-        alias="GOOGLE_OAUTH_REDIRECT_URI",
-    )
-    auth_oauth_success_redirect: str = Field(
-        default="http://localhost:5173",
-        alias="AUTH_OAUTH_SUCCESS_REDIRECT",
-    )
-    auth_token_encryption_key: str | None = Field(
-        default=None,
-        alias="AUTH_TOKEN_ENCRYPTION_KEY",
-    )
-    auth_session_ttl_hours: int = Field(default=24 * 7, alias="AUTH_SESSION_TTL_HOURS")
+    clerk_secret_key: str | None = Field(default=None, alias="CLERK_SECRET_KEY")
+    clerk_jwt_key: str | None = Field(default=None, alias="CLERK_JWT_KEY")
+    clerk_authorized_parties: str = Field(default="", alias="CLERK_AUTHORIZED_PARTIES")
+    clerk_audience: str = Field(default="", alias="CLERK_AUDIENCE")
     infracost_api_key: str | None = Field(default=None, alias="INFRACOST_API_KEY")
 
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    def clerk_authorized_parties_list(self) -> List[str]:
+        return [value.strip() for value in self.clerk_authorized_parties.split(",") if value.strip()]
+
+    def clerk_audience_list(self) -> List[str]:
+        return [value.strip() for value in self.clerk_audience.split(",") if value.strip()]
 
 
 @lru_cache

@@ -11,48 +11,61 @@ interface CreateDialogParams {
   createProject: (name: string, provider: CloudProvider) => Promise<CreatedProject>;
 }
 
-export function useProjectCreateDialog({ createProject }: CreateDialogParams) {
+function useCreateDialogState() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createProvider, setCreateProvider] = useState<CloudProvider>("aws");
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState("");
+  return { createOpen, setCreateOpen, createName, setCreateName, createProvider, setCreateProvider, createSubmitting, setCreateSubmitting, createError, setCreateError };
+}
+
+function buildCreateDialogResult(
+  state: ReturnType<typeof useCreateDialogState>,
+  handleCreateDialogOpenChange: (open: boolean) => void,
+  handleCreateProject: () => Promise<void>,
+) {
+  return {
+    createOpen: state.createOpen,
+    createName: state.createName,
+    setCreateName: state.setCreateName,
+    createProvider: state.createProvider,
+    setCreateProvider: state.setCreateProvider,
+    createSubmitting: state.createSubmitting,
+    createError: state.createError,
+    handleCreateDialogOpenChange,
+    handleCreateProject,
+  };
+}
+
+export function useProjectCreateDialog({ createProject }: CreateDialogParams) {
+  const state = useCreateDialogState();
 
   const resetCreateDialog = () => {
-    setCreateName("");
-    setCreateProvider("aws");
-    setCreateSubmitting(false);
-    setCreateError("");
+    state.setCreateName("");
+    state.setCreateProvider("aws");
+    state.setCreateSubmitting(false);
+    state.setCreateError("");
   };
 
   const handleCreateDialogOpenChange = (open: boolean) => {
-    setCreateOpen(open);
+    state.setCreateOpen(open);
     if (!open) resetCreateDialog();
   };
 
   const handleCreateProject = async () => {
-    setCreateSubmitting(true);
-    setCreateError("");
+    state.setCreateSubmitting(true);
+    state.setCreateError("");
     try {
-      await createProject(createName.trim() || "Untitled Project", createProvider);
-      setCreateOpen(false);
+      await createProject(state.createName.trim() || "Untitled Project", state.createProvider);
+      state.setCreateOpen(false);
       resetCreateDialog();
     } catch (e: unknown) {
-      setCreateError(e instanceof Error ? e.message : "Failed to create project");
+      state.setCreateError(e instanceof Error ? e.message : "Failed to create project");
     } finally {
-      setCreateSubmitting(false);
+      state.setCreateSubmitting(false);
     }
   };
 
-  return {
-    createOpen,
-    createName,
-    setCreateName,
-    createProvider,
-    setCreateProvider,
-    createSubmitting,
-    createError,
-    handleCreateDialogOpenChange,
-    handleCreateProject,
-  };
+  return buildCreateDialogResult(state, handleCreateDialogOpenChange, handleCreateProject);
 }

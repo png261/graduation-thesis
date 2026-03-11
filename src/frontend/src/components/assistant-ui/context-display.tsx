@@ -30,6 +30,47 @@ type UsageState = {
   modelId: string | null;
 };
 
+function readPromptTokensFromSteps(steps: readonly { usage?: { promptTokens?: number } }[] | undefined) {
+  if (!Array.isArray(steps)) return null;
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const promptTokens = asNumber(steps[index]?.usage?.promptTokens);
+    if (promptTokens !== null) return promptTokens;
+  }
+  return null;
+}
+
+function mergeModelMetadata(
+  custom: Record<string, unknown> | undefined,
+  modelContextWindow: number | null,
+  modelId: string | null,
+) {
+  return {
+    modelContextWindow: modelContextWindow ?? asNumber(custom?.modelContextWindow),
+    modelId: modelId ?? asString(custom?.modelId),
+  };
+}
+
+function scanAssistantUsage(messages: readonly {
+  role: string;
+  metadata?: {
+    custom?: Record<string, unknown>;
+    steps?: readonly { usage?: { promptTokens?: number } }[];
+  };
+}[]) {
+  let modelContextWindow: number | null = null;
+  let modelId: string | null = null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const metadata = mergeModelMetadata(message.metadata?.custom as Record<string, unknown> | undefined, modelContextWindow, modelId);
+    modelContextWindow = metadata.modelContextWindow;
+    modelId = metadata.modelId;
+    const promptTokens = readPromptTokensFromSteps(message.metadata?.steps);
+    if (promptTokens !== null) return { usedTokens: promptTokens, modelContextWindow, modelId };
+  }
+  return { usedTokens: 0, modelContextWindow, modelId };
+}
+
 function deriveUsageState(messages: readonly {
   role: string;
   metadata?: {
@@ -37,40 +78,8 @@ function deriveUsageState(messages: readonly {
     steps?: readonly { usage?: { promptTokens?: number } }[];
   };
 }[]): UsageState {
-  let usedTokens = 0;
-  let modelContextWindow: number | null = null;
-  let modelId: string | null = null;
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "assistant") continue;
-
-    const custom = message.metadata?.custom as Record<string, unknown> | undefined;
-    if (modelContextWindow === null) {
-      modelContextWindow = asNumber(custom?.modelContextWindow);
-    }
-    if (modelId === null) {
-      modelId = asString(custom?.modelId);
-    }
-
-    const steps = message.metadata?.steps;
-    if (Array.isArray(steps)) {
-      for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1) {
-        const step = steps[stepIndex];
-        const promptTokens = asNumber(step?.usage?.promptTokens);
-        if (promptTokens !== null) {
-          usedTokens = promptTokens;
-          return { usedTokens, modelContextWindow, modelId };
-        }
-      }
-    }
-  }
-
-  return {
-    usedTokens,
-    modelContextWindow: modelContextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW,
-    modelId: modelId ?? DEFAULT_MODEL_ID,
-  };
+  const scanned = scanAssistantUsage(messages);
+  return { usedTokens: scanned.usedTokens, modelContextWindow: scanned.modelContextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW, modelId: scanned.modelId ?? DEFAULT_MODEL_ID };
 }
 
 export function ContextDisplay({ className }: { className?: string }) {

@@ -53,7 +53,6 @@ async def init_db(conn_string: str) -> None:
         for stmt in (
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS provider VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS credentials TEXT",
-            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_account_id VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo_full_name VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_base_branch VARCHAR",
