@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -27,6 +27,8 @@ from .usage import (
     text_from_content,
     to_int,
 )
+
+CancelChecker = Callable[[], Awaitable[bool]]
 
 
 def ensure_settings(settings: Settings) -> None:
@@ -234,16 +236,18 @@ async def _stream_agent_events(
     *,
     messages: list[dict[str, Any]],
     config: dict[str, Any],
-    request: Request,
+    cancel_checker: CancelChecker | None,
     state: dict[str, Any],
 ) -> AsyncIterator[dict[str, Any]]:
     async for chunk in agent.astream({"messages": messages}, config, stream_mode=["messages", "updates"]):
-        if await request.is_disconnected():
+        if cancel_checker is not None and await cancel_checker():
             state["interrupted"] = True
             break
         for message in extract_messages_from_obj(chunk):
             if isinstance(message, AIMessage):
                 for event in _ai_message_events(message, state["seen_tool_calls"], state["tool_call_map"], state["usage_state"]):
+                    yield event
+                for event in extract_text_events(message, state["buffers"]):
                     yield event
                 continue
             if isinstance(message, ToolMessage):
@@ -252,6 +256,43 @@ async def _stream_agent_events(
                 continue
             for event in extract_text_events(message, state["buffers"]):
                 yield event
+
+
+async def stream_response_events(
+    payload: ChatRequest,
+    settings: Settings,
+    *,
+    cancel_checker: CancelChecker | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    ensure_settings(settings)
+    ensure_payload(payload)
+    agent = await get_agent(settings, _project_id(payload))
+    messages = _to_langchain_messages(payload)
+    config = _make_config(payload)
+    state = _new_stream_state()
+    model_id, model_context_window = _resolve_model_info(settings)
+
+    async for event in _stream_agent_events(
+        agent,
+        messages=messages,
+        config=config,
+        cancel_checker=cancel_checker,
+        state=state,
+    ):
+        yield event
+
+    if state["interrupted"]:
+        return
+    if cancel_checker is not None and await cancel_checker():
+        return
+
+    async for event in _emit_policy_events(_project_id(payload), state["changed_paths"]):
+        yield event
+
+    if cancel_checker is not None and await cancel_checker():
+        return
+
+    yield _usage_event(state["usage_state"]["tokens"], model_id=model_id, model_context_window=model_context_window)
 
 
 async def generate_response(payload: ChatRequest, settings: Settings) -> str:
@@ -286,27 +327,12 @@ async def stream_response(
     settings: Settings,
     request: Request,
 ) -> AsyncIterator[dict[str, Any]]:
-    ensure_settings(settings)
-    ensure_payload(payload)
-    agent = await get_agent(settings, _project_id(payload))
-    messages = _to_langchain_messages(payload)
-    config = _make_config(payload)
-    state = _new_stream_state()
-    model_id, model_context_window = _resolve_model_info(settings)
-
-    async for event in _stream_agent_events(agent, messages=messages, config=config, request=request, state=state):
+    async for event in stream_response_events(
+        payload,
+        settings,
+        cancel_checker=request.is_disconnected,
+    ):
         yield event
-
-    if state["interrupted"] or await request.is_disconnected():
-        return
-
-    async for event in _emit_policy_events(_project_id(payload), state["changed_paths"]):
-        yield event
-
-    if await request.is_disconnected():
-        return
-
-    yield _usage_event(state["usage_state"]["tokens"], model_id=model_id, model_context_window=model_context_window)
 
 
 async def stream_basic_response(

@@ -15,7 +15,7 @@ export interface TreeFolder {
 
 export type TreeNode = TreeFile | TreeFolder;
 
-export type WorkflowProblemMode = "plan" | "apply" | "security";
+export type WorkflowProblemMode = "plan" | "apply" | "pipeline" | "security";
 
 export interface WorkflowProblem {
   id: string;

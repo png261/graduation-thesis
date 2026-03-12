@@ -40,7 +40,7 @@ interface StreamState {
   usageEvent: UsageEventPayload | null;
 }
 
-type StreamEvent = Record<string, unknown>;
+type StreamEvent = Record<string, unknown> & { type?: string };
 
 type AdapterRunInput = Parameters<ChatModelAdapter["run"]>[0];
 type InferRunResult<T> = T extends Promise<infer R>
@@ -310,7 +310,7 @@ async function* streamChatEvents(
   deps: AdapterDeps,
   state: StreamState,
 ): AsyncGenerator<ChatRunResult, void, unknown> {
-  for await (const rawEvent of readSseJson(response)) {
+  for await (const rawEvent of readSseJson<StreamEvent>(response)) {
     const handled = handleStreamEvent(state, deps, toStreamEvent(rawEvent));
     if (handled.output) yield handled.output;
     if (!handled.done) continue;

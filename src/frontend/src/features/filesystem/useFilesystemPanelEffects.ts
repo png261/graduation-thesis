@@ -6,8 +6,8 @@ import type { PolicyCheckEvent, PolicyCheckIssue } from "../../contexts/Filesyst
 interface UseFilesystemPanelEffectsArgs {
   authenticated: boolean;
   projectId: string;
-  workspaceTab: "code" | "costs" | "graph";
-  setWorkspaceTab: (tab: "code" | "costs" | "graph") => void;
+  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void;
   files: FileEntry[];
   selectedPath: string | null;
   fetchFiles: () => Promise<void>;
@@ -169,7 +169,7 @@ function useInitialFilesystemLoad(fetchFiles: () => Promise<void>, pushLog: (mes
 function useProjectResetEffects(
   projectId: string,
   resetWorkflow: () => void,
-  setWorkspaceTab: (tab: "code" | "costs" | "graph") => void,
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void,
 ) {
   useEffect(() => {
     resetWorkflow();
@@ -179,7 +179,7 @@ function useProjectResetEffects(
   }, [projectId, setWorkspaceTab]);
 }
 
-function useGuestWorkspaceGuard(authenticated: boolean, setWorkspaceTab: (tab: "code" | "costs" | "graph") => void) {
+function useGuestWorkspaceGuard(authenticated: boolean, setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void) {
   useEffect(() => {
     if (!authenticated) setWorkspaceTab("code");
   }, [authenticated, setWorkspaceTab]);
@@ -187,7 +187,7 @@ function useGuestWorkspaceGuard(authenticated: boolean, setWorkspaceTab: (tab: "
 
 function useLazyWorkspaceLoaders(args: {
   authenticated: boolean;
-  workspaceTab: "code" | "costs" | "graph";
+  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
   loadCosts: (opts: { scope: string }) => Promise<void>;
   costScope: string;
   loadGraph: (opts: { scope: string }) => Promise<void>;

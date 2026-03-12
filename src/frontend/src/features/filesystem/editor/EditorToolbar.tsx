@@ -10,11 +10,11 @@ interface EditorToolbarProps {
   readOnly: boolean;
   isDirty: boolean;
   githubStatus: ProjectGitHubStatus | null;
-  workflowBusy: "plan" | "apply" | null;
+  workflowBusy: "plan" | "apply" | "pipeline" | null;
   onDownloadZip: () => void;
   onOpenCreateRepo: () => void;
   onOpenPullRequest: () => void;
-  onRunWorkflow: (mode: "plan" | "apply") => void;
+  onRunWorkflow: (mode: "plan" | "apply" | "pipeline") => void;
   onSave: () => void;
 }
 
@@ -80,9 +80,10 @@ function ExportCodeMenu({
   );
 }
 
-function workflowButtonLabel(workflowBusy: "plan" | "apply" | null) {
+function workflowButtonLabel(workflowBusy: "plan" | "apply" | "pipeline" | null) {
   if (workflowBusy === "plan") return "Planning...";
   if (workflowBusy === "apply") return "Applying...";
+  if (workflowBusy === "pipeline") return "Running Pipeline...";
   return "Run Workflow";
 }
 
@@ -92,8 +93,8 @@ function WorkflowMenu({
   onRunWorkflow,
 }: {
   readOnly: boolean;
-  workflowBusy: "plan" | "apply" | null;
-  onRunWorkflow: (mode: "plan" | "apply") => void;
+  workflowBusy: "plan" | "apply" | "pipeline" | null;
+  onRunWorkflow: (mode: "plan" | "apply" | "pipeline") => void;
 }) {
   const disabled = readOnly || workflowBusy !== null;
   return (
@@ -106,6 +107,7 @@ function WorkflowMenu({
         <DropdownMenuSeparator />
         <ToolbarMenuItem icon={<Play className="mt-0.5 h-4 w-4" />} title="Run Plan" description="init + plan" disabled={disabled} onSelect={() => onRunWorkflow("plan")} />
         <ToolbarMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Apply" description="init + apply" disabled={disabled} onSelect={() => onRunWorkflow("apply")} />
+        <ToolbarMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Pipeline" description="apply + ansible + telegram report" disabled={disabled} onSelect={() => onRunWorkflow("pipeline")} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

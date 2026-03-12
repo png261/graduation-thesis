@@ -17,7 +17,7 @@ from app.models import Project
 from app.services.project import files as project_files
 from app.services.model.factory import create_chat_model
 
-from .prompts import OPENTOFU_SUBAGENTS, SYSTEM_PROMPT
+from .prompts import PROMPT_BUNDLE
 from .tools import build_project_tools
 
 _agents: dict[str, CompiledStateGraph] = {}
@@ -80,7 +80,9 @@ async def get_agent(settings: Settings, project_id: str = "default") -> Compiled
         model = create_chat_model(settings)
 
         provider_ctx = await _load_provider_context(project_id)
-        full_system_prompt = SYSTEM_PROMPT + (f"\n\n{provider_ctx}" if provider_ctx else "")
+        full_system_prompt = PROMPT_BUNDLE.system_prompt + (
+            f"\n\n{provider_ctx}" if provider_ctx else ""
+        )
 
         pid = project_id
         project_root = project_files.ensure_project_dir(pid)
@@ -96,7 +98,7 @@ async def get_agent(settings: Settings, project_id: str = "default") -> Compiled
             store=None,
             memory=["/AGENT.md"],
             skills=["/skills/"],
-            subagents=OPENTOFU_SUBAGENTS,
+            subagents=[dict(item) for item in PROMPT_BUNDLE.opentofu_subagents],
             backend=_backend_factory,
         )
 

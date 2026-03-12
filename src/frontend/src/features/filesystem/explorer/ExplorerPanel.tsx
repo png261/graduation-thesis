@@ -1,17 +1,27 @@
-import { useRef, type ChangeEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { Button } from "../../../components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "../../../components/ui/context-menu";
 import type { TreeNode } from "../types";
-import { FileTreeNode } from "./FileTreeNode";
-import { NewItemInput } from "./NewItemInput";
+import { ExplorerTreeList, type PendingCreation } from "./ExplorerTreeList";
 
 interface ExplorerPanelProps {
   tree: TreeNode[];
   selectedPath: string | null;
+  selectedPaths: Set<string>;
   readOnly: boolean;
   expandedFolders: Set<string>;
   toggleFolder: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onSelectionChange: (paths: string[]) => void;
+  onMovePaths: (sourcePaths: string[], destinationDir: string) => Promise<void> | void;
+  onRenamePath: (path: string, newName: string) => Promise<void> | void;
   onDelete: (path: string, isFolder: boolean) => void;
   onRefresh: () => void;
   newItemMode: "file" | "folder" | null;
@@ -24,68 +34,36 @@ interface ExplorerPanelProps {
   importError: string;
 }
 
-function ToolbarIcon({ path }: { path: string }) {
-  return (
-    <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="currentColor">
-      <path d={path} />
-    </svg>
-  );
+function filterTreeNodes(nodes: TreeNode[], rawQuery: string): TreeNode[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return nodes;
+  const visit = (node: TreeNode): TreeNode | null => {
+    const selfMatch = node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query);
+    if (node.type === "file") return selfMatch ? node : null;
+    const children = node.children.map(visit).filter((child): child is TreeNode => child !== null);
+    if (!selfMatch && children.length < 1) return null;
+    return { ...node, children };
+  };
+  return nodes.map(visit).filter((node): node is TreeNode => node !== null);
 }
 
-function ToolbarButton({
-  title,
-  disabled,
-  onClick,
-  iconPath,
+function ExplorerFilterInput({
+  value,
+  onChange,
 }: {
-  title: string;
-  disabled?: boolean;
-  onClick: () => void;
-  iconPath: string;
+  value: string;
+  onChange: (value: string) => void;
 }) {
   return (
-    <button title={title} className="rounded p-1 text-[var(--da-muted)] hover:bg-[var(--da-panel)] hover:text-[var(--da-text)]" disabled={disabled} onClick={onClick}>
-      <ToolbarIcon path={iconPath} />
-    </button>
-  );
-}
-
-function ExplorerToolbar({
-  readOnly,
-  onRefresh,
-  setNewItemMode,
-}: {
-  readOnly: boolean;
-  onRefresh: () => void;
-  setNewItemMode: (mode: "file" | "folder" | null) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between border-b border-[var(--da-border)] px-3 py-2">
-      <div className="flex gap-1">
-        <ToolbarButton title="New file" disabled={readOnly} onClick={() => setNewItemMode("file")} iconPath="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5L9.5 0H4zm5.5 1v3.5H13L9.5 1zM8 6.5a.5.5 0 0 1 .5.5v1.5H10a.5.5 0 0 1 0 1H8.5V11a.5.5 0 0 1-1 0V9.5H6a.5.5 0 0 1 0-1h1.5V7a.5.5 0 0 1 .5-.5z" />
-        <ToolbarButton title="New folder" disabled={readOnly} onClick={() => setNewItemMode("folder")} iconPath="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H7.621a1.5 1.5 0 0 1-1.06-.44L5.5 3H1.5zM8 7.5a.5.5 0 0 1 .5.5v1.5H10a.5.5 0 0 1 0 1H8.5V12a.5.5 0 0 1-1 0v-1.5H6a.5.5 0 0 1 0-1h1.5V8a.5.5 0 0 1 .5-.5z" />
-        <ToolbarButton title="Refresh" onClick={onRefresh} iconPath="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z" />
-      </div>
+    <div className="border-b border-[var(--da-border)] px-2 py-2">
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Filter files..."
+        className="w-full rounded border border-[var(--da-border)] bg-[var(--da-panel)] px-2 py-1 text-xs text-[var(--da-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--da-accent)]/60"
+      />
     </div>
   );
-}
-
-function ExplorerNewItemInput({
-  readOnly,
-  mode,
-  onNewFile,
-  onNewFolder,
-  setMode,
-}: {
-  readOnly: boolean;
-  mode: "file" | "folder" | null;
-  onNewFile: (name: string) => void;
-  onNewFolder: (name: string) => void;
-  setMode: (mode: "file" | "folder" | null) => void;
-}) {
-  if (readOnly || !mode) return null;
-  if (mode === "file") return <NewItemInput placeholder="/path/to/file.txt" onConfirm={onNewFile} onCancel={() => setMode(null)} />;
-  return <NewItemInput placeholder="/path/to/folder" onConfirm={onNewFolder} onCancel={() => setMode(null)} />;
 }
 
 function EmptyExplorerState({
@@ -103,57 +81,136 @@ function EmptyExplorerState({
 }) {
   return (
     <div className="space-y-3 px-3 py-4">
-      <p className="text-center text-xs text-[var(--da-muted)]">No files yet.<br />Import code to get started.</p>
-      {readOnly ? null : <div className="space-y-2">
-        <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenImportGitHub}>Import from GitHub</Button>
-        <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenZipPicker}>Upload ZIP</Button>
-        {importError ? <p className="text-xs text-red-300">{importError}</p> : null}
-      </div>}
+      <p className="text-center text-xs text-[var(--da-muted)]">
+        No files yet.
+        <br />
+        Import code to get started.
+      </p>
+      {readOnly ? null : (
+        <div className="space-y-2">
+          <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenImportGitHub}>
+            Import from GitHub
+          </Button>
+          <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenZipPicker}>
+            Upload ZIP
+          </Button>
+          {importError ? <p className="text-xs text-red-300">{importError}</p> : null}
+        </div>
+      )}
     </div>
   );
 }
 
-function ExplorerTreeList({
-  tree,
-  selectedPath,
-  readOnly,
-  expandedFolders,
-  toggleFolder,
-  onOpenFile,
-  onDelete,
-}: {
+function ExplorerTreeArea(props: {
   tree: TreeNode[];
-  selectedPath: string | null;
-  readOnly: boolean;
-  expandedFolders: Set<string>;
-  toggleFolder: (path: string) => void;
-  onOpenFile: (path: string) => void;
-  onDelete: (path: string, isFolder: boolean) => void;
+  filteredTree: TreeNode[];
+  pendingCreation: PendingCreation | null;
+  panel: ExplorerPanelProps;
+  onOpenZipPicker: () => void;
+  filterQuery: string;
+  onRequestCreate: (mode: "file" | "folder", parentPath: string) => void;
+  onCreateAtPath: (mode: "file" | "folder", parentPath: string, name: string) => void;
+  setPendingCreation: (value: PendingCreation | null) => void;
 }) {
+  if (props.tree.length < 1 && !props.pendingCreation) {
+    return (
+      <EmptyExplorerState
+        readOnly={props.panel.readOnly}
+        importBusy={props.panel.importBusy}
+        importError={props.panel.importError}
+        onOpenImportGitHub={props.panel.onOpenImportGitHub}
+        onOpenZipPicker={props.onOpenZipPicker}
+      />
+    );
+  }
+  if (props.filteredTree.length < 1 && !props.pendingCreation) {
+    return <div className="px-3 py-4 text-xs text-[var(--da-muted)]">No matching files.</div>;
+  }
   return (
-    <>
-      {tree.map((node) => (
-        <FileTreeNode key={node.path} node={node} depth={0} selectedPath={selectedPath} onSelect={onOpenFile} onDelete={onDelete} readOnly={readOnly} expandedFolders={expandedFolders} toggleFolder={toggleFolder} />
-      ))}
-    </>
+    <ExplorerTreeList
+      tree={props.tree.length < 1 ? [] : props.filteredTree}
+      selectedPath={props.panel.selectedPath}
+      selectedPaths={props.panel.selectedPaths}
+      readOnly={props.panel.readOnly}
+      expandedFolders={props.panel.expandedFolders}
+      toggleFolder={props.panel.toggleFolder}
+      onOpenFile={props.panel.onOpenFile}
+      onSelectionChange={props.panel.onSelectionChange}
+      onMovePaths={props.panel.onMovePaths}
+      onRenamePath={props.panel.onRenamePath}
+      onDelete={props.panel.onDelete}
+      filterQuery={props.filterQuery}
+      onRequestCreate={props.onRequestCreate}
+      pendingCreation={props.pendingCreation}
+      setPendingCreation={props.setPendingCreation}
+      onCreateAtPath={props.onCreateAtPath}
+    />
   );
 }
 
 export function ExplorerPanel(props: ExplorerPanelProps) {
   const zipInputRef = useRef<HTMLInputElement | null>(null);
+  const nextPendingIdRef = useRef(0);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [pendingCreation, setPendingCreation] = useState<PendingCreation | null>(null);
+  const filteredTree = useMemo(() => filterTreeNodes(props.tree, filterQuery), [filterQuery, props.tree]);
+
+  const toChildPath = useCallback((parentPath: string, name: string) => {
+    if (parentPath === "/") return `/${name}`;
+    return `${parentPath}/${name}`;
+  }, []);
+
+  const handleRequestCreate = useCallback((mode: "file" | "folder", parentPath: string) => {
+    if (props.readOnly) return;
+    const normalizedParent = parentPath && parentPath.trim() ? parentPath : "/";
+    const pendingId = `__new__:${mode}:${nextPendingIdRef.current++}`;
+    setPendingCreation({ id: pendingId, parentPath: normalizedParent, mode });
+  }, [props.readOnly]);
+
+  const handleCreateAtPath = useCallback((mode: "file" | "folder", parentPath: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.includes("/") || trimmed.includes("\\")) return;
+    const fullPath = toChildPath(parentPath, trimmed);
+    if (mode === "folder") {
+      props.onNewFolder(fullPath);
+      return;
+    }
+    props.onNewFile(fullPath);
+  }, [props, toChildPath]);
+
   const handleZipChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) props.onUploadZip(file);
     event.currentTarget.value = "";
   };
+
   return (
     <div className="flex h-full min-h-0 flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
-      <ExplorerToolbar readOnly={props.readOnly} onRefresh={props.onRefresh} setNewItemMode={props.setNewItemMode} />
-      <ExplorerNewItemInput readOnly={props.readOnly} mode={props.newItemMode} onNewFile={props.onNewFile} onNewFolder={props.onNewFolder} setMode={props.setNewItemMode} />
+      <ExplorerFilterInput value={filterQuery} onChange={setFilterQuery} />
       <input ref={zipInputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={handleZipChange} />
-      <div className="flex-1 overflow-y-auto py-1">
-        {props.tree.length < 1 ? <EmptyExplorerState readOnly={props.readOnly} importBusy={props.importBusy} importError={props.importError} onOpenImportGitHub={props.onOpenImportGitHub} onOpenZipPicker={() => zipInputRef.current?.click()} /> : <ExplorerTreeList tree={props.tree} selectedPath={props.selectedPath} readOnly={props.readOnly} expandedFolders={props.expandedFolders} toggleFolder={props.toggleFolder} onOpenFile={props.onOpenFile} onDelete={props.onDelete} />}
-      </div>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="flex-1 overflow-y-auto py-1">
+            <ExplorerTreeArea
+              tree={props.tree}
+              filteredTree={filteredTree}
+              pendingCreation={pendingCreation}
+              panel={props}
+              onOpenZipPicker={() => zipInputRef.current?.click()}
+              filterQuery={filterQuery}
+              onRequestCreate={handleRequestCreate}
+              onCreateAtPath={handleCreateAtPath}
+              setPendingCreation={setPendingCreation}
+            />
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem disabled={props.readOnly} onSelect={() => handleRequestCreate("file", "/")}>New file</ContextMenuItem>
+          <ContextMenuItem disabled={props.readOnly} onSelect={() => handleRequestCreate("folder", "/")}>New folder</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={props.onRefresh}>Refresh</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
   );
 }

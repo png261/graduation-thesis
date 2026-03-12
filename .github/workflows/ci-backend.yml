@@ -1,0 +1,83 @@
+name: CI Backend
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: IaC policy and lint scan
+        run: |
+          if find ../.. -name "*.tf" | grep -q .; then
+            checkov -d ../.. --framework terraform --output cli --quiet || true
+            tflint --chdir ../.. --recursive --format compact || true
+          else
+            echo "No Terraform files found; skipping IaC scan."
+          fi
+
+      - name: Ruff (incremental gate)
+        run: |
+          ruff check \
+            app/schemas/chat.py \
+            app/schemas/stream_events.py \
+            app/main.py \
+            app/routers/projects_routes/project_workspace.py \
+            app/routers/projects_routes/project_opentofu.py \
+            app/routers/http_errors.py \
+            app/services/opentofu/runtime/runner.py \
+            app/services/opentofu/runtime/shared.py \
+            app/services/ansible/runtime/runner.py \
+            app/services/jobs/tasks.py \
+            app/services/jobs/service.py \
+            app/services/agent/runtime/tools.py \
+            tests
+
+      - name: Black (incremental gate)
+        run: |
+          black --check \
+            app/schemas/chat.py \
+            app/schemas/stream_events.py \
+            app/main.py \
+            app/routers/projects_routes/project_workspace.py \
+            app/routers/projects_routes/project_opentofu.py \
+            app/routers/http_errors.py \
+            app/services/opentofu/runtime/runner.py \
+            app/services/opentofu/runtime/shared.py \
+            app/services/ansible/runtime/runner.py \
+            app/services/jobs/tasks.py \
+            app/services/jobs/service.py \
+            app/services/agent/runtime/tools.py \
+            tests
+
+      - name: Pytest with coverage gate
+        run: |
+          PYTHONPATH=. pytest -q \
+            --cov=app.services.project.files \
+            --cov=app.services.opentofu.runtime.runner \
+            --cov-fail-under=70

@@ -1,25 +1,35 @@
 import Editor from "@monaco-editor/react";
+import { useEffect, useState } from "react";
 
-import type { ProjectGitHubStatus } from "../../../api/projects/index";
-import { EditorToolbar } from "./EditorToolbar";
+import {
+  getProjectFileSignedUrl,
+  readProjectFileBlob,
+} from "../../../api/projects/index";
 
 interface EditorPaneProps {
+  projectId: string;
   selectedPath: string | null;
   readOnly: boolean;
-  isDirty: boolean;
   isLoading: boolean;
   language: string;
   content: string;
   setContent: (value: string) => void;
   exportError: string;
   workflowError: string;
-  githubStatus: ProjectGitHubStatus | null;
-  workflowBusy: "plan" | "apply" | null;
-  onDownloadZip: () => void;
-  onOpenCreateRepo: () => void;
-  onOpenPullRequest: () => void;
-  onRunWorkflow: (mode: "plan" | "apply") => void;
-  onSave: () => void;
+}
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"]);
+
+function extensionFromPath(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  const index = name.lastIndexOf(".");
+  if (index < 0 || index === name.length - 1) return "";
+  return name.slice(index + 1).toLowerCase();
+}
+
+function isImagePath(path: string | null): path is string {
+  if (!path) return false;
+  return IMAGE_EXTENSIONS.has(extensionFromPath(path));
 }
 
 function EditorErrorBanner({ message }: { message: string }) {
@@ -40,6 +50,112 @@ function EmptyEditorState() {
 
 function LoadingEditorState() {
   return <div className="flex h-full items-center justify-center text-xs text-[var(--da-muted)]">Loading…</div>;
+}
+
+function resolveReadonlyPreview(args: {
+  selectedPath: string;
+  content: string;
+}) {
+  if (args.content.startsWith("data:image/")) return { src: args.content, error: "" };
+  if (extensionFromPath(args.selectedPath) === "svg" && args.content.trim()) {
+    return { blob: new Blob([args.content], { type: "image/svg+xml" }), error: "" };
+  }
+  return { error: "Image preview requires authenticated project access." };
+}
+
+function useImagePreviewState(args: {
+  projectId: string;
+  selectedPath: string;
+  readOnly: boolean;
+  content: string;
+}) {
+  const [src, setSrc] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let revokedUrl = "";
+    let active = true;
+    const setPreviewFromBlob = (blob: Blob) => {
+      const url = URL.createObjectURL(blob);
+      revokedUrl = url;
+      if (active) {
+        setSrc(url);
+        setError("");
+        setLoading(false);
+      }
+    };
+    const loadImage = async () => {
+      setLoading(true);
+      setSrc("");
+      setError("");
+      if (args.readOnly) {
+        const preview = resolveReadonlyPreview({ selectedPath: args.selectedPath, content: args.content });
+        if (preview.src) setSrc(preview.src);
+        if (preview.blob) setPreviewFromBlob(preview.blob);
+        if (preview.error) setError(preview.error);
+        if (!preview.blob) setLoading(false);
+        return;
+      }
+      try {
+        const signedUrl = await getProjectFileSignedUrl(args.projectId, args.selectedPath);
+        if (!active) return;
+        setSrc(signedUrl);
+        setError("");
+        setLoading(false);
+      } catch {
+        try {
+          const blob = await readProjectFileBlob(args.projectId, args.selectedPath);
+          if (!active) return;
+          setPreviewFromBlob(blob);
+        } catch (err) {
+          if (!active) return;
+          setError(err instanceof Error ? err.message : "Failed to load image");
+          setLoading(false);
+        }
+      }
+    };
+    void loadImage();
+    return () => {
+      active = false;
+      if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+    };
+  }, [args.content, args.projectId, args.readOnly, args.selectedPath]);
+  return { src, error, loading, setError, setLoading };
+}
+
+function ImagePreview({
+  projectId,
+  selectedPath,
+  readOnly,
+  content,
+}: {
+  projectId: string;
+  selectedPath: string;
+  readOnly: boolean;
+  content: string;
+}) {
+  const { src, error, loading, setError, setLoading } = useImagePreviewState({
+    projectId,
+    selectedPath,
+    readOnly,
+    content,
+  });
+
+  if (loading) return <LoadingEditorState />;
+  if (error) return <div className="flex h-full items-center justify-center px-4 text-xs text-red-300">{error}</div>;
+  return (
+    <div className="flex h-full items-center justify-center overflow-auto bg-[var(--da-bg)] p-4">
+      <img
+        src={src}
+        alt={selectedPath.split("/").pop() || "Selected image"}
+        className="max-h-full max-w-full rounded border border-[var(--da-border)] bg-[var(--da-panel)] object-contain shadow-sm"
+        onError={() => {
+          setError("Image URL expired or unavailable. Reopen file to refresh.");
+          setLoading(false);
+        }}
+      />
+    </div>
+  );
 }
 
 function MonacoEditorView({
@@ -68,6 +184,7 @@ function MonacoEditorView({
 }
 
 function EditorContent({
+  projectId,
   selectedPath,
   isLoading,
   language,
@@ -75,6 +192,7 @@ function EditorContent({
   readOnly,
   setContent,
 }: {
+  projectId: string;
   selectedPath: string | null;
   isLoading: boolean;
   language: string;
@@ -84,17 +202,17 @@ function EditorContent({
 }) {
   if (!selectedPath) return <EmptyEditorState />;
   if (isLoading) return <LoadingEditorState />;
+  if (isImagePath(selectedPath)) return <ImagePreview projectId={projectId} selectedPath={selectedPath} readOnly={readOnly} content={content} />;
   return <MonacoEditorView language={language} content={content} readOnly={readOnly} setContent={setContent} />;
 }
 
 export function EditorPane(props: EditorPaneProps) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-[var(--da-panel)]">
-      <EditorToolbar selectedPath={props.selectedPath} readOnly={props.readOnly} isDirty={props.isDirty} githubStatus={props.githubStatus} workflowBusy={props.workflowBusy} onDownloadZip={props.onDownloadZip} onOpenCreateRepo={props.onOpenCreateRepo} onOpenPullRequest={props.onOpenPullRequest} onRunWorkflow={props.onRunWorkflow} onSave={props.onSave} />
       <EditorErrorBanner message={props.exportError} />
       <EditorErrorBanner message={props.workflowError} />
       <div className="min-h-0 flex-1 overflow-hidden">
-        <EditorContent selectedPath={props.selectedPath} isLoading={props.isLoading} language={props.language} content={props.content} readOnly={props.readOnly} setContent={props.setContent} />
+        <EditorContent projectId={props.projectId} selectedPath={props.selectedPath} isLoading={props.isLoading} language={props.language} content={props.content} readOnly={props.readOnly} setContent={props.setContent} />
       </div>
     </div>
   );

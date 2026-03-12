@@ -14,11 +14,11 @@ export function DeploySection({
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Deploy</CardTitle>
-        <CardDescription>Preview modules and run opentofu plan/apply stream.</CardDescription>
+        <CardDescription>Plan/apply infrastructure, then run post-provision Ansible configuration.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <Button className="w-full" onClick={onOpenDeploy} disabled={!canDeploy}>
-          Deploy OpenTofu
+          Deploy Infrastructure + Config
         </Button>
         <p className="text-xs text-[var(--da-muted)]">{disabledReason || "Project is ready to deploy."}</p>
       </CardContent>

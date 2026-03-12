@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
 
 
+class ChatRole(str, Enum):
+    user = "user"
+    assistant = "assistant"
+    system = "system"
+
+
 class ChatMessage(BaseModel):
-    role: str = Field(..., description="user | assistant | system")
+    role: ChatRole = Field(..., description="user | assistant | system")
     content: str
 
 

@@ -1,15 +1,18 @@
 """Shared OpenTofu deploy helpers."""
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app import db
 from app.models import Project
@@ -45,10 +48,40 @@ def opentofu_available() -> bool:
     return shutil.which("tofu") is not None
 
 
-def project_lock(project_id: str) -> asyncio.Lock:
+def _local_project_lock(project_id: str) -> asyncio.Lock:
     if project_id not in _PROJECT_LOCKS:
         _PROJECT_LOCKS[project_id] = asyncio.Lock()
     return _PROJECT_LOCKS[project_id]
+
+
+def _advisory_lock_key(project_id: str) -> int:
+    digest = hashlib.blake2b(project_id.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) % (2**63)
+
+
+@asynccontextmanager
+async def _db_project_lock(project_id: str) -> AsyncIterator[None]:
+    key = _advisory_lock_key(project_id)
+    async with db.get_session() as session:
+        try:
+            await session.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+        except Exception:
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+            except Exception:
+                pass
+
+
+@asynccontextmanager
+async def project_lock(project_id: str) -> AsyncIterator[None]:
+    async with _local_project_lock(project_id):
+        async with _db_project_lock(project_id):
+            yield
 
 
 def _is_tf_var_name(name: str) -> bool:

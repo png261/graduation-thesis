@@ -5,14 +5,12 @@ import {
   buildSkillContent,
   deleteSkill,
   getMemory,
-  initTemplate,
   listSkills,
   type Skill,
   updateMemory,
   upsertSkill,
 } from "../api/projects/index";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
@@ -20,7 +18,7 @@ import { Label } from "./ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Textarea } from "./ui/textarea";
 
-type AgentTab = "templates" | "memory" | "skills";
+type AgentTab = "memory" | "skills";
 type EditingSkill = Skill | "new" | null;
 
 interface SkillFormProps {
@@ -28,26 +26,6 @@ interface SkillFormProps {
   onSave: (name: string, description: string, body: string) => Promise<void>;
   onCancel: () => void;
 }
-
-interface TemplateDef {
-  id: "opentofu";
-  label: string;
-  description: string;
-  details: string[];
-}
-
-const TEMPLATES: TemplateDef[] = [
-  {
-    id: "opentofu",
-    label: "OpenTofu Infrastructure",
-    description: "Install opentofu-focused skills and scaffold module/environments structure.",
-    details: [
-      "Skills: opentofu-module, opentofu-security",
-      "Sub-agents for architect/coder/reviewer",
-      "Workspace dirs: modules/, environments/",
-    ],
-  },
-];
 
 function extractSkillBody(content?: string): string {
   if (!content) return "";
@@ -125,26 +103,6 @@ function useSkillActions(projectId: string, setSkills: React.Dispatch<React.SetS
   }, [projectId, setSkills]);
 
   return { saveSkill, deleteSkillByName };
-}
-
-function useTemplateApplyAction(projectId: string, reload: () => Promise<void>) {
-  const [templateBusy, setTemplateBusy] = useState<string | null>(null);
-  const [templateError, setTemplateError] = useState("");
-
-  const applyTemplate = useCallback(async (templateId: "opentofu") => {
-    setTemplateBusy(templateId);
-    setTemplateError("");
-    try {
-      await initTemplate(projectId, templateId);
-      await reload();
-    } catch (error: unknown) {
-      setTemplateError(error instanceof Error ? error.message : "Failed to apply template");
-    } finally {
-      setTemplateBusy(null);
-    }
-  }, [projectId, reload]);
-
-  return { templateBusy, templateError, applyTemplate };
 }
 
 function SkillNameField({ name, isEdit, setName }: { name: string; isEdit: boolean; setName: (value: string) => void }) {
@@ -232,47 +190,6 @@ function SkillForm({ initial, onSave, onCancel }: SkillFormProps) {
   );
 }
 
-function TemplateErrorAlert({ templateError }: { templateError: string }) {
-  if (!templateError) return null;
-  return (
-    <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
-      <AlertTitle>Template failed</AlertTitle>
-      <AlertDescription>{templateError}</AlertDescription>
-    </Alert>
-  );
-}
-
-function TemplateCard({ template, busyId, onApply }: { template: TemplateDef; busyId: string | null; onApply: (id: "opentofu") => void }) {
-  return (
-    <Card className="bg-[var(--da-elevated)]">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">{template.label}</CardTitle>
-        <CardDescription>{template.description}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="space-y-2">
-          {template.details.map((detail) => (
-            <div key={detail} className="flex items-center gap-2 text-sm text-[var(--da-muted)]">
-              <Badge variant="secondary">Item</Badge>
-              <span>{detail}</span>
-            </div>
-          ))}
-        </div>
-        <Button disabled={busyId === template.id} onClick={() => onApply(template.id)}>{busyId === template.id ? "Applying..." : "Apply Template"}</Button>
-      </CardContent>
-    </Card>
-  );
-}
-
-function TemplatesTabContent({ templateBusy, templateError, applyTemplate }: { templateBusy: string | null; templateError: string; applyTemplate: (id: "opentofu") => void }) {
-  return (
-    <TabsContent value="templates" className="space-y-3 pt-3">
-      <TemplateErrorAlert templateError={templateError} />
-      {TEMPLATES.map((template) => <TemplateCard key={template.id} template={template} busyId={templateBusy} onApply={applyTemplate} />)}
-    </TabsContent>
-  );
-}
-
 function MemoryTabContent({ memory, setMemory, saved, saving, saveMemory }: { memory: string; setMemory: (value: string) => void; saved: boolean; saving: boolean; saveMemory: () => void }) {
   return (
     <TabsContent value="memory" className="space-y-3 pt-3">
@@ -343,10 +260,9 @@ function SkillsTabContent(props: {
   );
 }
 
-function ProjectAgentTabs({ tab, setTab }: { tab: AgentTab; setTab: (value: AgentTab) => void }) {
+function ProjectAgentTabs({ setTab }: { setTab: (value: AgentTab) => void }) {
   return (
-    <TabsList className="grid w-full grid-cols-3">
-      <TabsTrigger value="templates" onClick={() => setTab("templates")}>Templates</TabsTrigger>
+    <TabsList className="grid w-full grid-cols-2">
       <TabsTrigger value="memory" onClick={() => setTab("memory")}>Memory</TabsTrigger>
       <TabsTrigger value="skills" onClick={() => setTab("skills")}>Skills</TabsTrigger>
     </TabsList>
@@ -354,24 +270,22 @@ function ProjectAgentTabs({ tab, setTab }: { tab: AgentTab; setTab: (value: Agen
 }
 
 export function ProjectAgentSettings({ projectId }: { projectId: string }) {
-  const [tab, setTab] = useState<AgentTab>("templates");
+  const [tab, setTab] = useState<AgentTab>("memory");
   const [editingSkill, setEditingSkill] = useState<EditingSkill>(null);
   const data = useProjectAgentData(projectId);
   const memoryState = useMemorySaveAction(projectId, data.memory);
   const skillActions = useSkillActions(projectId, data.setSkills, setEditingSkill);
-  const templateActions = useTemplateApplyAction(projectId, data.reload);
   const stableSetMemory = useMemo(() => (value: string) => data.setMemory(value), [data]);
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Agent Settings</CardTitle>
-        <CardDescription>Manage project memory, reusable skills, and starter templates.</CardDescription>
+        <CardDescription>Manage project memory and reusable skills.</CardDescription>
       </CardHeader>
       <CardContent>
         <Tabs value={tab} onValueChange={(value) => setTab(value as AgentTab)}>
-          <ProjectAgentTabs tab={tab} setTab={setTab} />
-          <TemplatesTabContent templateBusy={templateActions.templateBusy} templateError={templateActions.templateError} applyTemplate={templateActions.applyTemplate} />
+          <ProjectAgentTabs setTab={setTab} />
           <MemoryTabContent memory={data.memory} setMemory={stableSetMemory} saved={memoryState.saved} saving={memoryState.saving} saveMemory={() => void memoryState.saveMemory()} />
           <SkillsTabContent editingSkill={editingSkill} setEditingSkill={setEditingSkill} skills={data.skills} saveSkill={skillActions.saveSkill} deleteSkillByName={(name) => void skillActions.deleteSkillByName(name)} />
         </Tabs>

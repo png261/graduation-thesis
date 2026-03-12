@@ -7,6 +7,18 @@ interface UseProjectsOptions {
   userId?: string;
 }
 
+function formatLoadError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    const lower = error.message.toLowerCase();
+    if (lower.includes("timed out")) return "Loading projects timed out. Please retry.";
+    if (lower.includes("cancelled") || lower.includes("aborted")) {
+      return "Project request was interrupted. Please retry.";
+    }
+    return error.message;
+  }
+  return "Failed to load projects";
+}
+
 function currentProjectKey(userId: string) {
   return `da_current_project:${userId}`;
 }
@@ -51,10 +63,12 @@ function useProjectsLoadEffect(args: {
   setProjects: Dispatch<SetStateAction<Project[]>>;
   setCurrentProjectIdState: Dispatch<SetStateAction<string>>;
   setLoading: Dispatch<SetStateAction<boolean>>;
+  setLoadError: Dispatch<SetStateAction<string | null>>;
   currentProjectIdRef: MutableRefObject<string>;
   loadSeqRef: MutableRefObject<number>;
+  reloadTick: number;
 }) {
-  const { authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, currentProjectIdRef, loadSeqRef } = args;
+  const { authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, setLoadError, currentProjectIdRef, loadSeqRef, reloadTick } = args;
   useEffect(() => {
     let cancelled = false;
     const cancel = () => {
@@ -64,16 +78,21 @@ function useProjectsLoadEffect(args: {
     const isInvalid = () => cancelled || loadSeq !== loadSeqRef.current;
     if (!authenticated) {
       setGuestProjectState(setProjects, setCurrentProjectIdState, setLoading);
+      setLoadError(null);
       return cancel;
     }
     setLoading(true);
+    setLoadError(null);
     void runProjectsLoad({ storageKey, activeCurrentId: () => currentProjectIdRef.current, setProjects, setCurrentProjectIdState, isInvalid })
-      .catch((error) => console.error("useProjects: failed to load", error))
+      .catch((error) => {
+        if (!isInvalid()) setLoadError(formatLoadError(error));
+        console.error("useProjects: failed to load", error);
+      })
       .finally(() => {
         if (!isInvalid()) setLoading(false);
       });
     return cancel;
-  }, [authenticated, currentProjectIdRef, loadSeqRef, setCurrentProjectIdState, setLoading, setProjects, storageKey]);
+  }, [authenticated, currentProjectIdRef, loadSeqRef, reloadTick, setCurrentProjectIdState, setLoadError, setLoading, setProjects, storageKey]);
 }
 
 function useSetCurrentProjectId(storageKey: string | null, setCurrentProjectIdState: Dispatch<SetStateAction<string>>) {
@@ -131,17 +150,20 @@ export function useProjects({ authenticated, userId }: UseProjectsOptions) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [currentProjectId, setCurrentProjectIdState] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const loadSeqRef = useRef(0);
   const currentProjectIdRef = useRef("");
   const storageKey = useMemo(() => (authenticated && userId ? currentProjectKey(userId) : null), [authenticated, userId]);
   useEffect(() => {
     currentProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
-  useProjectsLoadEffect({ authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, currentProjectIdRef, loadSeqRef });
+  useProjectsLoadEffect({ authenticated, storageKey, setProjects, setCurrentProjectIdState, setLoading, setLoadError, currentProjectIdRef, loadSeqRef, reloadTick });
   const setCurrentProjectId = useSetCurrentProjectId(storageKey, setCurrentProjectIdState);
   const createProject = useCreateProjectAction({ authenticated, loadSeqRef, setProjects, setCurrentProjectId });
   const renameProject = useRenameProjectAction(setProjects);
   const deleteProject = useDeleteProjectAction({ authenticated, currentProjectId, storageKey, setProjects, setCurrentProjectIdState });
+  const reloadProjects = useCallback(() => setReloadTick((value) => value + 1), []);
   const currentProject = projects.find((project) => project.id === currentProjectId) ?? projects[0];
-  return { projects, loading, currentProject, currentProjectId, setCurrentProjectId, createProject, renameProject, deleteProject };
+  return { projects, loading, loadError, currentProject, currentProjectId, setCurrentProjectId, createProject, renameProject, deleteProject, reloadProjects };
 }

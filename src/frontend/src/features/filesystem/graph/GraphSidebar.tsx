@@ -9,6 +9,7 @@ interface GraphSidebarProps {
   loading: boolean;
   onScopeChange: (scope: string) => void;
   onRefresh: () => void;
+  className?: string;
 }
 
 function graphScopeButtonClass(active: boolean) {
@@ -55,9 +56,9 @@ function GraphRefreshButton({ loading, onRefresh }: { loading: boolean; onRefres
   );
 }
 
-export function GraphSidebar({ modules, scope, loading, onScopeChange, onRefresh }: GraphSidebarProps) {
+export function GraphSidebar({ modules, scope, loading, onScopeChange, onRefresh, className }: GraphSidebarProps) {
   return (
-    <aside className="w-[300px] border-r border-white/10 bg-gradient-to-b from-[#14171d] to-[#101319] p-4">
+    <aside className={cn("h-full w-[300px] border-r border-white/10 bg-gradient-to-b from-[#14171d] to-[#101319] p-4", className)}>
       <h3 className="mb-5 text-3xl font-semibold leading-none text-white/90">Graph View</h3>
       <div className="space-y-3">
         <GraphModulesList modules={modules} scope={scope} onScopeChange={onScopeChange} />

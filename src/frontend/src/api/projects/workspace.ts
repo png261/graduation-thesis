@@ -1,5 +1,5 @@
 import { apiJson, apiRequest } from "../client";
-import type { InitResult, Skill, TemplateName } from "./types";
+import type { Skill } from "./types";
 
 export async function getMemory(projectId: string): Promise<string> {
   const res = await apiRequest(`/api/projects/${projectId}/memory`, { credentials: "include" });
@@ -59,12 +59,4 @@ export async function downloadProjectZip(projectId: string): Promise<Blob> {
 
 export function buildSkillContent(name: string, description: string, body: string): string {
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}`;
-}
-
-export async function initTemplate(projectId: string, template: TemplateName): Promise<InitResult> {
-  const res = await apiRequest(`/api/projects/${projectId}/init/${template}`, {
-    method: "POST",
-    credentials: "include",
-  });
-  return apiJson<InitResult>(res);
 }

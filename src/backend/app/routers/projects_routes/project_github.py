@@ -5,10 +5,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.routers import github_dependencies as github_deps
 from app.services.agent import invalidate_agent
 from app.services.github import auth as github_auth
 from app.services.github import projects as github_projects
+from app.services.telegram import notifications as telegram_notifications
 
 router = APIRouter()
 
@@ -121,7 +123,7 @@ async def create_project_pull_request(
     ),
 ) -> dict:
     try:
-        return await github_projects.create_project_pull_request(
+        result = await github_projects.create_project_pull_request(
             session,
             project=context.project,
             access_token=context.github_auth.access_token,
@@ -130,6 +132,12 @@ async def create_project_pull_request(
             body=body.description,
             base_branch=body.base_branch,
         )
+        await telegram_notifications.notify_project(
+            context.project,
+            get_settings(),
+            telegram_notifications.github_pull_request_text(context.project, result),
+        )
+        return result
     except github_projects.GitHubProjectError as exc:
         github_deps.raise_github_project_http_error(exc)
     except github_auth.GitHubAuthError as exc:

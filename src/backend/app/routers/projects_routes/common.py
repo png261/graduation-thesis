@@ -9,6 +9,8 @@ from app.models import Project, Thread
 from app.services.project import credentials as project_credentials
 
 _VALID_SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
+
+
 def safe_skill_name(name: str) -> str:
     normalised = re.sub(r"[^a-z0-9-]", "-", name.lower().strip()).strip("-")
     normalised = re.sub(r"-{2,}", "-", normalised)

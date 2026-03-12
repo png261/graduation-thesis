@@ -1,12 +1,17 @@
 """OpenTofu command execution and streaming."""
+
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
+from uuid import uuid4
 
 from app.core.config import Settings
+from app.services.policy import checks as policy_checks
 from app.services.project import credentials as project_credentials
 from app.services.project import files as project_files
 
@@ -20,6 +25,48 @@ from .shared import (
 )
 from .status import get_opentofu_status
 
+_BLOCKING_POLICY_SEVERITIES = {"HIGH", "CRITICAL"}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_id() -> str:
+    return f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+
+
+def _history_path(project_root: Path) -> Path:
+    return project_root / ".opentofu-runtime" / "history.jsonl"
+
+
+def _append_history(
+    *,
+    project_root: Path,
+    run_id: str,
+    run_mode: str,
+    intent: str,
+    status: str,
+    requested: list[str],
+    results: list[dict[str, Any]],
+) -> None:
+    payload = {
+        "run_id": run_id,
+        "mode": run_mode,
+        "intent": intent,
+        "status": status,
+        "modules": requested,
+        "results": results,
+        "finished_at": _now_iso(),
+    }
+    target = _history_path(project_root)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as history:
+            history.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
 
 async def _run_command_stream(
     *,
@@ -28,6 +75,7 @@ async def _run_command_stream(
     env: dict[str, str],
     module: str,
     stage: str,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -38,7 +86,20 @@ async def _run_command_stream(
     )
     assert process.stdout is not None
     while True:
-        raw = await process.stdout.readline()
+        if cancel_checker is not None and await cancel_checker():
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+            yield {"type": "stage.done", "module": module, "stage": stage, "exit_code": 130}
+            return
+        try:
+            raw = await asyncio.wait_for(process.stdout.readline(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
         if not raw:
             break
         line = raw.decode(errors="replace").rstrip()
@@ -53,12 +114,44 @@ def _event_prefix(run_mode: str) -> str:
     return "deploy" if run_mode == "apply" else "plan"
 
 
-def _done_event(event_prefix: str, status: str, results: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"type": f"{event_prefix}.done", "status": status, "results": results}
+def _done_event(
+    event_prefix: str,
+    status: str,
+    results: list[dict[str, Any]],
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"type": f"{event_prefix}.done", "status": status, "results": results}
+    if run_id:
+        payload["run_id"] = run_id
+    return payload
 
 
 def _failure_events(event_prefix: str, message: str) -> list[dict[str, Any]]:
     return [{"type": "error", "message": message}, _done_event(event_prefix, "failed", [])]
+
+
+async def _policy_gate_failure_events(project_id: str, event_prefix: str) -> list[dict[str, Any]] | None:
+    checks = await policy_checks.run_project_policy_checks(project_id)
+    issues = checks.get("issues", [])
+    blocking = [issue for issue in issues if str(issue.get("severity", "")).upper() in _BLOCKING_POLICY_SEVERITIES]
+    if not blocking:
+        return None
+    return [
+        {
+            "type": "policy.check.result",
+            "issues": issues,
+            "summary": checks.get("summary", {"total": len(issues), "bySeverity": {}}),
+            "scanError": checks.get("scanError"),
+            "changedPaths": [],
+        },
+        {
+            "type": "error",
+            "code": "policy_gate_blocked",
+            "message": f"Policy gate blocked apply ({len(blocking)} blocking issue(s))",
+        },
+        _done_event(event_prefix, "failed", []),
+    ]
 
 
 def _status_failure_events(status: dict[str, Any], event_prefix: str, run_mode: str) -> list[dict[str, Any]] | None:
@@ -106,7 +199,13 @@ async def _runtime_context_or_error(project_id: str, run_mode: str) -> tuple[dic
     tfdata_root = runtime_root / "tfdata"
     state_root.mkdir(parents=True, exist_ok=True)
     tfdata_root.mkdir(parents=True, exist_ok=True)
-    return {"project_root": project_root, "state_root": state_root, "tfdata_root": tfdata_root, "run_env": run_env, "run_mode": run_mode}, None
+    return {
+        "project_root": project_root,
+        "state_root": state_root,
+        "tfdata_root": tfdata_root,
+        "run_env": run_env,
+        "run_mode": run_mode,
+    }, None
 
 
 async def _stream_context_or_failure(
@@ -122,13 +221,20 @@ async def _stream_context_or_failure(
     failure = _status_failure_events(status, event_prefix, run_mode)
     if failure is not None:
         return None, failure
-    requested = await _resolve_requested_modules(project_id=project_id, settings=settings, status=status, selected_modules=selected_modules, intent=intent)
+    requested = await _resolve_requested_modules(
+        project_id=project_id, settings=settings, status=status, selected_modules=selected_modules, intent=intent
+    )
     if not requested:
         return None, _failure_events(event_prefix, f"No modules selected for {run_mode}")
     runtime, error_message = await _runtime_context_or_error(project_id, run_mode)
     if error_message is not None:
         return None, _failure_events(event_prefix, error_message)
-    return {"event_prefix": event_prefix, "requested": requested, "runtime": runtime or {}, "intent": intent or ""}, None
+    return {
+        "event_prefix": event_prefix,
+        "requested": requested,
+        "runtime": runtime or {},
+        "intent": intent or "",
+    }, None
 
 
 def _init_command(run_mode: str) -> list[str]:
@@ -149,7 +255,9 @@ def _run_command(run_mode: str, state_path: Path, var_files: list[Path]) -> list
     return base_cmd
 
 
-def _var_files_log_event(module: str, run_stage: str, var_files: list[Path], project_root: Path) -> dict[str, Any] | None:
+def _var_files_log_event(
+    module: str, run_stage: str, var_files: list[Path], project_root: Path
+) -> dict[str, Any] | None:
     if not var_files:
         return None
     display_paths: list[str] = []
@@ -191,8 +299,16 @@ async def _stream_stage(
     module: str,
     stage: str,
     state: dict[str, Any],
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    async for evt in _run_command_stream(cmd=cmd, cwd=cwd, env=env, module=module, stage=stage):
+    async for evt in _run_command_stream(
+        cmd=cmd,
+        cwd=cwd,
+        env=env,
+        module=module,
+        stage=stage,
+        cancel_checker=cancel_checker,
+    ):
         _record_stage_event(state, evt)
         yield evt
 
@@ -254,6 +370,7 @@ async def _stream_module_events(
     *,
     runtime: dict[str, Any],
     module: str,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     module_ctx, missing_evt = _module_runtime_context(runtime=runtime, module=module)
     if missing_evt is not None:
@@ -262,7 +379,15 @@ async def _stream_module_events(
     assert module_ctx is not None
     yield {"type": "module.start", "module": module}
     init_state = _new_stage_state(track_tail=True)
-    async for evt in _stream_stage(cmd=_init_command(runtime["run_mode"]), cwd=module_ctx["module_dir"], env=module_ctx["module_env"], module=module, stage="init", state=init_state):
+    async for evt in _stream_stage(
+        cmd=_init_command(runtime["run_mode"]),
+        cwd=module_ctx["module_dir"],
+        env=module_ctx["module_env"],
+        module=module,
+        stage="init",
+        state=init_state,
+        cancel_checker=cancel_checker,
+    ):
         yield evt
     if not init_state["ok"]:
         yield _module_done_failure(module, "init", init_state, use_tail=True)
@@ -273,7 +398,15 @@ async def _stream_module_events(
         yield var_log
     run_state = _new_stage_state(track_tail=False)
     run_cmd = _run_command(runtime["run_mode"], module_ctx["state_path"], module_ctx["var_files"])
-    async for evt in _stream_stage(cmd=run_cmd, cwd=module_ctx["module_dir"], env=module_ctx["module_env"], module=module, stage=run_stage, state=run_state):
+    async for evt in _stream_stage(
+        cmd=run_cmd,
+        cwd=module_ctx["module_dir"],
+        env=module_ctx["module_env"],
+        module=module,
+        stage=run_stage,
+        state=run_state,
+        cancel_checker=cancel_checker,
+    ):
         yield evt
     if not run_state["ok"]:
         yield _module_done_failure(module, run_stage, run_state, use_tail=False)
@@ -281,24 +414,58 @@ async def _stream_module_events(
     yield _module_success_event(module, runtime["run_mode"])
 
 
-async def _stream_orchestration(project_id: str, stream_context: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+async def _stream_orchestration(
+    project_id: str,
+    stream_context: dict[str, Any],
+    *,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     event_prefix = stream_context["event_prefix"]
     requested = stream_context["requested"]
     runtime = stream_context["runtime"]
+    run_mode = runtime["run_mode"]
+    run_id = _run_id()
     results: list[dict[str, Any]] = []
     async with project_lock(project_id):
-        yield {"type": f"{event_prefix}.start", "modules": requested, "intent": stream_context["intent"]}
+        yield {
+            "type": f"{event_prefix}.start",
+            "run_id": run_id,
+            "modules": requested,
+            "intent": stream_context["intent"],
+        }
         for module in requested:
             module_failed = False
-            async for event in _stream_module_events(runtime=runtime, module=module):
+            async for event in _stream_module_events(
+                runtime=runtime,
+                module=module,
+                cancel_checker=cancel_checker,
+            ):
                 if event["type"] == "module.done":
                     results.append(_module_result(event, module))
                     module_failed = event.get("status") == "failed"
                 yield event
             if module_failed:
-                yield _done_event(event_prefix, "failed", results)
+                _append_history(
+                    project_root=runtime["project_root"],
+                    run_id=run_id,
+                    run_mode=run_mode,
+                    intent=stream_context["intent"],
+                    status="failed",
+                    requested=requested,
+                    results=results,
+                )
+                yield _done_event(event_prefix, "failed", results, run_id=run_id)
                 return
-    yield _done_event(event_prefix, "ok", results)
+    _append_history(
+        project_root=runtime["project_root"],
+        run_id=run_id,
+        run_mode=run_mode,
+        intent=stream_context["intent"],
+        status="ok",
+        requested=requested,
+        results=results,
+    )
+    yield _done_event(event_prefix, "ok", results, run_id=run_id)
 
 
 async def run_modules_stream(
@@ -308,9 +475,17 @@ async def run_modules_stream(
     selected_modules: list[str],
     run_mode: str,
     intent: str | None = None,
+    policy_override: bool = False,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     if run_mode not in {"apply", "plan"}:
         raise ValueError(f"Unsupported run_mode '{run_mode}'")
+    if run_mode == "apply" and not policy_override:
+        policy_gate_failure_events = await _policy_gate_failure_events(project_id, _event_prefix(run_mode))
+        if policy_gate_failure_events is not None:
+            for event in policy_gate_failure_events:
+                yield event
+            return
     stream_context, failure_events = await _stream_context_or_failure(
         project_id=project_id,
         settings=settings,
@@ -323,7 +498,11 @@ async def run_modules_stream(
             yield event
         return
     assert stream_context is not None
-    async for event in _stream_orchestration(project_id, stream_context):
+    async for event in _stream_orchestration(
+        project_id,
+        stream_context,
+        cancel_checker=cancel_checker,
+    ):
         yield event
 
 
@@ -333,6 +512,8 @@ async def apply_modules_stream(
     settings: Settings,
     selected_modules: list[str],
     intent: str | None = None,
+    policy_override: bool = False,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     async for event in run_modules_stream(
         project_id=project_id,
@@ -340,6 +521,8 @@ async def apply_modules_stream(
         selected_modules=selected_modules,
         run_mode="apply",
         intent=intent,
+        policy_override=policy_override,
+        cancel_checker=cancel_checker,
     ):
         yield event
 
@@ -350,6 +533,7 @@ async def plan_modules_stream(
     settings: Settings,
     selected_modules: list[str],
     intent: str | None = None,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     async for event in run_modules_stream(
         project_id=project_id,
@@ -357,6 +541,7 @@ async def plan_modules_stream(
         selected_modules=selected_modules,
         run_mode="plan",
         intent=intent,
+        cancel_checker=cancel_checker,
     ):
         yield event
 
@@ -367,6 +552,8 @@ async def apply_modules_collect(
     settings: Settings,
     selected_modules: list[str],
     intent: str | None = None,
+    policy_override: bool = False,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """Run apply and return aggregate data for non-stream callers (agent tools)."""
     logs: list[dict[str, Any]] = []
@@ -376,6 +563,8 @@ async def apply_modules_collect(
         settings=settings,
         selected_modules=selected_modules,
         intent=intent,
+        policy_override=policy_override,
+        cancel_checker=cancel_checker,
     ):
         logs.append(event)
         if event.get("type") == "deploy.done":

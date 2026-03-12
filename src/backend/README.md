@@ -6,6 +6,8 @@ FastAPI backend for project workspace, GitHub integration, OpenTofu workflows, a
 
 - Python 3.11+
 - PostgreSQL 14+
+- OpenTofu CLI (`tofu`) for infrastructure workflows
+- Ansible CLI (`ansible-playbook`) for post-provision configuration workflows
 - Optional: Docker (for integration migration test)
 
 ## Environment
@@ -13,10 +15,35 @@ FastAPI backend for project workspace, GitHub integration, OpenTofu workflows, a
 Copy `.env.example` to `.env` and set required values:
 
 - `DATABASE_URL`
+- `DATABASE_URL_DOCKER` (optional compose-only DB URL override, default uses `postgres` service)
+- `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` (optional compose postgres defaults)
 - `CLERK_SECRET_KEY`
 - `CLERK_JWT_KEY` (if required by your Clerk setup)
 - `CLERK_AUTHORIZED_PARTIES` (comma-separated origins)
 - `GOOGLE_API_KEY`
+- `ANSIBLE_SSH_KEY_PATH` (required to run Ansible configuration stage)
+- `ANSIBLE_PLAYBOOK_PATH` (optional, default `playbooks/site.yml`)
+- `ANSIBLE_SSH_COMMON_ARGS` (optional)
+- `ANSIBLE_HOST_KEY_CHECKING` (optional, default `True`)
+- `TELEGRAM_BOT_TOKEN` (required for Telegram project connection)
+- `TELEGRAM_WEBHOOK_URL` (public URL for `POST /api/telegram/webhook`)
+- `TELEGRAM_WEBHOOK_SECRET` (must match Telegram webhook secret header)
+- `REDIS_URL` (Redis cache + jobs events/result backend)
+- `CELERY_BROKER_URL` (RabbitMQ broker URL)
+- `CELERY_RESULT_BACKEND` (Celery result backend, Redis recommended)
+- `JOBS_EVENT_TTL_SECONDS` (Redis replay buffer TTL, default `86400`)
+- `JOBS_HISTORY_RETENTION_DAYS` (DB job retention, default `90`)
+- `RUNTIME_CACHE_TTL_SECONDS` (Graph/cost cache TTL, default `300`)
+- `ZIP_IMPORT_MAX_BYTES` (optional max upload bytes for `/files/import-zip`, default 20MB)
+- `ZIP_IMPORT_MAX_FILES` (optional max file count for ZIP import, default 2000)
+- `ZIP_IMPORT_MAX_UNCOMPRESSED_BYTES` (optional max uncompressed ZIP bytes, default 80MB)
+- `PROJECTS_ROOT` (optional project files root path; default is `src/backend/projects`)
+- `STATE_ENCRYPTION_KEY` (required for encrypting credential profiles and GitLab OAuth tokens)
+- `STATE_SYNC_SCAN_INTERVAL_MINUTES` (optional scheduler interval for background state sync)
+- `STATE_SYNC_MAX_BACKENDS_PER_TICK` (optional scheduler batch size)
+- `STATE_ALERT_NOTIFY_SEVERITY` (comma-separated severities to notify via Telegram)
+- `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET` / `GITLAB_REDIRECT_URI` (required for GitLab OAuth import)
+- `FLOWER_PORT` (optional Flower UI port in compose, default `5555`)
 
 ## Install
 
@@ -33,6 +60,37 @@ pip install -e .[dev]
 cd src/backend
 source .venv/bin/activate
 uvicorn app.main:app --reload
+```
+
+Run worker:
+
+```bash
+cd src/backend
+source .venv/bin/activate
+celery -A app.celery_app.celery_app worker --loglevel=INFO
+```
+
+Run Flower monitor:
+
+```bash
+cd src/backend
+source .venv/bin/activate
+celery -A app.celery_app.celery_app flower --port=5555
+```
+
+## Docker Persisted Project Files
+
+When running with `src/backend/docker-compose.yml`, project files are stored outside container:
+- host path: `src/backend/projects-data` (default)
+- container path: `/data/projects`
+
+Compose also includes `postgres`, `redis`, and `rabbitmq` services by default. `backend`, `celery-worker`, and `flower`
+use `DATABASE_URL_DOCKER` (or default `postgresql://postgres:postgres@postgres:5432/postgres`).
+
+To change host path:
+
+```bash
+PROJECTS_HOST_PATH=/absolute/path docker compose -f src/backend/docker-compose.yml up --build
 ```
 
 ## Legacy Auth Schema Cleanup
@@ -53,6 +111,24 @@ The migration is destructive for legacy auth data by design.
 cd src/backend
 source .venv/bin/activate
 PYTHONPATH=. pytest -q
+```
+
+## Lint & Format
+
+```bash
+cd src/backend
+source .venv/bin/activate
+ruff check app
+black --check app
+```
+
+Auto-format:
+
+```bash
+cd src/backend
+source .venv/bin/activate
+ruff check --fix app
+black app
 ```
 
 Integration migration test (requires Docker):

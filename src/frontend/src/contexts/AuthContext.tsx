@@ -39,6 +39,7 @@ interface AuthContextValue {
   refreshSession: () => Promise<void>;
   login: () => void;
   logout: () => Promise<void>;
+  openUserSettings: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -169,7 +170,17 @@ function useSessionActions(clerk: ReturnType<typeof useClerk>, setError: (value:
     setError("");
   }, [clerk, setError]);
 
-  return { refreshSession, logout };
+  const openUserSettings = useCallback(() => {
+    const openProfile = (clerk as { openUserProfile?: () => void }).openUserProfile;
+    if (!openProfile) {
+      setError("User settings is not available right now.");
+      return;
+    }
+    setError("");
+    openProfile();
+  }, [clerk, setError]);
+
+  return { refreshSession, logout, openUserSettings };
 }
 
 function buildSession(
@@ -228,13 +239,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const clerk = useClerk();
   const [error, setError] = useState("");
   const login = useGithubLogin(setError);
-  const { refreshSession, logout } = useSessionActions(clerk, setError);
+  const { refreshSession, logout, openUserSettings } = useSessionActions(clerk, setError);
   useAuthTokenBinding(getToken);
 
   const session = useMemo(() => buildSession(isLoaded, Boolean(isSignedIn), user, sessionClaims), [isLoaded, isSignedIn, sessionClaims, user]);
   const value = useMemo<AuthContextValue>(
-    () => ({ session, loading: !isLoaded, error, refreshSession, login, logout }),
-    [error, isLoaded, login, logout, refreshSession, session],
+    () => ({ session, loading: !isLoaded, error, refreshSession, login, logout, openUserSettings }),
+    [error, isLoaded, login, logout, openUserSettings, refreshSession, session],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

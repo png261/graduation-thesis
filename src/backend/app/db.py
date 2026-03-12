@@ -4,14 +4,13 @@ from __future__ import annotations
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncGenerator
 
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.models import Base
 
@@ -58,6 +57,23 @@ async def init_db(conn_string: str) -> None:
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_base_branch VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_working_branch VARCHAR",
             "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_connected_at TIMESTAMPTZ",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_topic_id VARCHAR",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_topic_title VARCHAR",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_connected_at TIMESTAMPTZ",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_pending_code_hash VARCHAR",
+            "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_pending_expires_at TIMESTAMPTZ",
+        ):
+            await conn.execute(__import__("sqlalchemy").text(stmt))
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_project_jobs_project_created_at ON project_jobs (project_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_project_jobs_project_status_created_at ON project_jobs (project_id, status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_project_jobs_created_at ON project_jobs (created_at)",
+            (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_project_jobs_active_mutating_per_project "
+                "ON project_jobs (project_id) "
+                "WHERE kind IN ('apply','ansible','pipeline') AND status IN ('queued','running')"
+            ),
         ):
             await conn.execute(__import__("sqlalchemy").text(stmt))
 

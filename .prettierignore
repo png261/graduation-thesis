@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+.git
+.venv
+src/backend/.venv
+src/backend/.pytest_cache
+src/backend/app/projects
+src/backend/build
+src/frontend/node_modules
+src/frontend/dist

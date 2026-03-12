@@ -1,17 +1,21 @@
 """OpenTofu deploy endpoints for projects."""
-from __future__ import annotations
 
-import json
+from __future__ import annotations
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sse_starlette import EventSourceResponse
 
 from app.core.config import get_settings
+from app.core.sse import normalize_sse_item, sse_json, sse_response
 from app.models import Project
 from app.routers import auth_dependencies as auth_deps
+from app.services.jobs import service as jobs_service
+from app.services.jobs.errors import JobsError
 from app.services.opentofu import deploy as opentofu_deploy
+from app.services.opentofu.runtime.shared import discover_modules_from_project_dir
+from app.services.project import files as project_files
 
 router = APIRouter()
 
@@ -23,15 +27,7 @@ class OpenTofuPreviewBody(BaseModel):
 class OpenTofuApplyBody(BaseModel):
     selected_modules: list[str] = []
     intent: str | None = None
-
-
-def _sse_response(stream_factory) -> StreamingResponse:
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-    }
-    return StreamingResponse(stream_factory(), media_type="text/event-stream", headers=headers)
+    override_policy: bool = False
 
 
 def _raise_runtime_error(data: dict) -> None:
@@ -80,24 +76,103 @@ async def opentofu_apply_stream(
     body: OpenTofuApplyBody,
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> StreamingResponse:
+) -> EventSourceResponse:
     async def event_stream() -> AsyncIterator[str]:
         try:
-            async for event in opentofu_deploy.apply_modules_stream(
+            job = await jobs_service.enqueue_project_job(
+                project=project,
+                kind="apply",
+                payload={
+                    "selected_modules": body.selected_modules,
+                    "intent": body.intent,
+                    "options": {"override_policy": body.override_policy},
+                },
+            )
+            async for payload in jobs_service.stream_job_events(
                 project_id=project.id,
-                settings=get_settings(),
-                selected_modules=body.selected_modules,
-                intent=body.intent,
+                user_id=str(project.user_id or ""),
+                job_id=str(job["id"]),
+                request=request,
+                from_seq=0,
             ):
                 if await request.is_disconnected():
                     break
-                yield f"data: {json.dumps(event)}\n\n"
+                yield normalize_sse_item(payload)
+        except JobsError as exc:
+            yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
         except Exception:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'opentofu_apply_failed'})}\n\n"
-        finally:
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield sse_json(
+                {"type": "error", "code": "opentofu_apply_failed", "message": "opentofu_apply_failed"}
+            )
 
-    return _sse_response(event_stream)
+    return sse_response(event_stream)
+
+
+@router.get("/{project_id}/runs/history")
+async def runs_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    history = await jobs_service.list_jobs(
+        project_id=project.id,
+        user_id=str(project.user_id or ""),
+        status=None,
+        kind=None,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "total": history["total"],
+        "items": history["items"],
+    }
+
+
+@router.get("/{project_id}/drift/status")
+async def drift_status(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
+    modules = discover_modules_from_project_dir(project.id)
+    project_root = project_files.ensure_project_dir(project.id)
+    state_root = project_root / ".opentofu-runtime" / "state"
+    modules_without_state = [module for module in modules if not (state_root / f"{module}.tfstate").is_file()]
+
+    latest_plan = await jobs_service.list_jobs(
+        project_id=project.id,
+        user_id=str(project.user_id or ""),
+        status=None,
+        kind="plan",
+        limit=1,
+        offset=0,
+    )
+    latest_apply = await jobs_service.list_jobs(
+        project_id=project.id,
+        user_id=str(project.user_id or ""),
+        status=None,
+        kind="apply",
+        limit=1,
+        offset=0,
+    )
+
+    latest_plan_job = latest_plan["items"][0] if latest_plan["items"] else None
+    latest_apply_job = latest_apply["items"][0] if latest_apply["items"] else None
+
+    if not modules:
+        status = "no_modules"
+    elif modules_without_state:
+        status = "state_missing"
+    elif not latest_plan_job:
+        status = "plan_missing"
+    elif latest_apply_job and str(latest_plan_job.get("created_at", "")) < str(latest_apply_job.get("created_at", "")):
+        status = "plan_outdated"
+    else:
+        status = "in_sync"
+
+    return {
+        "status": status,
+        "module_count": len(modules),
+        "modules_without_state": modules_without_state,
+        "last_plan_job": latest_plan_job,
+        "last_apply_job": latest_apply_job,
+    }
 
 
 @router.post("/{project_id}/opentofu/deploy/plan/stream")
@@ -105,24 +180,34 @@ async def opentofu_plan_stream(
     body: OpenTofuApplyBody,
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> StreamingResponse:
+) -> EventSourceResponse:
     async def event_stream() -> AsyncIterator[str]:
         try:
-            async for event in opentofu_deploy.plan_modules_stream(
+            job = await jobs_service.enqueue_project_job(
+                project=project,
+                kind="plan",
+                payload={
+                    "selected_modules": body.selected_modules,
+                    "intent": body.intent,
+                    "options": {},
+                },
+            )
+            async for payload in jobs_service.stream_job_events(
                 project_id=project.id,
-                settings=get_settings(),
-                selected_modules=body.selected_modules,
-                intent=body.intent,
+                user_id=str(project.user_id or ""),
+                job_id=str(job["id"]),
+                request=request,
+                from_seq=0,
             ):
                 if await request.is_disconnected():
                     break
-                yield f"data: {json.dumps(event)}\n\n"
+                yield normalize_sse_item(payload)
+        except JobsError as exc:
+            yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
         except Exception:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'opentofu_plan_failed'})}\n\n"
-        finally:
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield sse_json({"type": "error", "code": "opentofu_plan_failed", "message": "opentofu_plan_failed"})
 
-    return _sse_response(event_stream)
+    return sse_response(event_stream)
 
 
 @router.get("/{project_id}/opentofu/costs")

@@ -55,7 +55,8 @@ async def get_optional_github_auth_context(
 ) -> GitHubAuthContext | None:
     settings = get_settings()
     try:
-        oauth = clerk_service.get_github_oauth_token(settings=settings, user_id=user.id)
+        oauth = clerk_service.get_github_oauth_token(
+            settings=settings, user_id=user.id)
     except clerk_service.ClerkError as exc:
         raise_http_error(500, code="auth_config_error", message=str(exc))
     except Exception:
@@ -104,7 +105,8 @@ class ProjectGitHubStatusContext:
 
 async def get_project_github_status_context(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
+    github_auth: GitHubAuthContext | None = Depends(
+        get_optional_github_auth_context),
 ) -> ProjectGitHubStatusContext:
     return ProjectGitHubStatusContext(
         project=project,
@@ -120,14 +122,16 @@ class ProjectAccountContext:
 
 async def require_project_and_authenticated_account(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
+    github_auth: GitHubAuthContext = Depends(
+        require_authenticated_github_context),
 ) -> ProjectAccountContext:
     return ProjectAccountContext(project=project, github_auth=github_auth)
 
 
 async def require_project_with_connected_account(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
+    github_auth: GitHubAuthContext = Depends(
+        require_authenticated_github_context),
 ) -> ProjectAccountContext:
     if not project.github_repo_full_name:
         raise_http_error(
@@ -146,10 +150,10 @@ class ProjectDisconnectContext:
 
 async def get_project_disconnect_context(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
+    github_auth: GitHubAuthContext | None = Depends(
+        get_optional_github_auth_context),
 ) -> ProjectDisconnectContext:
     return ProjectDisconnectContext(
         project=project,
         github_auth=github_auth,
     )
-

@@ -5,7 +5,7 @@ import { Button } from "../../../components/ui/button";
 import { ScrollArea } from "../../../components/ui/scroll-area";
 import { cn } from "../../../lib/utils";
 
-interface CostsWorkspaceProps {
+export interface CostsWorkspaceProps {
   data: OpenTofuCostResult | null;
   loading: boolean;
   error: string;
@@ -64,27 +64,21 @@ function CostScopeButton({
   );
 }
 
-function CostsSidebar({
-  moduleOptions,
-  moduleCostMap,
-  scope,
-  totalMonthlyCost,
-  currency,
-  onScopeChange,
-}: {
-  moduleOptions: string[];
-  moduleCostMap: Map<string, number>;
+export interface CostsWorkspaceSidebarPanelProps {
+  data: OpenTofuCostResult | null;
   scope: string;
-  totalMonthlyCost: number;
-  currency: string;
   onScopeChange: (scope: string) => void;
-}) {
+  className?: string;
+}
+
+export function CostsWorkspaceSidebarPanel({ data, scope, onScopeChange, className }: CostsWorkspaceSidebarPanelProps) {
+  const view = useCostsWorkspaceViewModel(data);
   return (
-    <aside className="w-[300px] border-r border-white/10 bg-gradient-to-b from-[#14171d] to-[#101319] p-4">
+    <aside className={cn("h-full bg-gradient-to-b from-[#14171d] to-[#101319] p-4", className)}>
       <h3 className="mb-5 text-3xl font-semibold leading-none text-white/90">Cost Summary</h3>
       <div className="space-y-3">
-        {moduleOptions.length < 1 ? <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/60">No modules yet</div> : moduleOptions.map((moduleName) => <CostScopeButton key={moduleName} label={moduleName} active={scope === moduleName} amount={moduleCostMap.get(moduleName) ?? 0} currency={currency} onClick={() => onScopeChange(moduleName)} />)}
-        <CostScopeButton label="Total" active={scope === "all"} amount={totalMonthlyCost} currency={currency} onClick={() => onScopeChange("all")} />
+        {view.moduleOptions.length < 1 ? <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/60">No modules yet</div> : view.moduleOptions.map((moduleName) => <CostScopeButton key={moduleName} label={moduleName} active={scope === moduleName} amount={view.moduleCostMap.get(moduleName) ?? 0} currency={view.currency} onClick={() => onScopeChange(moduleName)} />)}
+        <CostScopeButton label="Total" active={scope === "all"} amount={data?.total_monthly_cost ?? 0} currency={view.currency} onClick={() => onScopeChange("all")} />
         <div className="flex items-start gap-2 text-sm leading-snug text-white/55">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <p>Costs are calculated using your Terraform configuration.</p>
@@ -247,27 +241,52 @@ function useCostsWorkspaceViewModel(data: OpenTofuCostResult | null) {
   return { currency, moduleOptions, resources, warnings, moduleCostMap, groupedResources };
 }
 
-function CostsWorkspaceLayout({
-  props,
-  view,
-}: {
-  props: CostsWorkspaceProps;
-  view: ReturnType<typeof useCostsWorkspaceViewModel>;
-}) {
+export interface CostsWorkspaceMainPanelProps {
+  data: OpenTofuCostResult | null;
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+  expandedResourceIds: Set<string>;
+  onToggleResource: (resourceId: string) => void;
+  className?: string;
+}
+
+export function CostsWorkspaceMainPanel({
+  data,
+  loading,
+  error,
+  onRefresh,
+  expandedResourceIds,
+  onToggleResource,
+  className,
+}: CostsWorkspaceMainPanelProps) {
+  const view = useCostsWorkspaceViewModel(data);
   return (
-    <div className="flex h-full min-h-0 bg-[#0a0d12]">
-      <CostsSidebar moduleOptions={view.moduleOptions} moduleCostMap={view.moduleCostMap} scope={props.scope} totalMonthlyCost={props.data?.total_monthly_cost ?? 0} currency={view.currency} onScopeChange={props.onScopeChange} />
-      <section className="min-w-0 flex-1 bg-[#07090d]">
-        <CostsTopBar loading={props.loading} onRefresh={props.onRefresh} />
-        <CostsErrorBanner error={props.error} />
+    <section className={cn("min-w-0 flex-1 bg-[#07090d]", className)}>
+      <div className="flex h-full min-h-0 flex-col">
+        <CostsTopBar loading={loading} onRefresh={onRefresh} />
+        <CostsErrorBanner error={error} />
         <CostsTableHeader />
-        <ScrollArea className="h-[calc(100%-7.5rem)]">
-          <CostsTableBody loading={props.loading} resourcesCount={view.resources.length} groupedResources={view.groupedResources} currency={view.currency} moduleCostMap={view.moduleCostMap} expandedResourceIds={props.expandedResourceIds} onToggleResource={props.onToggleResource} />
+        <ScrollArea className="min-h-0 flex-1">
+          <CostsTableBody loading={loading} resourcesCount={view.resources.length} groupedResources={view.groupedResources} currency={view.currency} moduleCostMap={view.moduleCostMap} expandedResourceIds={expandedResourceIds} onToggleResource={onToggleResource} />
           <CostsFootnote />
           <CostsWarnings warnings={view.warnings} />
         </ScrollArea>
         <CostsModuleFooter moduleOptions={view.moduleOptions} />
-      </section>
+      </div>
+    </section>
+  );
+}
+
+function CostsWorkspaceLayout({
+  props,
+}: {
+  props: CostsWorkspaceProps;
+}) {
+  return (
+    <div className="flex h-full min-h-0 bg-[#0a0d12]">
+      <CostsWorkspaceSidebarPanel data={props.data} scope={props.scope} onScopeChange={props.onScopeChange} className="w-[300px] shrink-0 border-r border-white/10" />
+      <CostsWorkspaceMainPanel data={props.data} loading={props.loading} error={props.error} onRefresh={props.onRefresh} expandedResourceIds={props.expandedResourceIds} onToggleResource={props.onToggleResource} />
     </div>
   );
 }
@@ -282,6 +301,5 @@ export function CostsWorkspace({
   expandedResourceIds,
   onToggleResource,
 }: CostsWorkspaceProps) {
-  const view = useCostsWorkspaceViewModel(data);
-  return <CostsWorkspaceLayout props={{ data, loading, error, scope, onScopeChange, onRefresh, expandedResourceIds, onToggleResource }} view={view} />;
+  return <CostsWorkspaceLayout props={{ data, loading, error, scope, onScopeChange, onRefresh, expandedResourceIds, onToggleResource }} />;
 }

@@ -1,10 +1,21 @@
 import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 
-import { deleteProjectFile, listProjectFiles, readProjectFile, writeProjectFile, type FileEntry } from "../api/projects";
+import {
+  deleteProjectFile,
+  listProjectFiles,
+  moveProjectPaths,
+  renameProjectPath,
+  readProjectFile,
+  writeProjectFile,
+  type FileEntry,
+  type PathMove,
+} from "../api/projects";
+import { remapMovedPath } from "../features/filesystem/explorer/moveUtils";
 
 export type { FileEntry };
 
 const guestFileStore = new Map<string, Record<string, string>>();
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"]);
 
 export interface UseFilesystemReturn {
   files: FileEntry[];
@@ -17,6 +28,8 @@ export interface UseFilesystemReturn {
   saveFile: (path: string, content: string) => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
   createFile: (path: string, content?: string) => Promise<void>;
+  movePaths: (sourcePaths: string[], destinationDir: string) => Promise<PathMove[]>;
+  renamePath: (path: string, newName: string) => Promise<PathMove | null>;
   setContent: (content: string) => void;
 }
 
@@ -27,6 +40,17 @@ interface UseFilesystemOptions {
 
 function normalizePath(path: string) {
   return path.startsWith("/") ? path : `/${path}`;
+}
+
+function extensionFromPath(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  const index = name.lastIndexOf(".");
+  if (index < 0 || index === name.length - 1) return "";
+  return name.slice(index + 1).toLowerCase();
+}
+
+function isImagePath(path: string): boolean {
+  return IMAGE_EXTENSIONS.has(extensionFromPath(path));
 }
 
 function makeFileEntries(fileMap: Record<string, string>): FileEntry[] {
@@ -100,6 +124,10 @@ function useOpenFileAction(projectId: string, authenticated: boolean, guestFiles
         setSelectedFileState(path, guestFiles[path] ?? "", state.setSelectedPath, state.setContentState, state.setSavedContent);
         return;
       }
+      if (isImagePath(path)) {
+        setSelectedFileState(path, "", state.setSelectedPath, state.setContentState, state.setSavedContent);
+        return;
+      }
       const data = await readProjectFile(projectId, path);
       setSelectedFileState(path, data, state.setSelectedPath, state.setContentState, state.setSavedContent);
     } catch {
@@ -113,6 +141,7 @@ function useOpenFileAction(projectId: string, authenticated: boolean, guestFiles
 function useSaveFileAction(projectId: string, authenticated: boolean, readOnly: boolean, fetchFiles: () => Promise<void>, state: FilesystemState) {
   return useCallback(async (path: string, newContent: string) => {
     if (readOnly) return;
+    if (isImagePath(path)) return;
     if (!authenticated) {
       state.setGuestFiles((previous) => {
         const next = { ...previous, [path]: newContent };
@@ -167,6 +196,47 @@ function useCreateFileAction(projectId: string, authenticated: boolean, readOnly
   }, [authenticated, fetchFiles, openFile, projectId, readOnly, state]);
 }
 
+function useMovePathsAction(
+  projectId: string,
+  authenticated: boolean,
+  readOnly: boolean,
+  selectedPath: string | null,
+  fetchFiles: () => Promise<void>,
+  state: FilesystemState,
+) {
+  return useCallback(async (sourcePaths: string[], destinationDir: string) => {
+    if (readOnly || sourcePaths.length < 1) return [];
+    if (!authenticated) return [];
+    const result = await moveProjectPaths(projectId, sourcePaths, destinationDir);
+    const moved = result.moved ?? [];
+    const remapped = remapMovedPath(selectedPath, moved);
+    if (remapped !== selectedPath) state.setSelectedPath(remapped);
+    await fetchFiles();
+    return moved;
+  }, [authenticated, fetchFiles, projectId, readOnly, selectedPath, state]);
+}
+
+function useRenamePathAction(
+  projectId: string,
+  authenticated: boolean,
+  readOnly: boolean,
+  selectedPath: string | null,
+  fetchFiles: () => Promise<void>,
+  state: FilesystemState,
+) {
+  return useCallback(async (path: string, newName: string) => {
+    if (readOnly) return null;
+    if (!authenticated) return null;
+    const result = await renameProjectPath(projectId, path, newName);
+    const moved = result.moved;
+    if (!moved) return null;
+    const remapped = remapMovedPath(selectedPath, [moved]);
+    if (remapped !== selectedPath) state.setSelectedPath(remapped);
+    await fetchFiles();
+    return moved;
+  }, [authenticated, fetchFiles, projectId, readOnly, selectedPath, state]);
+}
+
 export function getGuestFilesSnapshot(projectId: string): Array<{ path: string; content: string }> {
   const files = guestFileStore.get(projectId) ?? {};
   return Object.entries(files).map(([path, content]) => ({ path, content }));
@@ -180,6 +250,8 @@ export function useFilesystem(projectId: string, options: UseFilesystemOptions):
   const saveFile = useSaveFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, state);
   const deleteFile = useDeleteFileAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
   const createFile = useCreateFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, openFile, state);
+  const movePaths = useMovePathsAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
+  const renamePath = useRenamePathAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
   const setContent = useCallback((content: string) => state.setContentState(content), [state]);
-  return { files: state.files, selectedPath: state.selectedPath, content: state.content, isDirty, isLoading: state.isLoading, fetchFiles, openFile, saveFile, deleteFile, createFile, setContent };
+  return { files: state.files, selectedPath: state.selectedPath, content: state.content, isDirty, isLoading: state.isLoading, fetchFiles, openFile, saveFile, deleteFile, createFile, movePaths, renamePath, setContent };
 }

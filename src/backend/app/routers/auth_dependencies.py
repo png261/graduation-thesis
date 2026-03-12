@@ -39,6 +39,9 @@ async def _ensure_user_exists(clerk_user_id: str) -> User:
 
 async def get_current_user_optional(request: Request) -> User | None:
     settings = get_settings()
+    if settings.auth_bypass_local:
+        return await _ensure_user_exists("local-dev-user")
+
     try:
         session = clerk_service.authenticate_bearer(
             settings=settings,

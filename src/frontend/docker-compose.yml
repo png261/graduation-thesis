@@ -1,0 +1,20 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${FRONTEND_VITE_API_URL:-__SAME_ORIGIN__}
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+    image: deepagents-frontend:local
+    networks:
+      - default
+      - backend_shared
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+networks:
+  backend_shared:
+    external: true
+    name: backend_default

@@ -1,6 +1,7 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, type Dispatch, type SetStateAction } from "react";
 
-import type { FileEntry } from "../../api/projects";
+import type { FileEntry, PathMove } from "../../api/projects";
+import { remapMovedPathSet } from "./explorer/moveUtils";
 
 interface UseFilesystemPanelActionsArgs {
   authenticated: boolean;
@@ -12,9 +13,12 @@ interface UseFilesystemPanelActionsArgs {
   saveFile: (path: string, content: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
   fetchFiles: () => Promise<void>;
+  movePaths: (sourcePaths: string[], destinationDir: string) => Promise<PathMove[]>;
+  renamePath: (path: string, newName: string) => Promise<PathMove | null>;
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>;
   setNewItemMode: (mode: "file" | "folder" | null) => void;
   clearExportError: () => void;
-  runWorkflow: (mode: "plan" | "apply") => Promise<void>;
+  runWorkflow: (mode: "plan" | "apply" | "pipeline") => Promise<void>;
   pushLog: (message: string) => void;
 }
 
@@ -90,21 +94,66 @@ function useSaveShortcut(handleSave: () => Promise<void>) {
 function useFileIoActions(
   openFile: (path: string) => Promise<void>,
   fetchFiles: () => Promise<void>,
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>,
   pushLog: (message: string) => void,
 ) {
   const handleOpenFile = useCallback(async (path: string) => {
     await openFile(path);
+    setSelectedPaths(new Set([path]));
     pushLog(`Opened ${path}`);
-  }, [openFile, pushLog]);
+  }, [openFile, pushLog, setSelectedPaths]);
+  const handleSelectionChange = useCallback((paths: string[]) => {
+    setSelectedPaths(new Set(paths));
+  }, [setSelectedPaths]);
   const handleRefresh = useCallback(async () => {
     await fetchFiles();
     pushLog("Refreshed file tree");
   }, [fetchFiles, pushLog]);
-  return { handleOpenFile, handleRefresh };
+  return { handleOpenFile, handleSelectionChange, handleRefresh };
 }
 
-function useWorkflowAction(clearExportError: () => void, runWorkflow: (mode: "plan" | "apply") => Promise<void>) {
-  return useCallback(async (mode: "plan" | "apply") => {
+function useMoveAction(
+  authenticated: boolean,
+  movePaths: (sourcePaths: string[], destinationDir: string) => Promise<PathMove[]>,
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>,
+  pushLog: (message: string) => void,
+) {
+  return useCallback(async (sourcePaths: string[], destinationDir: string) => {
+    if (!authenticated || sourcePaths.length < 1) return;
+    try {
+      const moved = await movePaths(sourcePaths, destinationDir);
+      if (moved.length < 1) return;
+      setSelectedPaths((previous) => remapMovedPathSet(previous, moved));
+      pushLog(`Moved ${moved.length} item(s) to ${destinationDir}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Move failed";
+      pushLog(`Move failed: ${message}`);
+    }
+  }, [authenticated, movePaths, pushLog, setSelectedPaths]);
+}
+
+function useRenameAction(
+  authenticated: boolean,
+  renamePath: (path: string, newName: string) => Promise<PathMove | null>,
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>,
+  pushLog: (message: string) => void,
+) {
+  return useCallback(async (path: string, newName: string) => {
+    if (!authenticated || !path) return;
+    try {
+      const moved = await renamePath(path, newName);
+      if (!moved) return;
+      setSelectedPaths((previous) => remapMovedPathSet(previous, [moved]));
+      pushLog(`Renamed ${moved.from} -> ${moved.to}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Rename failed";
+      pushLog(`Rename failed: ${message}`);
+    }
+  }, [authenticated, renamePath, pushLog, setSelectedPaths]);
+}
+
+function useWorkflowAction(clearExportError: () => void, runWorkflow: (mode: "plan" | "apply" | "pipeline") => Promise<void>) {
+  return useCallback(async (mode: "plan" | "apply" | "pipeline") => {
     clearExportError();
     await runWorkflow(mode);
   }, [clearExportError, runWorkflow]);
@@ -114,7 +163,9 @@ export function useFilesystemPanelActions(args: UseFilesystemPanelActionsArgs) {
   const handleDelete = useDeleteAction(args.authenticated, args.files, args.deleteFile, args.pushLog);
   const { handleNewFile, handleNewFolder } = useCreateItemActions(args.authenticated, args.createFile, args.setNewItemMode, args.pushLog);
   const handleSave = useSaveAction(args.authenticated, args.selectedPath, args.content, args.saveFile, args.pushLog);
-  const { handleOpenFile, handleRefresh } = useFileIoActions(args.openFile, args.fetchFiles, args.pushLog);
+  const { handleOpenFile, handleSelectionChange, handleRefresh } = useFileIoActions(args.openFile, args.fetchFiles, args.setSelectedPaths, args.pushLog);
+  const handleMove = useMoveAction(args.authenticated, args.movePaths, args.setSelectedPaths, args.pushLog);
+  const handleRename = useRenameAction(args.authenticated, args.renamePath, args.setSelectedPaths, args.pushLog);
   const handleRunWorkflow = useWorkflowAction(args.clearExportError, args.runWorkflow);
   useSaveShortcut(handleSave);
   return {
@@ -123,6 +174,9 @@ export function useFilesystemPanelActions(args: UseFilesystemPanelActionsArgs) {
     handleNewFolder,
     handleSave,
     handleOpenFile,
+    handleSelectionChange,
+    handleMove,
+    handleRename,
     handleRefresh,
     handleRunWorkflow,
   };

@@ -158,7 +158,7 @@ function GraphDetailsOverlay({ details, onClose }: { details: OpenTofuGraphNode 
   return <GraphDetailsPanel details={details} onClose={onClose} />;
 }
 
-function useGraphWorkspaceViewModel(args: GraphWorkspaceProps) {
+function useGraphWorkspaceViewModel(args: Pick<GraphWorkspaceProps, "data" | "mode" | "scope" | "selectedNodeId" | "selectedNode" | "loading" | "error" | "modules">) {
   const [graphZoom, setGraphZoom] = useState(1);
   const adapter = useMemo(() => (args.data ? createGraphAdapter(args.data) : null), [args.data?.snapshot.etag, args.data]);
   const renderPhase = useRenderPhase(adapter, args.mode, args.scope);
@@ -170,29 +170,49 @@ function useGraphWorkspaceViewModel(args: GraphWorkspaceProps) {
   return { graphZoom, setGraphZoom, renderPhase, flowData, details, hasGraphData, emptyMessage };
 }
 
-function GraphWorkspaceLayout({
-  props,
-  view,
-}: {
-  props: GraphWorkspaceProps;
-  view: ReturnType<typeof useGraphWorkspaceViewModel>;
-}) {
+export interface GraphWorkspaceMainPanelProps {
+  data: OpenTofuGraphResult | null;
+  loading: boolean;
+  error: string;
+  scope: string;
+  mode: GraphViewMode;
+  onModeChange: (mode: GraphViewMode) => void;
+  modules: string[];
+  stale: boolean;
+  selectedNodeId: string | null;
+  onSelectedNodeIdChange: (nodeId: string | null) => void;
+  selectedNode: OpenTofuGraphNode | null;
+  className?: string;
+}
+
+export function GraphWorkspaceMainPanel(props: GraphWorkspaceMainPanelProps) {
+  const view = useGraphWorkspaceViewModel({
+    data: props.data,
+    loading: props.loading,
+    error: props.error,
+    scope: props.scope,
+    mode: props.mode,
+    modules: props.modules,
+    selectedNodeId: props.selectedNodeId,
+    selectedNode: props.selectedNode,
+  });
   return (
-    <div className="flex h-full min-h-0 bg-[#07090d]">
-      <GraphSidebar modules={props.modules} scope={props.scope} loading={props.loading} onScopeChange={props.onScopeChange} onRefresh={props.onRefresh} />
-      <section className="relative min-w-0 flex-1">
-        <GraphToolbar mode={props.mode} onModeChange={props.onModeChange} renderPhase={view.renderPhase} stale={props.stale} />
-        <GraphErrorBanner error={props.error} />
-        <GraphCanvas flowData={view.flowData} onSelectedNodeIdChange={props.onSelectedNodeIdChange} onMoveEnd={view.setGraphZoom} />
-        <GraphLoadingOverlay loading={props.loading} />
-        <GraphEmptyOverlay loading={props.loading} hasGraphData={view.hasGraphData} emptyMessage={view.emptyMessage} />
-        <GraphDetailsOverlay details={view.details} onClose={() => props.onSelectedNodeIdChange(null)} />
-      </section>
-    </div>
+    <section className={cn("relative min-w-0 flex-1", props.className)}>
+      <GraphToolbar mode={props.mode} onModeChange={props.onModeChange} renderPhase={view.renderPhase} stale={props.stale} />
+      <GraphErrorBanner error={props.error} />
+      <GraphCanvas flowData={view.flowData} onSelectedNodeIdChange={props.onSelectedNodeIdChange} onMoveEnd={view.setGraphZoom} />
+      <GraphLoadingOverlay loading={props.loading} />
+      <GraphEmptyOverlay loading={props.loading} hasGraphData={view.hasGraphData} emptyMessage={view.emptyMessage} />
+      <GraphDetailsOverlay details={view.details} onClose={() => props.onSelectedNodeIdChange(null)} />
+    </section>
   );
 }
 
 export function GraphWorkspace(props: GraphWorkspaceProps) {
-  const view = useGraphWorkspaceViewModel(props);
-  return <GraphWorkspaceLayout props={props} view={view} />;
+  return (
+    <div className="flex h-full min-h-0 bg-[#07090d]">
+      <GraphSidebar modules={props.modules} scope={props.scope} loading={props.loading} onScopeChange={props.onScopeChange} onRefresh={props.onRefresh} />
+      <GraphWorkspaceMainPanel data={props.data} loading={props.loading} error={props.error} scope={props.scope} mode={props.mode} onModeChange={props.onModeChange} modules={props.modules} stale={props.stale} selectedNodeId={props.selectedNodeId} onSelectedNodeIdChange={props.onSelectedNodeIdChange} selectedNode={props.selectedNode} />
+    </div>
+  );
 }

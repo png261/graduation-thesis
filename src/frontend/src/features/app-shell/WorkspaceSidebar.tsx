@@ -1,106 +1,19 @@
-import { ChevronDown, MessageSquareText, Settings2 } from "lucide-react";
+import { Database, ListChecks, LogOut, MessageSquareText, Settings, Settings2, UserRound } from "lucide-react";
 
-import type { Project } from "../../api/projects";
 import { Button } from "../../components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
-import { ProviderBadge } from "../project-config";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
 
 interface WorkspaceSidebarProps {
-  projects: Project[];
-  currentProject: Project | undefined;
-  currentProjectId: string;
   authenticated: boolean;
   canOpenConfig: boolean;
   accountName?: string;
   accountEmail?: string;
   accountAvatarUrl?: string | null;
-  onProjectChange: (id: string) => void;
-  onCreateProject: () => void;
-  onRenameProject: () => void;
   onLogin: () => void;
   onLogout: () => void;
-  workspaceTab: "view" | "config";
-  onChange: (tab: "view" | "config") => void;
-}
-
-function ProjectSwitcher({
-  projects,
-  currentProject,
-  currentProjectId,
-  onProjectChange,
-  onCreateProject,
-  onRenameProject,
-}: {
-  projects: Project[];
-  currentProject: Project | undefined;
-  currentProjectId: string;
-  onProjectChange: (id: string) => void;
-  onCreateProject: () => void;
-  onRenameProject: () => void;
-}) {
-  return (
-    <DropdownMenu>
-      <ProjectSwitcherTrigger currentProject={currentProject} />
-      <ProjectSwitcherContent projects={projects} currentProjectId={currentProjectId} onProjectChange={onProjectChange} onCreateProject={onCreateProject} onRenameProject={onRenameProject} />
-    </DropdownMenu>
-  );
-}
-
-function ProjectSwitcherTrigger({ currentProject }: { currentProject: Project | undefined }) {
-  return (
-    <DropdownMenuTrigger asChild>
-      <Button variant="outline" className="h-11 w-full justify-between">
-        <span className="truncate">{currentProject?.name || "Select project"}</span>
-        <ChevronDown className="h-4 w-4" />
-      </Button>
-    </DropdownMenuTrigger>
-  );
-}
-
-function ProjectSwitcherProjectOptions({
-  projects,
-}: {
-  projects: Project[];
-}) {
-  return (
-    <>
-      {projects.map((project) => (
-        <DropdownMenuRadioItem key={project.id} value={project.id}>
-          <div className="flex w-full items-center justify-between gap-2">
-            <span className="truncate">{project.name}</span>
-            <ProviderBadge provider={project.provider} />
-          </div>
-        </DropdownMenuRadioItem>
-      ))}
-    </>
-  );
-}
-
-function ProjectSwitcherContent({
-  projects,
-  currentProjectId,
-  onProjectChange,
-  onCreateProject,
-  onRenameProject,
-}: {
-  projects: Project[];
-  currentProjectId: string;
-  onProjectChange: (id: string) => void;
-  onCreateProject: () => void;
-  onRenameProject: () => void;
-}) {
-  return (
-    <DropdownMenuContent align="start" className="w-72">
-      <DropdownMenuLabel>Projects</DropdownMenuLabel>
-      <DropdownMenuSeparator />
-      <DropdownMenuRadioGroup value={currentProjectId} onValueChange={onProjectChange}>
-        <ProjectSwitcherProjectOptions projects={projects} />
-      </DropdownMenuRadioGroup>
-      <DropdownMenuSeparator />
-      <DropdownMenuItem onSelect={onCreateProject}>Create Project</DropdownMenuItem>
-      <DropdownMenuItem onSelect={onRenameProject}>Rename Current Project</DropdownMenuItem>
-    </DropdownMenuContent>
-  );
+  onOpenUserSettings: () => void;
+  workspaceTab: "view" | "jobs" | "state" | "config";
+  onChange: (tab: "view" | "jobs" | "state" | "config") => void;
 }
 
 function WorkspaceTabActions({
@@ -108,75 +21,83 @@ function WorkspaceTabActions({
   canOpenConfig,
   onChange,
 }: {
-  workspaceTab: "view" | "config";
+  workspaceTab: "view" | "jobs" | "state" | "config";
   canOpenConfig: boolean;
-  onChange: (tab: "view" | "config") => void;
+  onChange: (tab: "view" | "jobs" | "state" | "config") => void;
 }) {
   return (
     <>
-      <Button variant={workspaceTab === "view" ? "default" : "ghost"} className="justify-start gap-2" onClick={() => onChange("view")}>
+      <Button
+        variant={workspaceTab === "view" ? "default" : "ghost"}
+        size="icon"
+        className="h-10 w-10"
+        title="Chat"
+        aria-label="Chat"
+        onClick={() => onChange("view")}
+      >
         <MessageSquareText className="h-4 w-4" />
-        Chat
+        <span className="sr-only">Chat</span>
       </Button>
-      <Button variant={workspaceTab === "config" ? "default" : "ghost"} className="justify-start gap-2" disabled={!canOpenConfig} onClick={() => onChange("config")}>
+      <Button
+        variant={workspaceTab === "jobs" ? "default" : "ghost"}
+        size="icon"
+        className="h-10 w-10"
+        title="Jobs"
+        aria-label="Jobs"
+        onClick={() => onChange("jobs")}
+      >
+        <ListChecks className="h-4 w-4" />
+        <span className="sr-only">Jobs</span>
+      </Button>
+      <Button
+        variant={workspaceTab === "state" ? "default" : "ghost"}
+        size="icon"
+        className="h-10 w-10"
+        title="State"
+        aria-label="State"
+        onClick={() => onChange("state")}
+      >
+        <Database className="h-4 w-4" />
+        <span className="sr-only">State</span>
+      </Button>
+      <Button
+        variant={workspaceTab === "config" ? "default" : "ghost"}
+        size="icon"
+        className="h-10 w-10"
+        title={canOpenConfig ? "Config" : "Config unavailable"}
+        aria-label="Config"
+        disabled={!canOpenConfig}
+        onClick={() => onChange("config")}
+      >
         <Settings2 className="h-4 w-4" />
-        Config
+        <span className="sr-only">Config</span>
       </Button>
     </>
   );
 }
 
-function AccountAvatar({ accountName, accountAvatarUrl }: { accountName?: string; accountAvatarUrl?: string | null }) {
-  if (accountAvatarUrl) {
-    return <img src={accountAvatarUrl} alt={accountName || "User avatar"} className="h-8 w-8 rounded-full border border-[var(--da-border)] object-cover" />;
-  }
-  return (
-    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--da-border)] bg-[var(--da-panel)] text-xs font-semibold text-[var(--da-text)]">
-      {(accountName?.trim().charAt(0) || "U").toUpperCase()}
-    </div>
-  );
-}
-
-function AuthenticatedAccountPanel({
+function AccountAvatar({
   accountName,
-  accountEmail,
   accountAvatarUrl,
-  onLogout,
+  className,
 }: {
   accountName?: string;
-  accountEmail?: string;
   accountAvatarUrl?: string | null;
-  onLogout: () => void;
+  className?: string;
 }) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <AccountAvatar accountName={accountName} accountAvatarUrl={accountAvatarUrl} />
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-[var(--da-text)]">{accountName || "User"}</p>
-          <p className="truncate text-xs text-[var(--da-muted)]">{accountEmail || ""}</p>
-        </div>
-      </div>
-      <Button variant="outline" size="sm" className="w-full" onClick={onLogout}>Logout</Button>
-    </div>
-  );
+  if (accountAvatarUrl) {
+    return <img src={accountAvatarUrl} alt={accountName || "User avatar"} className={className || "h-8 w-8 rounded-full border border-[var(--da-border)] object-cover"} />;
+  }
+  return <UserRound className={className || "h-5 w-5"} />;
 }
 
-function GuestAccountPanel({ onLogin }: { onLogin: () => void }) {
-  return (
-    <div className="space-y-2">
-      <p className="text-xs text-[var(--da-muted)]">Sign in to save data, edit files, deploy, and push to GitHub.</p>
-      <Button size="sm" className="w-full" onClick={onLogin}>Sign in with GitHub</Button>
-    </div>
-  );
-}
-
-function AccountPanel({
+function AccountMenu({
   authenticated,
   accountName,
   accountEmail,
   accountAvatarUrl,
   onLogin,
+  onOpenUserSettings,
   onLogout,
 }: {
   authenticated: boolean;
@@ -184,24 +105,63 @@ function AccountPanel({
   accountEmail?: string;
   accountAvatarUrl?: string | null;
   onLogin: () => void;
+  onOpenUserSettings: () => void;
   onLogout: () => void;
 }) {
+  const label = accountName?.trim() ? `User menu: ${accountName}` : "User menu";
+
   return (
-    <div className="mt-auto rounded-md border border-[var(--da-border)] bg-[var(--da-elevated)] p-2">
-      {authenticated ? <AuthenticatedAccountPanel accountName={accountName} accountEmail={accountEmail} accountAvatarUrl={accountAvatarUrl} onLogout={onLogout} /> : <GuestAccountPanel onLogin={onLogin} />}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-10 w-10" title={label} aria-label={label}>
+          <AccountAvatar
+            accountName={accountName}
+            accountAvatarUrl={accountAvatarUrl}
+            className={accountAvatarUrl ? "h-8 w-8 rounded-full border border-[var(--da-border)] object-cover" : "h-5 w-5"}
+          />
+          <span className="sr-only">{label}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="right" align="end" className="w-64">
+        {authenticated ? (
+          <>
+            <DropdownMenuLabel className="max-w-full">
+              <p className="truncate text-sm font-medium text-[var(--da-text)]">{accountName || "User"}</p>
+              <p className="truncate text-xs font-normal text-[var(--da-muted)]">{accountEmail || ""}</p>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onOpenUserSettings}>
+              <Settings className="mr-2 h-4 w-4" />
+              User Settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onLogout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </DropdownMenuItem>
+          </>
+        ) : (
+          <>
+            <DropdownMenuLabel>Guest</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onLogin}>Sign in with GitHub</DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
 export function WorkspaceSidebar(props: WorkspaceSidebarProps) {
   return (
-    <aside className="flex h-full max-h-full min-h-0 flex-col gap-2 border-r border-[var(--da-border)] bg-[var(--da-panel)] p-2">
-      <ProjectSwitcher projects={props.projects} currentProject={props.currentProject} currentProjectId={props.currentProjectId} onProjectChange={props.onProjectChange} onCreateProject={props.onCreateProject} onRenameProject={props.onRenameProject} />
-      <div className="px-1">
-        <ProviderBadge provider={props.currentProject?.provider} />
+    <aside className="flex h-full max-h-full min-h-0 flex-col items-center gap-1 border-r border-[var(--da-border)] bg-[var(--da-panel)] px-2 py-3">
+      <div className="mb-2 flex h-10 w-10 items-center justify-center">
+        <img src="/images/logo.png" alt="Project logo" className="h-8 w-8 object-contain" />
       </div>
       <WorkspaceTabActions workspaceTab={props.workspaceTab} canOpenConfig={props.canOpenConfig} onChange={props.onChange} />
-      <AccountPanel authenticated={props.authenticated} accountName={props.accountName} accountEmail={props.accountEmail} accountAvatarUrl={props.accountAvatarUrl} onLogin={props.onLogin} onLogout={props.onLogout} />
+      <div className="mt-auto">
+        <AccountMenu authenticated={props.authenticated} accountName={props.accountName} accountEmail={props.accountEmail} accountAvatarUrl={props.accountAvatarUrl} onLogin={props.onLogin} onOpenUserSettings={props.onOpenUserSettings} onLogout={props.onLogout} />
+      </div>
     </aside>
   );
 }

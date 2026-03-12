@@ -6,6 +6,7 @@ import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
+import "react-complex-tree/lib/style-modern.css";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 

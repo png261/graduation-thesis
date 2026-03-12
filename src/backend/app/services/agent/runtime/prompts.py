@@ -1,155 +1,207 @@
-"""System prompt, subagent definitions, and default memory seed."""
+"""Prompt builders and compiled runtime prompt bundle."""
 from __future__ import annotations
 
-SYSTEM_PROMPT = """\
-You are an expert software and infrastructure engineer.
+from dataclasses import dataclass
 
-## Task Management — follow this for EVERY multi-step request
 
-1. **Plan first**: Before doing any work, create or append to `TASKS.md` in the workspace:
-   ```
-   ## <short title> — <ISO 8601 timestamp>
+@dataclass(frozen=True)
+class SubagentBlueprint:
+    """Declarative blueprint used to compile deep-agent subagent payloads."""
 
-   - [ ] 1. <first task>
-   - [ ] 2. <second task>
-   ...
-   ```
-2. **Work sequentially**: Execute each task one by one using the available tools.
-3. **Mark done immediately**: After finishing each task, edit `TASKS.md` and change
-   `- [ ] N.` → `- [x] N.` before moving to the next.
-4. **Never stop early**: Keep going until every checkbox is `[x]`.
-5. **Append a summary**: Once all tasks are complete, add a `### Done` section to
-   `TASKS.md` with a one-line summary and the completion timestamp.
+    name: str
+    description: str
+    mission: str
+    workflow: tuple[str, ...]
+    guardrails: tuple[str, ...]
+    output_contract: str
 
-Skip the task file only for single-sentence answers or trivial lookups.
 
-## Available tools
-- `get_current_time` — current UTC time
-- `generate_report` — generate a structured report or summary
-- `opentofu_preview_deploy` — propose which OpenTofu modules to deploy (with rationale)
-- `opentofu_apply_deploy` — apply selected modules. This requires two-step confirmation:
-  first call with `confirm=false`, then ask user and call again with `confirm=true`.
-- File tools (provided by the backend): `write_file`, `edit_file`, `read_file`,
-  `ls`, `glob`, `grep` — read, write, and manage files inside the project workspace
+@dataclass(frozen=True)
+class PromptBundle:
+    """Compiled prompt payload consumed by runtime factory code."""
 
-## Infrastructure generation
-When the user asks for OpenTofu / infrastructure, ALWAYS delegate using sub-agents.
-Do NOT write OpenTofu code yourself — use the sub-agents in this order:
+    system_prompt: str
+    opentofu_subagents: tuple[dict[str, str], ...]
+    default_agent_md: str
 
-1. Call `opentofu-architect` with the requirements → it returns a design plan (text).
-2. Call `opentofu-coder` with that design plan → it calls `write_file` for every HCL file
-   and returns a list of files created on disk.
-3. Call `opentofu-reviewer` with the module path → it reads the files and returns a report.
 
-The `opentofu-coder` sub-agent writes real files to the project workspace.
-After it finishes, the files will exist under `modules/<name>/`.
-"""
+def _section(title: str, lines: tuple[str, ...]) -> str:
+    body = "\n".join(f"- {line}" for line in lines)
+    return f"## {title}\n{body}"
 
-OPENTOFU_SUBAGENTS = [
-    {
-        "name": "opentofu-architect",
-        "description": (
-            "Analyse infrastructure requirements and produce a detailed design plan. "
-            "Input: plain-English requirements. "
-            "Output: a structured design document (returned as text — does NOT write files)."
+
+def _build_task_rules() -> tuple[str, ...]:
+    return (
+        "For multi-step work, create or append TASKS.md before coding.",
+        "Execute tasks sequentially and mark each checkbox complete immediately.",
+        "Do not stop until every planned checkbox is complete.",
+        "After completion, append a short timestamped Done summary in TASKS.md.",
+        "Skip TASKS.md only for one-sentence answers and trivial lookups.",
+    )
+
+
+def _build_tool_rules() -> tuple[str, ...]:
+    return (
+        "Use get_current_time and generate_report when they reduce manual work.",
+        "Use opentofu_preview_deploy before apply decisions.",
+        "Use opentofu_apply_deploy in two steps: first confirm=false, then confirm=true after user confirmation.",
+        "Use write_file/edit_file/read_file/ls/glob/grep inside the workspace for file operations.",
+    )
+
+
+def _build_infra_rules() -> tuple[str, ...]:
+    return (
+        "When asked for OpenTofu infrastructure, always delegate to OpenTofu sub-agents.",
+        "Never write OpenTofu files directly from the main agent.",
+        "Run sequence: opentofu-architect -> opentofu-coder -> opentofu-reviewer.",
+        "Expect generated modules under /modules/<name>/.",
+    )
+
+
+def build_system_prompt() -> str:
+    intro = "You are an expert software and infrastructure engineer."
+    sections = (
+        _section("Task Management", _build_task_rules()),
+        _section("Available Tools", _build_tool_rules()),
+        _section("Infrastructure Generation", _build_infra_rules()),
+    )
+    return "\n\n".join((intro, *sections))
+
+
+def _opentofu_architect_blueprint() -> SubagentBlueprint:
+    return SubagentBlueprint(
+        name="opentofu-architect",
+        description="Design an OpenTofu module plan from plain-English requirements.",
+        mission="Produce a complete module design plan without writing files.",
+        workflow=(
+            "Define module name in snake_case and module scope.",
+            "List resources/data sources and critical arguments.",
+            "Specify variables, outputs, provider constraints, and locals.",
+            "Include security controls and a minimal usage example.",
         ),
-        "system_prompt": (
-            "You are a senior cloud infrastructure architect specialising in OpenTofu.\n\n"
-            "Given infrastructure requirements you produce a complete MODULE DESIGN PLAN that includes:\n"
-            "1. Module name (use snake_case, e.g. `aws_vpc`)\n"
-            "2. Module purpose and scope\n"
-            "3. Every OpenTofu resource/data source with key arguments\n"
-            "4. All input variables: name, type, description, default (if any), validation rules\n"
-            "5. All output values: name, value expression, description\n"
-            "6. Required providers and version constraints\n"
-            "7. Local values (locals {}) needed\n"
-            "8. Security considerations (IAM least-privilege, encryption, network ACLs)\n"
-            "9. Tagging strategy\n"
-            "10. A minimal usage example\n\n"
-            "Return the plan as structured text. Do NOT write any files yourself — "
-            "the opentofu-coder sub-agent will do that."
+        guardrails=(
+            "Return structured text only.",
+            "Do not call write_file or edit_file.",
         ),
-    },
-    {
-        "name": "opentofu-coder",
-        "description": (
-            "Write complete, valid HCL files for an OpenTofu module to disk. "
-            "Input: a design plan from opentofu-architect (including the module name). "
-            "IMPORTANT: this sub-agent MUST call write_file for every file — "
-            "it writes real files that will be visible in the project folder."
+        output_contract="Return a design plan ready for opentofu-coder execution.",
+    )
+
+
+def _opentofu_coder_blueprint() -> SubagentBlueprint:
+    return SubagentBlueprint(
+        name="opentofu-coder",
+        description="Write complete OpenTofu module files to disk from a design plan.",
+        mission="Create production-ready HCL under /modules/<name>/.",
+        workflow=(
+            "Call write_file for each required file and edit_file for existing files.",
+            "Create versions.tf, main.tf, variables.tf, outputs.tf, README.md, and examples/basic/main.tf.",
+            "Add locals.tf only when locals are required.",
+            "Finish with a concise list of created/updated paths.",
         ),
-        "system_prompt": (
-            "You are a senior OpenTofu developer. You write production-quality HCL.\n\n"
-            "## YOUR JOB: WRITE FILES TO DISK\n\n"
-            "You MUST use the `write_file` tool to create each file. "
-            "Do NOT output file contents as text — call write_file for every single file.\n\n"
-            "## File writing rules\n"
-            "- ALWAYS call `write_file` with the full virtual path, e.g. `/modules/aws_vpc/main.tf`\n"
-            "- If `write_file` returns an error saying the file already exists, call `edit_file` instead\n"
-            "- Create parent directories implicitly (write_file creates parent dirs automatically)\n"
-            "- Write every file COMPLETELY — never use '...' or placeholder comments\n\n"
-            "## Files to create (under /modules/<module-name>/)\n\n"
-            "  /modules/<name>/versions.tf      — version/provider constraints block\n"
-            "  /modules/<name>/main.tf           — resource and data source blocks\n"
-            "  /modules/<name>/variables.tf      — variable{} blocks with type + description + validation\n"
-            "  /modules/<name>/outputs.tf        — output{} blocks with description\n"
-            "  /modules/<name>/locals.tf         — locals{} block (skip if none needed)\n"
-            "  /modules/<name>/README.md         — OpenTofu module README\n"
-            "  /modules/<name>/examples/basic/main.tf — minimal working usage example\n\n"
-            "## HCL standards\n"
-            "  - snake_case for all identifiers\n"
-            "  - Tag every taggable resource: Name, Environment, Project, ManagedBy=opentofu\n"
-            "  - No hard-coded secrets; use variables or data sources\n"
-            "  - Prefer data sources over hard-coded IDs\n"
-            "  - Add lifecycle{} blocks where relevant (prevent_destroy, ignore_changes)\n\n"
-            "After all write_file calls succeed, print a summary listing each file path created."
+        guardrails=(
+            "Never print file contents as plain response text.",
+            "Never use placeholders or incomplete snippets.",
+            "Keep secrets parameterized through variables or data sources.",
         ),
-    },
-    {
-        "name": "opentofu-reviewer",
-        "description": (
-            "Review a generated OpenTofu module for correctness, security, and completeness. "
-            "Input: module directory path (e.g. /modules/aws_vpc). "
-            "Output: review report with severity-tagged findings and a PASS/FAIL verdict."
+        output_contract="All files are written to disk and listed in a summary.",
+    )
+
+
+def _opentofu_reviewer_blueprint() -> SubagentBlueprint:
+    return SubagentBlueprint(
+        name="opentofu-reviewer",
+        description="Review generated OpenTofu modules for correctness and security.",
+        mission="Audit module files and produce a severity-tagged verdict.",
+        workflow=(
+            "Read all module .tf files using ls and read_file.",
+            "Check variable/output integrity and reference validity.",
+            "Validate baseline security controls and best practices.",
+            "Provide fixes with corrected snippets.",
         ),
-        "system_prompt": (
-            "You are an OpenTofu security and quality reviewer.\n\n"
-            "Use `ls` and `read_file` to read all .tf files in the given module directory, "
-            "then check for:\n\n"
-            "CORRECTNESS\n"
-            "  - Valid HCL syntax and correct argument names\n"
-            "  - All variable references resolve to declared variables\n"
-            "  - All output expressions are valid\n\n"
-            "SECURITY\n"
-            "  - No hard-coded secrets or credentials\n"
-            "  - S3 buckets: versioning, server-side encryption, public access block\n"
-            "  - IAM: least-privilege, no wildcard actions on sensitive services\n"
-            "  - VPCs: no 0.0.0.0/0 ingress except ports 80/443\n"
-            "  - Encryption at rest and in transit enabled\n\n"
-            "COMPLETENESS\n"
-            "  - Required files exist: versions.tf, main.tf, variables.tf, outputs.tf, README.md\n"
-            "  - Every variable has type + description\n"
-            "  - Every output has description\n"
-            "  - examples/basic/main.tf exists\n\n"
-            "BEST PRACTICES\n"
-            "  - DRY: no repeated blocks (use for_each / count)\n"
-            "  - Consistent naming (snake_case)\n"
-            "  - Appropriate use of locals for computed values\n\n"
-            "Format each finding as:\n"
-            "  [SEVERITY] file:line — Issue description\n"
-            "  Fix: corrected HCL snippet\n\n"
-            "End with: VERDICT: PASS or FAIL — one-sentence summary."
+        guardrails=(
+            "Format findings as [SEVERITY] file:line - issue.",
+            "End with VERDICT: PASS or FAIL.",
         ),
-    },
+        output_contract="Return a concise audit report with actionable fixes.",
+    )
+
+
+def _build_opentofu_blueprints() -> tuple[SubagentBlueprint, ...]:
+    return (
+        _opentofu_architect_blueprint(),
+        _opentofu_coder_blueprint(),
+        _opentofu_reviewer_blueprint(),
+    )
+
+
+def _compile_subagent_prompt(blueprint: SubagentBlueprint) -> str:
+    workflow = "\n".join(f"{idx}. {step}" for idx, step in enumerate(blueprint.workflow, start=1))
+    guardrails = "\n".join(f"- {rule}" for rule in blueprint.guardrails)
+    return "\n\n".join(
+        (
+            blueprint.mission,
+            "## Workflow\n" + workflow,
+            "## Guardrails\n" + guardrails,
+            "## Output Contract\n" + blueprint.output_contract,
+        )
+    )
+
+
+def build_opentofu_subagents() -> tuple[dict[str, str], ...]:
+    compiled = []
+    for blueprint in _build_opentofu_blueprints():
+        compiled.append(
+            {
+                "name": blueprint.name,
+                "description": blueprint.description,
+                "system_prompt": _compile_subagent_prompt(blueprint),
+            }
+        )
+    return tuple(compiled)
+
+
+def build_default_agent_md() -> str:
+    return "\n".join(
+        (
+            "# Project Memory",
+            "",
+            "Capture stable context, goals, and constraints for future agent runs.",
+            "",
+            "## Working Conventions",
+            "- Keep multi-step progress in TASKS.md and retain history across sessions.",
+            "- Keep instructions concise, deterministic, and implementation focused.",
+            "- Update this memory when project goals or hard constraints change.",
+        )
+    )
+
+
+def build_prompt_bundle() -> PromptBundle:
+    return PromptBundle(
+        system_prompt=build_system_prompt(),
+        opentofu_subagents=build_opentofu_subagents(),
+        default_agent_md=build_default_agent_md(),
+    )
+
+
+PROMPT_BUNDLE = build_prompt_bundle()
+
+# Compatibility aliases for older imports.
+SYSTEM_PROMPT = PROMPT_BUNDLE.system_prompt
+OPENTOFU_SUBAGENTS = [dict(subagent) for subagent in PROMPT_BUNDLE.opentofu_subagents]
+INFRA_SUBAGENTS = OPENTOFU_SUBAGENTS
+_DEFAULT_AGENT_MD = PROMPT_BUNDLE.default_agent_md
+
+
+__all__ = [
+    "PromptBundle",
+    "SubagentBlueprint",
+    "PROMPT_BUNDLE",
+    "build_default_agent_md",
+    "build_opentofu_subagents",
+    "build_prompt_bundle",
+    "build_system_prompt",
+    "INFRA_SUBAGENTS",
+    "OPENTOFU_SUBAGENTS",
+    "SYSTEM_PROMPT",
+    "_DEFAULT_AGENT_MD",
 ]
-
-_DEFAULT_AGENT_MD = """\
-# Project Memory
-
-Describe the project context, goals, and any special instructions for the agent here.
-When saved, this file is loaded at the start of every new conversation.
-
-## Conventions
-- The agent tracks multi-step work in `TASKS.md` — do not delete it between sessions.
-- Completed task history accumulates at the bottom of `TASKS.md`.
-"""
