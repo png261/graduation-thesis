@@ -15,11 +15,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")
-    gemini_model: str = Field(
-        default="gemini:gemini-2.5-flash", alias="GEMINI_MODEL")
+    llm_base_url: str = Field(default="http://127.0.0.1:8317/v1", alias="LLM_BASE_URL")
+    llm_api_key: str = Field(default="developer", alias="LLM_API_KEY")
+    llm_model: str = Field(default="gpt-5.4", alias="LLM_MODEL")
     cors_origins: str = Field(
-        default="http://localhost:5173", alias="CORS_ORIGINS")
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        alias="CORS_ORIGINS",
+    )
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     database_url: str = Field(
         default="postgresql://postgres:postgres@localhost:5432/deepagents",
@@ -29,12 +31,12 @@ class Settings(BaseSettings):
     clerk_jwt_key: str | None = Field(default=None, alias="CLERK_JWT_KEY")
     clerk_authorized_parties: str = Field(default="", alias="CLERK_AUTHORIZED_PARTIES")
     clerk_audience: str = Field(default="", alias="CLERK_AUDIENCE")
-    auth_bypass_local: bool = Field(default=False, alias="AUTH_BYPASS_LOCAL")
     infracost_api_key: str | None = Field(default=None, alias="INFRACOST_API_KEY")
     file_url_signing_secret: str = Field(default="dev-file-url-secret", alias="FILE_URL_SIGNING_SECRET")
     file_url_ttl_seconds: int = Field(default=300, alias="FILE_URL_TTL_SECONDS")
     ansible_ssh_key_path: str | None = Field(default=None, alias="ANSIBLE_SSH_KEY_PATH")
     ansible_playbook_path: str = Field(default="playbooks/site.yml", alias="ANSIBLE_PLAYBOOK_PATH")
+    ansible_aws_ssm_bucket_name: str | None = Field(default=None, alias="ANSIBLE_AWS_SSM_BUCKET_NAME")
     ansible_ssh_common_args: str = Field(default="", alias="ANSIBLE_SSH_COMMON_ARGS")
     ansible_host_key_checking: bool = Field(default=True, alias="ANSIBLE_HOST_KEY_CHECKING")
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
@@ -53,6 +55,13 @@ class Settings(BaseSettings):
     jobs_event_tail_limit: int = Field(default=200, alias="JOBS_EVENT_TAIL_LIMIT")
     jobs_history_retention_days: int = Field(default=90, alias="JOBS_HISTORY_RETENTION_DAYS")
     runtime_cache_ttl_seconds: int = Field(default=300, alias="RUNTIME_CACHE_TTL_SECONDS")
+    opentofu_mcp_enabled: bool = Field(default=True, alias="OPENTOFU_MCP_ENABLED")
+    opentofu_mcp_url: str = Field(default="https://mcp.opentofu.org/sse", alias="OPENTOFU_MCP_URL")
+    incident_confidence_threshold: float = Field(default=0.7, alias="INCIDENT_CONFIDENCE_THRESHOLD")
+    agent_max_tool_calls: int = Field(default=25, alias="AGENT_MAX_TOOL_CALLS")
+    alert_cooldown_seconds: int = Field(default=300, alias="ALERT_COOLDOWN_SECONDS")
+    incident_memory_top_k: int = Field(default=5, alias="INCIDENT_MEMORY_TOP_K")
+    incident_token_budget: int = Field(default=16000, alias="INCIDENT_TOKEN_BUDGET")
     state_encryption_key: str = Field(default="dev-state-encryption-key", alias="STATE_ENCRYPTION_KEY")
     state_sync_scan_interval_minutes: int = Field(default=60, alias="STATE_SYNC_SCAN_INTERVAL_MINUTES")
     state_sync_max_backends_per_tick: int = Field(default=25, alias="STATE_SYNC_MAX_BACKENDS_PER_TICK")

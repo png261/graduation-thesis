@@ -9,17 +9,301 @@ type GeneratedProjectJobStatus = NonNullable<
 >;
 
 export type CloudProvider = "aws" | "gcloud";
+export type BlueprintKind = "provisioning" | "configuration";
+export type BlueprintStepType = "resource" | "action" | "validation";
+export type BlueprintRiskClass = "safe" | "cost" | "network" | "data" | "destroy";
+
+export interface ProjectBlueprintInputSummary {
+  key: string;
+  label: string;
+  description?: string;
+  required: boolean;
+  riskClass: BlueprintRiskClass;
+  defaultValue?: string | null;
+  resolved: boolean;
+  value?: string | null;
+}
+
+export interface ProjectBlueprintStep {
+  id: string;
+  type: BlueprintStepType;
+  title: string;
+  description: string;
+  requiredInputs: string[];
+  expectedResult: string;
+}
+
+export interface ProjectBlueprintCatalogItem {
+  id: string;
+  kind: BlueprintKind;
+  name: string;
+  summary: string;
+  resourcesOrActions: string[];
+  requiredInputs: ProjectBlueprintInputSummary[];
+  steps: ProjectBlueprintStep[];
+}
+
+export interface ProjectActiveBlueprintSelection {
+  kind: BlueprintKind;
+  blueprintId: string;
+  blueprintVersion: string;
+  blueprintName: string;
+  summary: string;
+  resourcesOrActions: string[];
+  requiredInputs: ProjectBlueprintInputSummary[];
+  steps: ProjectBlueprintStep[];
+  inputs: Record<string, string>;
+  selectedAt?: string | null;
+  latestRunId?: string | null;
+  latestRunCreatedAt?: string | null;
+}
+
+export interface ProjectActiveBlueprints {
+  provisioning: ProjectActiveBlueprintSelection | null;
+  configuration: ProjectActiveBlueprintSelection | null;
+}
+
+export interface ProjectBlueprintRunSnapshot {
+  id: string;
+  projectId: string;
+  threadId: string;
+  kind: BlueprintKind;
+  blueprintId: string;
+  blueprintVersion: string;
+  blueprintName: string;
+  inputs: Record<string, string>;
+  snapshot: ProjectBlueprintCatalogItem & { version: string };
+  createdAt?: string | null;
+}
+
+export interface ProjectTerraformValidation {
+  status: "pass" | "fail";
+  checkedModules: string[];
+  missing: string[];
+  violations: string[];
+  requireAnsible: boolean;
+  requireTargetContract?: boolean;
+}
+
+export interface ProjectTerraformTargetContractSchema {
+  schemaVersion: number;
+  moduleOutputName: string;
+  canonicalOutputName: string;
+  legacyOutputName: string;
+  requiredFields: string[];
+  optionalFields: string[];
+  dedupeKey: string;
+}
+
+export interface ProjectTerraformTarget {
+  execution_id: string;
+  role: string;
+  source_modules: string[];
+  display_name?: string;
+  platform?: string;
+  private_ip?: string;
+  public_ip?: string;
+  hostname?: string;
+  labels?: Record<string, string>;
+  tags?: Record<string, string>;
+}
+
+export interface ProjectTerraformTargetContract {
+  status: "valid" | "invalid" | "missing" | "unvalidated";
+  stale: boolean;
+  validated_at: string | null;
+  target_count: number;
+  targets: ProjectTerraformTarget[];
+  validation_errors: string[];
+  schema_version: number;
+  module_output_name: string;
+  canonical_output_name: string;
+  legacy_output_name: string;
+}
+
+export interface ProjectSsmReadinessTarget {
+  execution_id: string;
+  resolved_instance_id: string | null;
+  resolved_managed_instance_id: string | null;
+  display_name: string;
+  role: string;
+  source_modules: string[];
+  expected_platform: string | null;
+  registration_status: string;
+  ping_status: string;
+  platform_status: string;
+  last_seen_at: string | null;
+  ready: boolean;
+  blocking_reason: string | null;
+}
+
+export interface ProjectSsmReadiness {
+  status: string;
+  blocking: boolean;
+  scope_mode: string;
+  selected_modules: string[];
+  checked_at: string | null;
+  timeout_seconds: number;
+  target_count: number;
+  ready_target_count: number;
+  pending_target_count: number;
+  failed_target_count: number;
+  blocker_code: string | null;
+  blocker_message: string;
+  targets: ProjectSsmReadinessTarget[];
+  failed_targets: ProjectSsmReadinessTarget[];
+}
+
+export interface ProjectTerraformGenerationCompare {
+  hasPrevious: boolean;
+  previousGenerationId?: string | null;
+  addedModules: string[];
+  removedModules: string[];
+  changedModules: string[];
+  addedFiles: string[];
+  removedFiles: string[];
+  changedFiles: string[];
+  inputsChanged: boolean;
+}
+
+export interface ProjectTerraformGenerationSummary {
+  headline: string;
+  blueprintId: string;
+  blueprintName: string;
+  blueprintRunId: string;
+  inputs: Record<string, string>;
+  stackPath: string;
+  moduleCount: number;
+  fileCount: number;
+  latestGenerationId?: string | null;
+  mode?: "generate" | "regenerate";
+  removedModules?: string[];
+  removedFiles?: string[];
+  inputsChanged?: boolean;
+}
+
+export interface ProjectTerraformGenerationRecord {
+  id: string;
+  projectId: string;
+  blueprintRunId: string;
+  stackPath: string;
+  moduleNames: string[];
+  generatedPaths: Record<string, string>;
+  summary: ProjectTerraformGenerationSummary;
+  targetContract: ProjectTerraformTargetContractSchema;
+  targetContractSummary: string;
+  provenanceReportPath: string;
+  replacesGenerationId: string | null;
+  createdAt: string | null;
+  compare: ProjectTerraformGenerationCompare | null;
+}
+
+export interface ProjectTerraformGenerationPreview {
+  status: "ok";
+  blueprintRunId: string;
+  stackPath: string;
+  moduleNames: string[];
+  generatedFiles: string[];
+  validation: ProjectTerraformValidation;
+  mode: "generate" | "regenerate";
+  inputsChanged: boolean;
+  removedModules: string[];
+  summary: ProjectTerraformGenerationSummary;
+  targetContract: ProjectTerraformTargetContractSchema;
+  targetContractSummary: string;
+  validationIssues: string[];
+  latestGeneration: ProjectTerraformGenerationRecord | null;
+  previewToken: string;
+}
+
+export interface ProjectTerraformGenerationResult extends ProjectTerraformGenerationPreview {
+  writtenFiles: string[];
+  removedFiles: string[];
+  provenanceReportPath: string;
+  generation: ProjectTerraformGenerationRecord;
+}
+
+export interface ProjectAnsibleGenerationCompare {
+  hasPrevious: boolean;
+  previousGenerationId?: string | null;
+  addedModules: string[];
+  removedModules: string[];
+  changedModules: string[];
+  addedFiles: string[];
+  removedFiles: string[];
+  changedFiles: string[];
+  inputsChanged: boolean;
+}
+
+export interface ProjectAnsibleGenerationSummary {
+  headline: string;
+  blueprintId: string;
+  blueprintName: string;
+  blueprintRunId: string;
+  inputs: Record<string, string>;
+  playbookPath: string;
+  roleCount: number;
+  fileCount: number;
+  terraformGenerationId: string;
+  latestGenerationId?: string | null;
+  mode?: "generate" | "regenerate";
+  removedRoles?: string[];
+  removedFiles?: string[];
+  inputsChanged?: boolean;
+  targetModules?: string[];
+  skippedModules?: string[];
+}
+
+export interface ProjectAnsibleGenerationRecord {
+  id: string;
+  projectId: string;
+  blueprintRunId: string;
+  playbookPath: string;
+  targetModules: string[];
+  skippedModules: string[];
+  generatedPaths: Record<string, string>;
+  summary: ProjectAnsibleGenerationSummary;
+  provenanceReportPath: string;
+  replacesGenerationId: string | null;
+  createdAt: string | null;
+  compare: ProjectAnsibleGenerationCompare | null;
+}
+
+export interface ProjectAnsibleGenerationPreview {
+  status: "ok";
+  blueprintRunId: string;
+  playbookPath: string;
+  targetModules: string[];
+  skippedModules: string[];
+  generatedFiles: string[];
+  validation: ProjectTerraformValidation;
+  mode: "generate" | "regenerate";
+  inputsChanged: boolean;
+  removedRoles: string[];
+  summary: ProjectAnsibleGenerationSummary;
+  validationIssues: string[];
+  latestGeneration: ProjectAnsibleGenerationRecord | null;
+  previewToken: string;
+}
+
+export interface ProjectAnsibleGenerationResult extends ProjectAnsibleGenerationPreview {
+  writtenFiles: string[];
+  removedFiles: string[];
+  provenanceReportPath: string;
+  generation: ProjectAnsibleGenerationRecord;
+}
 
 export interface Project {
   id: string;
   name: string;
   provider: CloudProvider | null;
   createdAt: string;
+  activeBlueprints?: ProjectActiveBlueprints;
 }
 
 export type ProjectJobKind =
   [GeneratedProjectJobKind] extends [never]
-    ? "pipeline" | "apply" | "plan" | "ansible" | "graph" | "cost"
+    ? "pipeline" | "apply" | "plan" | "destroy" | "ansible" | "graph" | "cost"
     : GeneratedProjectJobKind;
 export type ProjectJobStatus =
   [GeneratedProjectJobStatus] extends [never]
@@ -34,6 +318,52 @@ export interface ProjectJobEvent {
   [key: string]: unknown;
 }
 
+export interface ProjectPostDeploySection {
+  items: Array<Record<string, unknown>>;
+  raw?: string | null;
+  truncated?: boolean;
+  redacted?: boolean;
+  truncated_reason?: string | null;
+}
+
+export interface ProjectPostDeployHost {
+  status?: string;
+  ready?: boolean;
+  host: {
+    name: string;
+    address?: string;
+    module?: string;
+  };
+  system?: ProjectPostDeploySection;
+  services?: ProjectPostDeploySection;
+  packages?: ProjectPostDeploySection;
+  health_checks?: ProjectPostDeploySection;
+  service_logs?: ProjectPostDeploySection;
+}
+
+export interface ProjectPostDeploySummary {
+  status: string;
+  host_count: number;
+  skipped_host_count: number;
+  service_count: number;
+  health_summary: string;
+  collected_at?: string | null;
+}
+
+export interface ProjectJobStageState {
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  message?: string | null;
+}
+
+export interface ProjectJobStageSummary {
+  apply?: ProjectJobStageState;
+  ssm_readiness?: ProjectJobStageState;
+  ansible?: ProjectJobStageState;
+  post_deploy?: ProjectJobStageState;
+}
+
 export interface ProjectJob {
   id: string;
   project_id: string;
@@ -43,11 +373,22 @@ export interface ProjectJob {
   params: {
     selected_modules?: string[];
     intent?: string | null;
+    review_session_id?: string | null;
+    review_target?: string | null;
+    scope_mode?: string | null;
+    confirmation?: {
+      project_name?: string;
+      keyword?: string;
+      selected_modules?: string[];
+    } | null;
     options?: Record<string, unknown>;
   };
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
   event_tail: ProjectJobEvent[];
+  post_deploy_summary?: ProjectPostDeploySummary;
+  post_deploy_hosts?: ProjectPostDeployHost[];
+  stage_summary?: ProjectJobStageSummary;
   celery_task_id: string | null;
   rerun_of_job_id: string | null;
   created_at: string | null;
@@ -65,6 +406,14 @@ export interface EnqueueProjectJobBody {
   kind: ProjectJobKind;
   selected_modules?: string[];
   intent?: string | null;
+  review_session_id?: string | null;
+  review_target?: string | null;
+  scope_mode?: string | null;
+  confirmation?: {
+    project_name?: string;
+    keyword?: string;
+    selected_modules?: string[];
+  } | null;
   options?: Record<string, unknown>;
 }
 
@@ -95,6 +444,9 @@ export interface Skill {
 export interface CredentialsData {
   provider: string | null;
   credentials: Record<string, string>;
+  required_fields: string[];
+  missing_fields: string[];
+  apply_ready: boolean;
 }
 
 export interface OpenTofuStatus {
@@ -116,6 +468,34 @@ export interface OpenTofuPreviewResult extends OpenTofuStatus {
   selector: "llm" | "fallback";
 }
 
+export interface AnsibleTransportSummary {
+  mode: string;
+  target_count: number;
+  target_ids: string[];
+  display_names: string[];
+}
+
+export interface AnsibleLatestRunSummary {
+  run_id: string;
+  status: "ok" | "failed";
+  attempts: number;
+  modules: string[];
+  selected_modules: string[];
+  host_count: number;
+  target_count: number;
+  target_ids: string[];
+  transport: AnsibleTransportSummary | null;
+  results: Array<{
+    host: string;
+    status: "ok" | "failed" | "unreachable";
+    ok: number;
+    changed: number;
+    unreachable: number;
+    failed: number;
+  }>;
+  finished_at: string;
+}
+
 export interface AnsibleStatus {
   project_found: boolean;
   ansible_available: boolean;
@@ -127,6 +507,13 @@ export interface AnsibleStatus {
   host_count: number;
   missing_requirements: string[];
   output_errors: string[];
+  generationReady: boolean;
+  generationStale: boolean;
+  targetModules: string[];
+  skippedModules: string[];
+  ssm_ready: boolean;
+  ssm_readiness: ProjectSsmReadiness | null;
+  latestGeneration: ProjectAnsibleGenerationRecord | null;
   config_summary: {
     playbook_files: string[];
     role_task_files: string[];
@@ -136,22 +523,7 @@ export interface AnsibleStatus {
     file_targets: string[];
     module_usage_top: Array<{ module: string; count: number }>;
   };
-  latest_run: {
-    run_id: string;
-    status: "ok" | "failed";
-    attempts: number;
-    modules: string[];
-    host_count: number;
-    results: Array<{
-      host: string;
-      status: "ok" | "failed" | "unreachable";
-      ok: number;
-      changed: number;
-      unreachable: number;
-      failed: number;
-    }>;
-    finished_at: string;
-  } | null;
+  latest_run: AnsibleLatestRunSummary | null;
   can_run: boolean;
 }
 
@@ -267,6 +639,9 @@ export interface ProjectRunHistoryItem {
   params: Record<string, unknown>;
   result: Record<string, unknown> | null;
   error: Record<string, unknown> | null;
+  post_deploy_summary?: ProjectPostDeploySummary;
+  post_deploy_hosts?: ProjectPostDeployHost[];
+  stage_summary?: ProjectJobStageSummary;
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;

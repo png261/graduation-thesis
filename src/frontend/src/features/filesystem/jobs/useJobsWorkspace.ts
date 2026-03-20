@@ -13,7 +13,7 @@ import {
 } from "../../../api/projects";
 import { toErrorMessage } from "../../../lib/errors";
 import { readSseJson } from "../../../lib/sse";
-import { maxEventSeq, shouldStream, toEvent } from "./events";
+import { buildStageSummary, maxEventSeq, shouldStream, toEvent } from "./events";
 
 function useJobLoaders(args: {
   projectId: string;
@@ -358,8 +358,22 @@ export function useJobsWorkspace(projectId: string, pushLog: (message: string) =
 
   const selectedJobSummary = useMemo(() => {
     if (!state.selectedJob) return "No job selected";
+    const summary = buildStageSummary(state.selectedJob, state.selectedEvents);
+    if (summary?.apply || summary?.ssm_readiness || summary?.ansible || summary?.post_deploy) {
+      const stages = [
+        summary.apply ? `Provisioning ${summary.apply.status === "ok" ? "succeeded" : summary.apply.status}` : null,
+        summary.ssm_readiness ? `SSM readiness ${summary.ssm_readiness.status}` : null,
+        summary.ansible
+          ? `Configuration ${summary.ansible.status === "ok" ? "succeeded" : summary.ansible.status}`
+          : null,
+        summary.post_deploy
+          ? `Post-deploy logging ${summary.post_deploy.status === "ok" ? "succeeded" : summary.post_deploy.status}`
+          : null,
+      ].filter(Boolean);
+      if (stages.length > 0) return stages.join(" · ");
+    }
     return `${state.selectedJob.kind} · ${state.selectedJob.status}`;
-  }, [state.selectedJob]);
+  }, [state.selectedEvents, state.selectedJob]);
 
   return buildJobsWorkspaceResult({
     jobs: state.jobs,

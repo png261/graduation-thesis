@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from app.core.config import Settings
+from app.services.opentofu.runtime.shared import merge_run_env, opentofu_env
 from app.services.project import files as project_files
 
 
@@ -32,7 +33,22 @@ def resolve_ssh_key_path(settings: Settings) -> Path | None:
     return Path(raw).expanduser()
 
 
-def ansible_run_env(settings: Settings) -> dict[str, str]:
+def resolve_ssm_bucket_name(settings: Settings) -> str | None:
+    raw = (settings.ansible_aws_ssm_bucket_name or "").strip()
+    return raw or None
+
+
+def ansible_run_env(
+    settings: Settings,
+    *,
+    provider: str | None = None,
+    credentials: dict[str, str] | None = None,
+) -> dict[str, str]:
     env = dict(os.environ)
+    if provider and credentials is not None:
+        try:
+            env = merge_run_env(opentofu_env(provider, credentials))
+        except ValueError:
+            env = dict(os.environ)
     env["ANSIBLE_HOST_KEY_CHECKING"] = "True" if settings.ansible_host_key_checking else "False"
     return env

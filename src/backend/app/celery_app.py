@@ -25,5 +25,9 @@ celery_app.conf.update(
             "task": "state_backends.sync_due",
             "schedule": max(300, settings.state_sync_scan_interval_minutes * 60),
         },
+        "jobs-cleanup-history": {
+            "task": "jobs.cleanup_history",
+            "schedule": 6 * 60 * 60,
+        },
     },
 )

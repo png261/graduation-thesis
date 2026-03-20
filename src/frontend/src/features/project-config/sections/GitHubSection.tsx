@@ -45,6 +45,7 @@ function GitHubAuthPrompt({
 
 function onRepoSelected(state: ProjectConfigState, value: string) {
   const next = value === "__none__" ? "" : value;
+  state.clearPendingRepositoryConfirmation();
   state.setSelectedRepo(next);
   const defaultBranch = state.githubRepos.find((repo) => repo.full_name === next)?.default_branch || "";
   state.setSelectedBaseBranch(defaultBranch);
@@ -71,20 +72,27 @@ function GitHubBranchInput({ state }: { state: ProjectConfigState }) {
   return (
     <div className="space-y-2">
       <Label>Base branch</Label>
-      <Input value={state.selectedBaseBranch} onChange={(event) => state.setSelectedBaseBranch(event.target.value)} placeholder={state.selectedRepoDefaultBranch || "main"} />
+      <Input value={state.selectedBaseBranch} onChange={(event) => {
+        state.clearPendingRepositoryConfirmation();
+        state.setSelectedBaseBranch(event.target.value);
+      }} placeholder={state.selectedRepoDefaultBranch || "main"} />
     </div>
   );
 }
 
 function GitHubConnectForm({ state }: { state: ProjectConfigState }) {
   return (
-    <>
-      <GitHubRepoSelector state={state} />
-      <GitHubBranchInput state={state} />
-      <Button className="w-full" onClick={state.handleConnectGitHub} disabled={state.githubBusy || !state.selectedRepo}>
-        {state.githubBusy ? "Connecting..." : "Connect Repository"}
-      </Button>
-    </>
+      <>
+        <GitHubRepoSelector state={state} />
+        <GitHubBranchInput state={state} />
+        <GitHubConfirmationNotice state={state} />
+        <Button className="w-full" onClick={state.handleConnectGitHub} disabled={state.githubBusy || !state.selectedRepo}>
+          {state.githubBusy ? "Connecting..." : state.githubActionLabel}
+        </Button>
+        {state.pendingRepositoryConfirmation ? <Button variant="outline" className="w-full" onClick={state.handleConfirmGitHubAction} disabled={state.githubBusy}>
+          Confirm Replace Workspace
+        </Button> : null}
+      </>
   );
 }
 
@@ -96,11 +104,31 @@ function GitHubConnectedState({ state }: { state: ProjectConfigState }) {
         <p>Base: <code className="text-[var(--da-text)]">{state.githubStatus?.base_branch}</code></p>
         <p>Working: <code className="text-[var(--da-text)]">{state.githubStatus?.working_branch}</code></p>
       </div>
+      <GitHubConfirmationNotice state={state} />
+      <Button className="w-full" onClick={state.handleSyncGitHub} disabled={state.githubBusy}>
+        {state.githubBusy ? "Syncing..." : "Sync Repository Baseline"}
+      </Button>
+      {state.pendingRepositoryConfirmation ? <Button variant="outline" className="w-full" onClick={state.handleConfirmGitHubAction} disabled={state.githubBusy}>
+        Confirm Replace Workspace
+      </Button> : null}
       <Button className="w-full" onClick={() => state.setPullRequestModalOpen(true)}>Create Pull Request</Button>
       <Button variant="outline" className="w-full" onClick={state.handleDisconnectGitHub} disabled={state.githubBusy}>
         {state.githubBusy ? "Disconnecting..." : "Disconnect Repository"}
       </Button>
     </>
+  );
+}
+
+function GitHubConfirmationNotice({ state }: { state: ProjectConfigState }) {
+  if (!state.pendingRepositoryConfirmation) return null;
+  return (
+    <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-100">
+      <AlertTitle>Replace workspace files?</AlertTitle>
+      <AlertDescription className="space-y-2">
+        <p>{state.pendingRepositoryConfirmation.confirmationMessage}</p>
+        <p>Only AGENTS.md, .agents/skills/, .claude/skills/, .opentofu-runtime/, and .git are preserved automatically.</p>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -142,7 +170,7 @@ export function GitHubSection({ state }: { state: ProjectConfigState }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">GitHub</CardTitle>
-        <CardDescription>Connect a repository and manage pull requests.</CardDescription>
+        <CardDescription>Connect a repository, sync the workspace baseline, and manage pull requests.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <GitHubSessionInfo login={state.githubSession.login} />

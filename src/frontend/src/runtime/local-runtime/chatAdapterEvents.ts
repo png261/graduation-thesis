@@ -4,6 +4,12 @@ import type {
   PolicyCheckScanError,
   PolicyCheckSummary,
 } from "../../contexts/FilesystemContext";
+import type {
+  BlueprintKind,
+  ProjectBlueprintCatalogItem,
+  ProjectBlueprintInputSummary,
+  ProjectBlueprintStep,
+} from "../../api/projects/types";
 
 export type UsageEventPayload = {
   promptTokens: number;
@@ -11,6 +17,27 @@ export type UsageEventPayload = {
   modelId: string | null;
   modelContextWindow: number | null;
 };
+
+export interface BlueprintSuggestionsEventPayload {
+  kind: BlueprintKind;
+  suggestions: ProjectBlueprintCatalogItem[];
+}
+
+export interface BlueprintInputsSummaryEventPayload {
+  kind: BlueprintKind;
+  blueprintId: string;
+  blueprintName: string;
+  inputs: ProjectBlueprintInputSummary[];
+}
+
+export interface BlueprintProvenanceEventPayload {
+  kind: BlueprintKind;
+  source: "selection" | "run";
+  runId: string | null;
+  createdAt: string | null;
+  inputs: Record<string, string>;
+  blueprint: ProjectBlueprintCatalogItem;
+}
 
 export function parseUsageEvent(event: unknown): UsageEventPayload | null {
   if (!event || typeof event !== "object") return null;
@@ -113,5 +140,99 @@ export function parsePolicyCheckResultEvent(event: Record<string, unknown>): Pol
     issues,
     summary: parsePolicySummary(event, issues),
     scanError: parsePolicyScanError(event),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readBlueprintKind(value: unknown): BlueprintKind {
+  return value === "configuration" ? "configuration" : "provisioning";
+}
+
+function readBlueprintInput(raw: unknown): ProjectBlueprintInputSummary {
+  const item = asRecord(raw);
+  return {
+    key: readString(item.key, ""),
+    label: readString(item.label, ""),
+    description: readOptionalString(item.description),
+    required: Boolean(item.required),
+    riskClass: (readOptionalString(item.riskClass) ?? "safe") as ProjectBlueprintInputSummary["riskClass"],
+    defaultValue: readOptionalString(item.defaultValue) ?? null,
+    resolved: Boolean(item.resolved),
+    value: readOptionalString(item.value) ?? null,
+  };
+}
+
+function readBlueprintStep(raw: unknown): ProjectBlueprintStep {
+  const step = asRecord(raw);
+  return {
+    id: readString(step.id, ""),
+    type: (readOptionalString(step.type) ?? "action") as ProjectBlueprintStep["type"],
+    title: readString(step.title, ""),
+    description: readString(step.description, ""),
+    requiredInputs: Array.isArray(step.requiredInputs)
+      ? step.requiredInputs.filter((item: unknown): item is string => typeof item === "string")
+      : [],
+    expectedResult: readString(step.expectedResult, ""),
+  };
+}
+
+function readBlueprintPayload(raw: unknown): ProjectBlueprintCatalogItem {
+  const payload = asRecord(raw);
+  return {
+    id: readString(payload.id, ""),
+    kind: readBlueprintKind(payload.kind),
+    name: readString(payload.name, ""),
+    summary: readString(payload.summary, ""),
+    resourcesOrActions: Array.isArray(payload.resourcesOrActions)
+      ? payload.resourcesOrActions.filter((item: unknown): item is string => typeof item === "string")
+      : [],
+    requiredInputs: Array.isArray(payload.requiredInputs)
+      ? payload.requiredInputs.map(readBlueprintInput)
+      : [],
+    steps: Array.isArray(payload.steps) ? payload.steps.map(readBlueprintStep) : [],
+  };
+}
+
+function readStringMap(raw: unknown): Record<string, string> {
+  const value = asRecord(raw);
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return Object.fromEntries(entries);
+}
+
+export function parseBlueprintSuggestionsEvent(
+  event: Record<string, unknown>,
+): BlueprintSuggestionsEventPayload {
+  return {
+    kind: readBlueprintKind(event.kind),
+    suggestions: Array.isArray(event.suggestions) ? event.suggestions.map(readBlueprintPayload) : [],
+  };
+}
+
+export function parseBlueprintInputsSummaryEvent(
+  event: Record<string, unknown>,
+): BlueprintInputsSummaryEventPayload {
+  return {
+    kind: readBlueprintKind(event.kind),
+    blueprintId: readString(event.blueprintId, ""),
+    blueprintName: readString(event.blueprintName, ""),
+    inputs: Array.isArray(event.inputs) ? event.inputs.map(readBlueprintInput) : [],
+  };
+}
+
+export function parseBlueprintProvenanceEvent(
+  event: Record<string, unknown>,
+): BlueprintProvenanceEventPayload {
+  return {
+    kind: readBlueprintKind(event.kind),
+    source: event.source === "run" ? "run" : "selection",
+    runId: readOptionalString(event.runId) ?? null,
+    createdAt: readOptionalString(event.createdAt) ?? null,
+    inputs: readStringMap(event.inputs),
+    blueprint: readBlueprintPayload(event.blueprint),
   };
 }

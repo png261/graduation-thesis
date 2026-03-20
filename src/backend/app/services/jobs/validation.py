@@ -38,6 +38,28 @@ def _parse_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parse_confirmation(payload: dict[str, Any]) -> dict[str, Any] | None:
+    confirmation = payload.get("confirmation")
+    if confirmation is None:
+        return None
+    if not isinstance(confirmation, dict):
+        raise JobValidationError("confirmation must be an object")
+    project_name = confirmation.get("project_name")
+    keyword = confirmation.get("keyword")
+    selected_modules = confirmation.get("selected_modules", [])
+    if project_name is not None and not isinstance(project_name, str):
+        raise JobValidationError("confirmation.project_name must be a string")
+    if keyword is not None and not isinstance(keyword, str):
+        raise JobValidationError("confirmation.keyword must be a string")
+    if not isinstance(selected_modules, list) or any(not isinstance(row, str) for row in selected_modules):
+        raise JobValidationError("confirmation.selected_modules must be a list of strings")
+    return {
+        "project_name": project_name or "",
+        "keyword": keyword or "",
+        "selected_modules": [row for row in selected_modules if isinstance(row, str)],
+    }
+
+
 def parse_job_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     if kind not in JOB_KINDS:
         raise JobValidationError(f"Unsupported job kind '{kind}'")
@@ -54,8 +76,21 @@ def parse_job_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
     intent = payload.get("intent")
     if intent is not None and not isinstance(intent, str):
         raise JobValidationError("intent must be a string")
+    review_session_id = payload.get("review_session_id")
+    if review_session_id is not None and not isinstance(review_session_id, str):
+        raise JobValidationError("review_session_id must be a string")
+    review_target = payload.get("review_target")
+    if review_target is not None and not isinstance(review_target, str):
+        raise JobValidationError("review_target must be a string")
+    scope_mode = payload.get("scope_mode")
+    if scope_mode is not None and not isinstance(scope_mode, str):
+        raise JobValidationError("scope_mode must be a string")
     return {
         "selected_modules": [row for row in selected_modules if isinstance(row, str)],
         "intent": intent or None,
+        "review_session_id": review_session_id or None,
+        "review_target": review_target or None,
+        "scope_mode": scope_mode or None,
+        "confirmation": _parse_confirmation(payload),
         "options": options or {},
     }

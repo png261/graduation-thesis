@@ -4,11 +4,14 @@ import type {
   ToolCallMessagePart,
 } from "@assistant-ui/react";
 
-import { persistThread } from "../../api/projects";
+import { cancelProjectJob, persistThread } from "../../api/projects";
 import { apiRequest } from "../../api/client";
 import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { readSseJson } from "../../lib/sse";
 import {
+  parseBlueprintInputsSummaryEvent,
+  parseBlueprintProvenanceEvent,
+  parseBlueprintSuggestionsEvent,
   parsePolicyCheckResultEvent,
   parsePolicyCheckStartEvent,
   parseUsageEvent,
@@ -25,19 +28,28 @@ const MUTATING_TOOL_NAMES = new Set([
   "delete_path",
 ]);
 
+type SyntheticToolName =
+  | "suggest_blueprints"
+  | "blueprint_inputs"
+  | "blueprint_provenance";
+
 interface AdapterDeps {
   getProjectId: () => string;
   authenticated: boolean;
   notifyFileChanged: (path?: string) => void;
   notifyPolicyCheck: (event: PolicyCheckEvent) => void;
+  userScope?: string;
+  notifyIncident?: (event: unknown) => void;
 }
 
 interface StreamState {
   parts: ThreadAssistantMessagePart[];
   toolCallIndex: Map<string, number>;
-  textIndex: number | null;
-  reasoningIndex: number | null;
+  textIndexByScope: Map<string, number>;
+  reasoningIndexByScope: Map<string, number>;
   usageEvent: UsageEventPayload | null;
+  backendThreadId: string;
+  jobId: string | null;
 }
 
 type StreamEvent = Record<string, unknown> & { type?: string };
@@ -59,21 +71,6 @@ function normalizeChangedPath(value: unknown): string | undefined {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
-function extractChangedPaths(result: unknown): string[] {
-  if (!result || typeof result !== "object") return [];
-  const payload = result as Record<string, unknown>;
-  const candidates = collectChangedPathCandidates(payload);
-  return [...new Set(candidates)];
-}
-
-function collectChangedPathCandidates(payload: Record<string, unknown>): string[] {
-  const candidates: string[] = [];
-  const list = payload.changed_paths;
-  if (Array.isArray(list)) addArrayChangedPaths(candidates, list);
-  addKeyChangedPaths(candidates, payload);
-  return candidates;
-}
-
 function addArrayChangedPaths(candidates: string[], values: unknown[]) {
   for (const item of values) {
     const normalized = normalizeChangedPath(item);
@@ -88,21 +85,48 @@ function addKeyChangedPaths(candidates: string[], payload: Record<string, unknow
   }
 }
 
+function collectChangedPathCandidates(payload: Record<string, unknown>): string[] {
+  const candidates: string[] = [];
+  const list = payload.changed_paths;
+  if (Array.isArray(list)) addArrayChangedPaths(candidates, list);
+  addKeyChangedPaths(candidates, payload);
+  return candidates;
+}
+
+function extractChangedPaths(result: unknown): string[] {
+  if (!result || typeof result !== "object") return [];
+  const payload = result as Record<string, unknown>;
+  return [...new Set(collectChangedPathCandidates(payload))];
+}
+
 function asJsonObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
 }
 
-function appendDeltaPart(state: StreamState, key: "textIndex" | "reasoningIndex", type: "text" | "reasoning", delta: string) {
-  const index = state[key];
-  if (index === null) {
-    state.parts.push({ type, text: delta });
-    state[key] = state.parts.length - 1;
+function scopeKey(parentId: string | undefined) {
+  return parentId ? `parent:${parentId}` : "root";
+}
+
+function appendDeltaPart(
+  state: StreamState,
+  key: "textIndexByScope" | "reasoningIndexByScope",
+  type: "text" | "reasoning",
+  delta: string,
+  parentId: string | undefined,
+) {
+  const indexes = state[key];
+  const targetKey = scopeKey(parentId);
+  const index = indexes.get(targetKey);
+  if (index === undefined) {
+    state.parts.push(parentId ? { type, text: delta, parentId } : { type, text: delta });
+    indexes.set(targetKey, state.parts.length - 1);
     return;
   }
-
-  const current = state.parts[index] as ThreadAssistantMessagePart & { text?: string };
-  state.parts[index] = { ...current, type, text: `${current.text ?? ""}${delta}` };
+  const current = state.parts[index] as ThreadAssistantMessagePart & { text?: string; parentId?: string };
+  state.parts[index] = parentId
+    ? { ...current, type, text: `${current.text ?? ""}${delta}`, parentId }
+    : { ...current, type, text: `${current.text ?? ""}${delta}` };
 }
 
 function emitState(state: StreamState): ChatRunResult {
@@ -113,8 +137,8 @@ function resolveBackendThreadId(id: string | undefined) {
   return id ?? crypto.randomUUID();
 }
 
-function persistNewThreadIfNeeded(input: AdapterRunInput, deps: AdapterDeps, backendThreadId: string) {
-  if (!deps.authenticated || input.unstable_threadId) return;
+function persistNewThreadIfNeeded(deps: AdapterDeps, backendThreadId: string) {
+  if (!deps.authenticated) return;
   persistThread(deps.getProjectId(), backendThreadId, "").catch(() => {});
 }
 
@@ -140,13 +164,15 @@ async function openChatStream(payload: unknown, signal: AbortSignal | undefined)
   return response;
 }
 
-function createInitialState(): StreamState {
+function createInitialState(backendThreadId: string): StreamState {
   return {
     parts: [],
     toolCallIndex: new Map<string, number>(),
-    textIndex: null,
-    reasoningIndex: null,
+    textIndexByScope: new Map<string, number>(),
+    reasoningIndexByScope: new Map<string, number>(),
     usageEvent: null,
+    backendThreadId,
+    jobId: null,
   };
 }
 
@@ -161,14 +187,38 @@ function toStreamEvent(rawEvent: unknown): StreamEvent {
 function handleTextDelta(state: StreamState, event: StreamEvent): HandlerResult {
   const delta = String(event.delta ?? "");
   if (!delta) return {};
-  appendDeltaPart(state, "textIndex", "text", delta);
+  appendDeltaPart(
+    state,
+    "textIndexByScope",
+    "text",
+    delta,
+    typeof event.parentId === "string" ? event.parentId : undefined,
+  );
   return { output: emitState(state) };
 }
 
 function handleReasoningDelta(state: StreamState, event: StreamEvent): HandlerResult {
   const delta = String(event.delta ?? "");
   if (!delta) return {};
-  appendDeltaPart(state, "reasoningIndex", "reasoning", delta);
+  appendDeltaPart(
+    state,
+    "reasoningIndexByScope",
+    "reasoning",
+    delta,
+    typeof event.parentId === "string" ? event.parentId : undefined,
+  );
+  return { output: emitState(state) };
+}
+
+function handleSource(state: StreamState, event: StreamEvent): HandlerResult {
+  state.parts.push({
+    type: "source",
+    sourceType: "url",
+    id: String(event.id ?? ""),
+    title: String(event.title ?? ""),
+    url: String(event.url ?? ""),
+    parentId: typeof event.parentId === "string" ? event.parentId : undefined,
+  } as ThreadAssistantMessagePart);
   return { output: emitState(state) };
 }
 
@@ -217,6 +267,23 @@ function upsertToolResult(state: StreamState, updated: ToolCallMessagePart) {
   };
 }
 
+function upsertToolCall(state: StreamState, updated: ToolCallMessagePart) {
+  const index = state.toolCallIndex.get(updated.toolCallId);
+  if (index === undefined) {
+    state.toolCallIndex.set(updated.toolCallId, state.parts.length);
+    state.parts.push(updated);
+    return;
+  }
+  const existing = state.parts[index] as ToolCallMessagePart;
+  state.parts[index] = {
+    ...existing,
+    ...updated,
+    toolName: existing.toolName ?? updated.toolName,
+    args: updated.args,
+    argsText: updated.argsText,
+  };
+}
+
 function notifyChangedPaths(deps: AdapterDeps, paths: string[]) {
   if (paths.length < 1) return deps.notifyFileChanged();
   for (const path of paths) deps.notifyFileChanged(path);
@@ -261,6 +328,106 @@ function handleUsage(state: StreamState, event: StreamEvent): HandlerResult {
   return {};
 }
 
+function handleChatJob(state: StreamState, event: StreamEvent): HandlerResult {
+  state.jobId = typeof event.jobId === "string" ? event.jobId : null;
+  return {};
+}
+
+function buildSyntheticToolResult(
+  state: StreamState,
+  deps: AdapterDeps,
+  toolName: SyntheticToolName,
+  event: StreamEvent,
+  result: unknown,
+): ToolCallMessagePart {
+  const args = {
+    projectId: deps.getProjectId(),
+    threadId: state.backendThreadId,
+    kind: typeof event.kind === "string" ? event.kind : undefined,
+  };
+  return {
+    type: "tool-call",
+    toolCallId: `${toolName}:${String(event.kind ?? "default")}`,
+    toolName,
+    args: args as ToolCallMessagePart["args"],
+    argsText: JSON.stringify(args, null, 2),
+    result,
+    isError: false,
+  };
+}
+
+function buildSyntheticToolCallArgs(
+  state: StreamState,
+  deps: AdapterDeps,
+  event: StreamEvent,
+  extraArgs: Record<string, unknown> = {},
+) {
+  return {
+    projectId: deps.getProjectId(),
+    threadId: state.backendThreadId,
+    kind: typeof event.kind === "string" ? event.kind : undefined,
+    ...extraArgs,
+  };
+}
+
+function buildSyntheticHumanToolCall(
+  state: StreamState,
+  deps: AdapterDeps,
+  toolName: SyntheticToolName,
+  event: StreamEvent,
+  extraArgs: Record<string, unknown> = {},
+): ToolCallMessagePart {
+  const args = buildSyntheticToolCallArgs(state, deps, event, extraArgs);
+  return {
+    type: "tool-call",
+    toolCallId: `${toolName}:${String(event.kind ?? "default")}`,
+    toolName,
+    args: args as ToolCallMessagePart["args"],
+    argsText: JSON.stringify(args, null, 2),
+    interrupt: {
+      type: "human",
+      payload: { toolName, kind: typeof event.kind === "string" ? event.kind : undefined },
+    },
+  };
+}
+
+function handleBlueprintSuggestions(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const parsed = parseBlueprintSuggestionsEvent(event);
+  const updated = buildSyntheticHumanToolCall(
+    state,
+    deps,
+    "suggest_blueprints",
+    event,
+    { suggestions: parsed.suggestions },
+  );
+  upsertToolCall(state, updated);
+  return { output: emitState(state) };
+}
+
+function handleBlueprintInputs(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const updated = buildSyntheticToolResult(
+    state,
+    deps,
+    "blueprint_inputs",
+    event,
+    parseBlueprintInputsSummaryEvent(event),
+  );
+  upsertToolResult(state, updated);
+  return { output: emitState(state) };
+}
+
+function handleBlueprintProvenance(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const updated = buildSyntheticToolResult(
+    state,
+    deps,
+    "blueprint_provenance",
+    event,
+    parseBlueprintProvenanceEvent(event),
+  );
+  upsertToolResult(state, updated);
+  return { output: emitState(state) };
+}
+
 function buildDoneMetadata(usageEvent: UsageEventPayload | null) {
   if (!usageEvent) return undefined;
   const custom = buildUsageCustomMetadata(usageEvent);
@@ -279,25 +446,42 @@ function buildUsageCustomMetadata(usageEvent: UsageEventPayload) {
   return custom;
 }
 
-function handleDone(state: StreamState): HandlerResult {
-  return {
-    done: true,
-    completion: {
+function isPendingHumanToolCall(part: ThreadAssistantMessagePart) {
+  return part.type === "tool-call" && part.interrupt?.type === "human" && part.result === undefined;
+}
+
+function buildCompletion(state: StreamState): ChatRunResult {
+  if (state.parts.some(isPendingHumanToolCall)) {
+    return {
       content: [...state.parts],
-      status: { type: "complete", reason: "stop" },
+      status: { type: "requires-action", reason: "tool-calls" },
       metadata: buildDoneMetadata(state.usageEvent),
-    },
+    };
+  }
+  return {
+    content: [...state.parts],
+    status: { type: "complete", reason: "stop" },
+    metadata: buildDoneMetadata(state.usageEvent),
   };
+}
+
+function handleDone(state: StreamState): HandlerResult {
+  return { done: true, completion: buildCompletion(state) };
 }
 
 function handleStreamEvent(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
   const type = resolveEventType(event);
   if (type === "error") throw new Error((event.message as string | undefined) ?? "stream_failed");
+  if (type === "chat.job") return handleChatJob(state, event);
+  if (type === "source") return handleSource(state, event);
   if (type === "text.delta") return handleTextDelta(state, event);
   if (type === "reasoning.delta") return handleReasoningDelta(state, event);
   if (type === "tool.start") return handleToolStart(state, event);
   if (type === "tool.result") return handleToolResult(state, deps, event);
   if (type === "file") return handleFile(state, event);
+  if (type === "blueprint.suggestions") return handleBlueprintSuggestions(state, deps, event);
+  if (type === "blueprint.inputs.summary") return handleBlueprintInputs(state, deps, event);
+  if (type === "blueprint.provenance") return handleBlueprintProvenance(state, deps, event);
   if (type === "policy.check.start") return handlePolicyStart(deps, event);
   if (type === "policy.check.result") return handlePolicyResult(deps, event);
   if (type === "usage") return handleUsage(state, event);
@@ -317,15 +501,48 @@ async function* streamChatEvents(
     if (handled.completion) yield handled.completion;
     return;
   }
+  yield buildCompletion(state);
+}
+
+function isCancelledError(error: unknown) {
+  return error instanceof Error && error.message === "Request was cancelled";
+}
+
+function isDetachAbort(signal: AbortSignal | undefined) {
+  const reason = signal?.reason as { detach?: boolean; name?: string } | undefined;
+  return Boolean(signal?.aborted && reason?.name === "AbortError" && reason.detach === true);
+}
+
+function shouldTreatAbortAsUserStop(signal: AbortSignal | undefined) {
+  if (!signal?.aborted || isDetachAbort(signal)) return false;
+  const reason = signal.reason as { name?: string } | undefined;
+  return !reason || reason.name === "AbortError";
+}
+
+async function cancelActiveJob(state: StreamState, deps: AdapterDeps) {
+  if (!deps.authenticated || !state.jobId) return;
+  try {
+    await cancelProjectJob(deps.getProjectId(), state.jobId);
+  } catch {
+    return;
+  }
 }
 
 async function* runChatAdapter(deps: AdapterDeps, input: AdapterRunInput): AsyncGenerator<ChatRunResult, void, unknown> {
   const backendThreadId = resolveBackendThreadId(input.unstable_threadId ?? undefined);
-  persistNewThreadIfNeeded(input, deps, backendThreadId);
-  const payload = buildPayload(input, deps, backendThreadId);
-  const response = await openChatStream(payload, input.abortSignal);
-  const state = createInitialState();
-  yield* streamChatEvents(response, deps, state);
+  persistNewThreadIfNeeded(deps, backendThreadId);
+  const state = createInitialState(backendThreadId);
+
+  try {
+    const payload = buildPayload(input, deps, backendThreadId);
+    const response = await openChatStream(payload, input.abortSignal);
+    yield* streamChatEvents(response, deps, state);
+  } catch (error) {
+    if (!isCancelledError(error) || !input.abortSignal?.aborted) throw error;
+    if (!shouldTreatAbortAsUserStop(input.abortSignal)) return;
+    await cancelActiveJob(state, deps);
+    yield buildCompletion(state);
+  }
 }
 
 export function createChatModelAdapter(deps: AdapterDeps): ChatModelAdapter {

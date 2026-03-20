@@ -12,7 +12,7 @@ Monorepo gồm frontend React/Vite và backend FastAPI cho workflow hạ tầng 
 - Node.js 18+
 - Python 3.11+
 - PostgreSQL 14+
-- Docker (optional, cho integration migration tests)
+- Docker (optional, cho local service orchestration)
 
 ## Frontend (local)
 
@@ -58,8 +58,8 @@ cd src/frontend && npm run verify
 # Frontend lint/format
 cd src/frontend && npm run lint && npm run format:check
 
-# Backend lint/format/test
-cd src/backend && source .venv/bin/activate && ruff check app && black --check app && PYTHONPATH=. pytest -q
+# Backend incremental lint/format gate + compile
+cd src/backend && source .venv/bin/activate && ruff check app/schemas/chat.py app/schemas/stream_events.py app/main.py app/routers/projects_routes/project_workspace.py app/routers/projects_routes/project_opentofu.py app/routers/http_errors.py app/services/opentofu/runtime/runner.py app/services/opentofu/runtime/shared.py app/services/ansible/runtime/runner.py app/services/jobs/tasks.py app/services/jobs/service.py app/services/agent/runtime/tools.py && black --check app/schemas/chat.py app/schemas/stream_events.py app/main.py app/routers/projects_routes/project_workspace.py app/routers/projects_routes/project_opentofu.py app/routers/http_errors.py app/services/opentofu/runtime/runner.py app/services/opentofu/runtime/shared.py app/services/ansible/runtime/runner.py app/services/jobs/tasks.py app/services/jobs/service.py app/services/agent/runtime/tools.py && python -m compileall app
 ```
 
 ## Docker

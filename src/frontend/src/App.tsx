@@ -221,6 +221,10 @@ function WorkspaceBody({ args }: { args: WorkspaceShellArgs }) {
             onDeleteProject={async () => {
               await args.deleteProject(args.currentProjectId);
             }}
+            onOpenRunDetails={(runId) => {
+              panelState.setSelectedJobId(runId);
+              args.setWorkspaceTab("jobs");
+            }}
           />
         </div>
       )}

@@ -11,6 +11,11 @@ const API_FALLBACKS = ["http://localhost:8000", "http://127.0.0.1:8000"] as cons
 type TokenGetter = () => Promise<string | null> | string | null;
 let authTokenGetter: TokenGetter | null = null;
 
+interface PreparedHeaders {
+  headers: Headers;
+  hasAuthorization: boolean;
+}
+
 export function setAuthTokenGetter(getter: TokenGetter | null): void {
   authTokenGetter = getter;
 }
@@ -88,12 +93,17 @@ async function resolveAuthToken(): Promise<string | null> {
   }
 }
 
+async function prepareHeaders(initHeaders?: HeadersInit): Promise<PreparedHeaders> {
+  const headers = new Headers(initHeaders ?? {});
+  if (headers.has("Authorization")) return { headers, hasAuthorization: true };
+  const token = await resolveAuthToken();
+  if (!token) return { headers, hasAuthorization: false };
+  headers.set("Authorization", `Bearer ${token}`);
+  return { headers, hasAuthorization: true };
+}
+
 export async function apiRequest(path: string, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers ?? {});
-  if (!headers.has("Authorization")) {
-    const token = await resolveAuthToken();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-  }
+  let preparedHeaders = await prepareHeaders(init?.headers);
 
   const candidateBases =
     API_URL === ""
@@ -114,7 +124,22 @@ export async function apiRequest(path: string, init?: RequestInit): Promise<Resp
     }, REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await fetch(joinBaseAndPath(baseUrl, path), { ...init, headers, signal: controller.signal });
+      let response = await fetch(joinBaseAndPath(baseUrl, path), {
+        ...init,
+        headers: preparedHeaders.headers,
+        signal: controller.signal,
+      });
+      if (response.status === 401 && !preparedHeaders.hasAuthorization && authTokenGetter) {
+        const retriedHeaders = await prepareHeaders(init?.headers);
+        if (retriedHeaders.hasAuthorization) {
+          preparedHeaders = retriedHeaders;
+          response = await fetch(joinBaseAndPath(baseUrl, path), {
+            ...init,
+            headers: preparedHeaders.headers,
+            signal: controller.signal,
+          });
+        }
+      }
       if (isRetryableResponseStatus(response.status) && index < candidateBases.length - 1) {
         lastError = new Error(`Upstream unavailable (${response.status})`);
         continue;

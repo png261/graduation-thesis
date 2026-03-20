@@ -2,6 +2,7 @@ import { MessagePrimitive, ThreadPrimitive } from "@assistant-ui/react";
 
 import type { Suggestion } from "../../lib/suggestions";
 import { AssistantMessage } from "./assistant-message";
+import { ThreadRunningPlaceholder } from "./thread-running-placeholder";
 import { ThreadComposer } from "./thread-composer";
 
 function UserMessage() {
@@ -45,10 +46,11 @@ export function Thread({ suggestions, onOpenHistory }: ThreadProps) {
           <ThreadSuggestions suggestions={suggestions} />
         </ThreadPrimitive.Empty>
         <ThreadMessages />
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer">
-          <ThreadComposer onOpenHistory={onOpenHistory} />
-        </ThreadPrimitive.ViewportFooter>
+        <ThreadRunningPlaceholder />
       </ThreadPrimitive.Viewport>
+      <div className="aui-thread-composer">
+        <ThreadComposer onOpenHistory={onOpenHistory} />
+      </div>
     </ThreadPrimitive.Root>
   );
 }

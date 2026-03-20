@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -50,6 +50,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     credentials: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_blueprints_json: Mapped[dict[str, dict] | None] = mapped_column(JSON, nullable=True)
     github_repo_full_name: Mapped[str | None] = mapped_column(String, nullable=True)
     github_base_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     github_working_branch: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -91,6 +92,130 @@ class Project(Base):
         back_populates="project",
         cascade="all, delete-orphan",
     )
+    incident_summaries: Mapped[list[IncidentSummary]] = relationship(
+        "IncidentSummary",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    blueprint_runs: Mapped[list[ProjectBlueprintRun]] = relationship(
+        "ProjectBlueprintRun",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    terraform_generations: Mapped[list[ProjectTerraformGeneration]] = relationship(
+        "ProjectTerraformGeneration",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    ansible_generations: Mapped[list[ProjectAnsibleGeneration]] = relationship(
+        "ProjectAnsibleGeneration",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProjectBlueprintRun(Base):
+    __tablename__ = "project_blueprint_runs"
+    __table_args__ = (
+        Index("ix_project_blueprint_runs_project_created_at", "project_id", "created_at"),
+        Index("ix_project_blueprint_runs_project_thread_created_at", "project_id", "thread_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    thread_id: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    blueprint_id: Mapped[str] = mapped_column(String, nullable=False)
+    blueprint_version: Mapped[str] = mapped_column(String, nullable=False)
+    blueprint_name: Mapped[str] = mapped_column(String, nullable=False)
+    inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="blueprint_runs")
+
+
+class ProjectTerraformGeneration(Base):
+    __tablename__ = "project_terraform_generations"
+    __table_args__ = (
+        Index("ix_project_terraform_generations_project_created_at", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    blueprint_run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("project_blueprint_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stack_path: Mapped[str] = mapped_column(String, nullable=False)
+    generated_paths_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    module_names_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    provenance_report_path: Mapped[str] = mapped_column(String, nullable=False)
+    replaces_generation_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("project_terraform_generations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="terraform_generations")
+    blueprint_run: Mapped[ProjectBlueprintRun] = relationship("ProjectBlueprintRun")
+
+
+class ProjectAnsibleGeneration(Base):
+    __tablename__ = "project_ansible_generations"
+    __table_args__ = (
+        Index("ix_project_ansible_generations_project_created_at", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    blueprint_run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("project_blueprint_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    playbook_path: Mapped[str] = mapped_column(String, nullable=False)
+    target_modules_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    skipped_modules_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    generated_paths_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    provenance_report_path: Mapped[str] = mapped_column(String, nullable=False)
+    replaces_generation_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("project_ansible_generations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="ansible_generations")
+    blueprint_run: Mapped[ProjectBlueprintRun] = relationship("ProjectBlueprintRun")
 
 
 class Thread(Base):
@@ -110,6 +235,35 @@ class Thread(Base):
     )
 
     project: Mapped[Project] = relationship("Project", back_populates="threads")
+    messages: Mapped[list[ThreadMessage]] = relationship(
+        "ThreadMessage",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+    )
+
+
+class ThreadMessage(Base):
+    __tablename__ = "thread_messages"
+    __table_args__ = (
+        Index("ix_thread_messages_thread_created_at", "thread_id", "created_at"),
+        Index("ux_thread_messages_thread_message_id", "thread_id", "message_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    thread: Mapped[Thread] = relationship("Thread", back_populates="messages")
 
 
 class ProjectJob(Base):
@@ -123,7 +277,7 @@ class ProjectJob(Base):
             "project_id",
             unique=True,
             postgresql_where=text(
-                "kind IN ('apply','ansible','pipeline') AND status IN ('queued','running')"
+                "kind IN ('apply','destroy','ansible','pipeline') AND status IN ('queued','running')"
             ),
         ),
     )
@@ -441,6 +595,46 @@ class StateSyncRun(Base):
     )
 
     backend: Mapped[StateBackend] = relationship("StateBackend", back_populates="sync_runs")
+
+
+class IncidentSummary(Base):
+    __tablename__ = "incident_summaries"
+    __table_args__ = (
+        Index("ix_incident_summaries_project_created_at", "project_id", "created_at"),
+        Index("ix_incident_summaries_project_incident_key", "project_id", "incident_key"),
+        Index("ix_incident_summaries_project_resolution_quality", "project_id", "resolution_quality"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    backend_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    incident_key: Mapped[str] = mapped_column(String, nullable=False)
+    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="medium")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    recommended_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    action_class: Mapped[str] = mapped_column(String, nullable=False, default="safe")
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="open")
+    resolution_quality: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped[Project] = relationship("Project", back_populates="incident_summaries")
 
 
 class GitLabOAuthToken(Base):

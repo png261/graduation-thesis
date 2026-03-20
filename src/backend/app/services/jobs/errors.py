@@ -22,3 +22,8 @@ class JobNotFoundError(JobsError):
 class JobValidationError(JobsError):
     def __init__(self, message: str) -> None:
         super().__init__(message, code="invalid_job_payload", status_code=400)
+
+
+class JobQueueUnavailableError(JobsError):
+    def __init__(self, message: str = "Job queue is unavailable") -> None:
+        super().__init__(message, code="job_queue_unavailable", status_code=503)

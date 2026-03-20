@@ -5,21 +5,49 @@ import {
   buildSkillContent,
   deleteSkill,
   getMemory,
+  getProjectActiveBlueprints,
+  getProjectBlueprintRun,
+  listProjectConfigurationAnsibleHistory,
+  listProjectProvisioningTerraformHistory,
   listSkills,
+  type ProjectAnsibleGenerationRecord,
+  type ProjectActiveBlueprintSelection,
+  type ProjectActiveBlueprints,
+  type ProjectBlueprintRunSnapshot,
+  type ProjectTerraformGenerationRecord,
   type Skill,
   updateMemory,
   upsertSkill,
 } from "../api/projects/index";
+import {
+  AnsibleGenerationActionArea,
+  BlueprintProvenancePanel,
+  TerraformGenerationActionArea,
+} from "./assistant-ui/blueprint-provenance-card";
+import {
+  formatAnsibleGenerationHistorySummary,
+  formatAnsibleGenerationTime,
+} from "../features/project-config/ansibleGenerationState";
+import {
+  formatTerraformGenerationHistorySummary,
+  formatTerraformGenerationTime,
+} from "../features/project-config/terraformGenerationState";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
+import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Separator } from "./ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Textarea } from "./ui/textarea";
 
 type AgentTab = "memory" | "skills";
 type EditingSkill = Skill | "new" | null;
+const EMPTY_ACTIVE_BLUEPRINTS: ProjectActiveBlueprints = {
+  provisioning: null,
+  configuration: null,
+};
 
 interface SkillFormProps {
   initial?: Skill;
@@ -57,18 +85,106 @@ function useSavedFlag(timeoutMs: number) {
 function useProjectAgentData(projectId: string) {
   const [memory, setMemory] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [activeBlueprints, setActiveBlueprints] = useState<ProjectActiveBlueprints>(EMPTY_ACTIVE_BLUEPRINTS);
+  const [latestBlueprintRun, setLatestBlueprintRun] = useState<ProjectBlueprintRunSnapshot | null>(null);
 
   const reload = useCallback(async () => {
-    const [nextMemory, nextSkills] = await Promise.all([getMemory(projectId), listSkills(projectId)]);
+    const [nextMemory, nextSkills, blueprintState] = await Promise.all([
+      getMemory(projectId),
+      listSkills(projectId),
+      loadBlueprintState(projectId),
+    ]);
     setMemory(nextMemory);
     setSkills(nextSkills);
+    setActiveBlueprints(blueprintState.activeBlueprints);
+    setLatestBlueprintRun(blueprintState.latestBlueprintRun);
   }, [projectId]);
 
   useEffect(() => {
     reload().catch(() => undefined);
   }, [reload]);
 
-  return { memory, setMemory, skills, setSkills, reload };
+  return {
+    memory,
+    setMemory,
+    skills,
+    setSkills,
+    activeBlueprints,
+    latestBlueprintRun,
+    reload,
+  };
+}
+
+function useTerraformGenerationHistory(projectId: string) {
+  const [history, setHistory] = useState<ProjectTerraformGenerationRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setHistory(await listProjectProvisioningTerraformHistory(projectId));
+    } catch (nextError: unknown) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load Terraform generation history");
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    reload().catch(() => undefined);
+  }, [reload]);
+
+  return { error, history, latest: history[0] ?? null, loading, reload };
+}
+
+function useAnsibleGenerationHistory(projectId: string) {
+  const [history, setHistory] = useState<ProjectAnsibleGenerationRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setHistory(await listProjectConfigurationAnsibleHistory(projectId));
+    } catch (nextError: unknown) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load Ansible generation history");
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    reload().catch(() => undefined);
+  }, [reload]);
+
+  return { error, history, latest: history[0] ?? null, loading, reload };
+}
+
+function selectionTimestamp(selection: ProjectActiveBlueprintSelection | null) {
+  return selection?.latestRunCreatedAt ? Date.parse(selection.latestRunCreatedAt) : 0;
+}
+
+function latestBlueprintSelection(activeBlueprints: ProjectActiveBlueprints) {
+  const selections = [activeBlueprints.provisioning, activeBlueprints.configuration].filter(
+    (item): item is ProjectActiveBlueprintSelection => item !== null,
+  );
+  selections.sort((left, right) => selectionTimestamp(right) - selectionTimestamp(left));
+  return selections[0] ?? null;
+}
+
+async function loadBlueprintState(projectId: string) {
+  const activeBlueprints = await getProjectActiveBlueprints(projectId);
+  const latestSelection = latestBlueprintSelection(activeBlueprints);
+  if (!latestSelection?.latestRunId) {
+    return { activeBlueprints, latestBlueprintRun: null };
+  }
+  return {
+    activeBlueprints,
+    latestBlueprintRun: await getProjectBlueprintRun(projectId, latestSelection.latestRunId),
+  };
 }
 
 function useMemorySaveAction(projectId: string, memory: string) {
@@ -269,10 +385,262 @@ function ProjectAgentTabs({ setTab }: { setTab: (value: AgentTab) => void }) {
   );
 }
 
+function EmptyBlueprintState() {
+  return (
+    <Alert>
+      <AlertDescription>No blueprint approved yet</AlertDescription>
+    </Alert>
+  );
+}
+
+function selectionBlueprint(selection: ProjectActiveBlueprintSelection) {
+  return {
+    id: selection.blueprintId,
+    kind: selection.kind,
+    name: selection.blueprintName,
+    summary: selection.summary,
+    resourcesOrActions: selection.resourcesOrActions,
+    requiredInputs: selection.requiredInputs,
+    steps: selection.steps,
+  };
+}
+
+function BlueprintSelectionSection({
+  label,
+  selection,
+}: {
+  label: string;
+  selection: ProjectActiveBlueprintSelection | null;
+}) {
+  if (!selection) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm font-semibold text-[var(--da-text)]">{label}</p>
+        <EmptyBlueprintState />
+      </div>
+    );
+  }
+  return (
+    <BlueprintProvenancePanel
+      heading={label}
+      blueprint={selectionBlueprint(selection)}
+      note={selection.selectedAt ? `Approved at ${selection.selectedAt}` : null}
+    />
+  );
+}
+
+function LatestBlueprintSnapshotSection({
+  run,
+}: {
+  run: ProjectBlueprintRunSnapshot | null;
+}) {
+  if (!run) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm font-semibold text-[var(--da-text)]">Latest Blueprint Snapshot</p>
+        <EmptyBlueprintState />
+      </div>
+    );
+  }
+  return (
+    <BlueprintProvenancePanel
+      heading="Latest Blueprint Snapshot"
+      blueprint={run.snapshot}
+      note={run.createdAt ? `Snapshot created at ${run.createdAt}` : null}
+    />
+  );
+}
+
+function EmptyTerraformState({ message }: { message: string }) {
+  return (
+    <Alert>
+      <AlertDescription>{message}</AlertDescription>
+    </Alert>
+  );
+}
+
+function LatestTerraformGenerationSection(props: {
+  error: string;
+  generation: ProjectTerraformGenerationRecord | null;
+  loading: boolean;
+}) {
+  const { error, generation, loading } = props;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-semibold text-[var(--da-text)]">Latest Terraform Generation</p>
+      {error ? (
+        <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+          <AlertTitle>History failed</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+      {loading && !generation ? <EmptyTerraformState message="Loading Terraform generation history..." /> : null}
+      {!loading && !generation ? <EmptyTerraformState message="No Terraform generation has been recorded yet." /> : null}
+      {generation ? (
+        <Card className="border-[var(--da-border)] bg-[var(--da-elevated)]">
+          <CardContent className="space-y-3 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-[var(--da-text)]">{generation.summary.headline}</p>
+                <p className="mt-1 text-sm text-[var(--da-muted)]">
+                  {formatTerraformGenerationHistorySummary(generation)}
+                </p>
+              </div>
+              <Badge variant="outline">{formatTerraformGenerationTime(generation.createdAt)}</Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {generation.moduleNames.map((module) => (
+                <Badge key={module} variant="secondary">
+                  {module}
+                </Badge>
+              ))}
+            </div>
+            <div className="space-y-1 text-sm text-[var(--da-muted)]">
+              <p>Stack path: {generation.stackPath}</p>
+              <p>Provenance report: {generation.provenanceReportPath}</p>
+              <p>Most recent compare summary: {formatTerraformGenerationHistorySummary(generation)}</p>
+            </div>
+            {generation.targetContract ? (
+              <div className="rounded border border-white/10 bg-black/20 p-3 text-sm text-[var(--da-muted)]">
+                <p className="font-semibold text-white">Terraform target contract</p>
+                <p className="mt-2">Schema version: {generation.targetContract.schemaVersion}</p>
+                <p>Module output: {generation.targetContract.moduleOutputName}</p>
+                <p>Canonical output: {generation.targetContract.canonicalOutputName}</p>
+                <p>Legacy output: {generation.targetContract.legacyOutputName}</p>
+                <p>Deduped by: {generation.targetContract.dedupeKey}</p>
+                <p>Required fields: {generation.targetContract.requiredFields.join(", ")}</p>
+                <p>Optional fields: {generation.targetContract.optionalFields.join(", ")}</p>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function GenerationHistorySection(props: {
+  history: ProjectTerraformGenerationRecord[];
+  loading: boolean;
+}) {
+  const { history, loading } = props;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-semibold text-[var(--da-text)]">Generation History</p>
+      {loading && history.length < 1 ? <EmptyTerraformState message="Loading generation history..." /> : null}
+      {!loading && history.length < 1 ? <EmptyTerraformState message="Terraform generation history will appear after the first successful write." /> : null}
+      {history.length > 0 ? (
+        <div className="space-y-3">
+          {history.map((generation) => (
+            <Card key={generation.id} className="border-[var(--da-border)] bg-[var(--da-elevated)]">
+              <CardContent className="space-y-2 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-[var(--da-text)]">{generation.summary.headline}</p>
+                    <p className="mt-1 text-sm text-[var(--da-muted)]">
+                      {formatTerraformGenerationHistorySummary(generation)}
+                    </p>
+                  </div>
+                  <Badge variant="outline">{formatTerraformGenerationTime(generation.createdAt)}</Badge>
+                </div>
+                <p className="text-xs text-[var(--da-muted)]">Generation ID: {generation.id}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LatestAnsibleGenerationSection(props: {
+  error: string;
+  generation: ProjectAnsibleGenerationRecord | null;
+  loading: boolean;
+}) {
+  const { error, generation, loading } = props;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-semibold text-[var(--da-text)]">Latest Ansible Generation</p>
+      {error ? (
+        <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+          <AlertTitle>History failed</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+      {loading && !generation ? <EmptyTerraformState message="Loading Ansible generation history..." /> : null}
+      {!loading && !generation ? <EmptyTerraformState message="No Ansible generation has been recorded yet." /> : null}
+      {generation ? (
+        <Card className="border-[var(--da-border)] bg-[var(--da-elevated)]">
+          <CardContent className="space-y-3 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-[var(--da-text)]">{generation.summary.headline}</p>
+                <p className="mt-1 text-sm text-[var(--da-muted)]">
+                  {formatAnsibleGenerationHistorySummary(generation)}
+                </p>
+              </div>
+              <Badge variant="outline">{formatAnsibleGenerationTime(generation.createdAt)}</Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {generation.targetModules.map((module) => (
+                <Badge key={module} variant="secondary">
+                  {module}
+                </Badge>
+              ))}
+            </div>
+            <div className="space-y-1 text-sm text-[var(--da-muted)]">
+              <p>Playbook path: {generation.playbookPath}</p>
+              <p>Provenance report: {generation.provenanceReportPath}</p>
+              <p>Most recent compare summary: {formatAnsibleGenerationHistorySummary(generation)}</p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function AnsibleGenerationHistorySection(props: {
+  history: ProjectAnsibleGenerationRecord[];
+  loading: boolean;
+}) {
+  const { history, loading } = props;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm font-semibold text-[var(--da-text)]">Generation History</p>
+      {loading && history.length < 1 ? <EmptyTerraformState message="Loading generation history..." /> : null}
+      {!loading && history.length < 1 ? <EmptyTerraformState message="Ansible generation history will appear after the first successful write." /> : null}
+      {history.length > 0 ? (
+        <div className="space-y-3">
+          {history.map((generation) => (
+            <Card key={generation.id} className="border-[var(--da-border)] bg-[var(--da-elevated)]">
+              <CardContent className="space-y-2 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-[var(--da-text)]">{generation.summary.headline}</p>
+                    <p className="mt-1 text-sm text-[var(--da-muted)]">
+                      {formatAnsibleGenerationHistorySummary(generation)}
+                    </p>
+                  </div>
+                  <Badge variant="outline">{formatAnsibleGenerationTime(generation.createdAt)}</Badge>
+                </div>
+                <p className="text-xs text-[var(--da-muted)]">Generation ID: {generation.id}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ProjectAgentSettings({ projectId }: { projectId: string }) {
   const [tab, setTab] = useState<AgentTab>("memory");
   const [editingSkill, setEditingSkill] = useState<EditingSkill>(null);
   const data = useProjectAgentData(projectId);
+  const terraformHistory = useTerraformGenerationHistory(projectId);
+  const ansibleHistory = useAnsibleGenerationHistory(projectId);
   const memoryState = useMemorySaveAction(projectId, data.memory);
   const skillActions = useSkillActions(projectId, data.setSkills, setEditingSkill);
   const stableSetMemory = useMemo(() => (value: string) => data.setMemory(value), [data]);
@@ -281,14 +649,84 @@ export function ProjectAgentSettings({ projectId }: { projectId: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Agent Settings</CardTitle>
-        <CardDescription>Manage project memory and reusable skills.</CardDescription>
+        <CardDescription>Manage project memory, reusable skills, and approved blueprints.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as AgentTab)}>
           <ProjectAgentTabs setTab={setTab} />
           <MemoryTabContent memory={data.memory} setMemory={stableSetMemory} saved={memoryState.saved} saving={memoryState.saving} saveMemory={() => void memoryState.saveMemory()} />
           <SkillsTabContent editingSkill={editingSkill} setEditingSkill={setEditingSkill} skills={data.skills} saveSkill={skillActions.saveSkill} deleteSkillByName={(name) => void skillActions.deleteSkillByName(name)} />
         </Tabs>
+        <Separator />
+        <div className="space-y-6">
+          {data.activeBlueprints.provisioning ? (
+            <BlueprintProvenancePanel
+              heading="Active Provisioning Blueprint"
+              blueprint={selectionBlueprint(data.activeBlueprints.provisioning)}
+              footer={
+                <TerraformGenerationActionArea
+                  blueprint={selectionBlueprint(data.activeBlueprints.provisioning)}
+                  latestGeneration={terraformHistory.latest}
+                  onGenerated={() => void terraformHistory.reload()}
+                  projectId={projectId}
+                />
+              }
+              note={
+                data.activeBlueprints.provisioning.selectedAt
+                  ? `Approved at ${data.activeBlueprints.provisioning.selectedAt}`
+                  : null
+              }
+            />
+          ) : (
+            <BlueprintSelectionSection
+              label="Active Provisioning Blueprint"
+              selection={data.activeBlueprints.provisioning}
+            />
+          )}
+          {data.activeBlueprints.configuration ? (
+            <BlueprintProvenancePanel
+              heading="Active Configuration Blueprint"
+              blueprint={selectionBlueprint(data.activeBlueprints.configuration)}
+              footer={
+                <AnsibleGenerationActionArea
+                  blueprint={selectionBlueprint(data.activeBlueprints.configuration)}
+                  latestGeneration={ansibleHistory.latest}
+                  onGenerated={() => void ansibleHistory.reload()}
+                  projectId={projectId}
+                />
+              }
+              note={
+                data.activeBlueprints.configuration.selectedAt
+                  ? `Approved at ${data.activeBlueprints.configuration.selectedAt}`
+                  : null
+              }
+            />
+          ) : (
+            <BlueprintSelectionSection
+              label="Active Configuration Blueprint"
+              selection={data.activeBlueprints.configuration}
+            />
+          )}
+          <LatestBlueprintSnapshotSection run={data.latestBlueprintRun} />
+          <LatestTerraformGenerationSection
+            error={terraformHistory.error}
+            generation={terraformHistory.latest}
+            loading={terraformHistory.loading}
+          />
+          <GenerationHistorySection
+            history={terraformHistory.history}
+            loading={terraformHistory.loading}
+          />
+          <LatestAnsibleGenerationSection
+            error={ansibleHistory.error}
+            generation={ansibleHistory.latest}
+            loading={ansibleHistory.loading}
+          />
+          <AnsibleGenerationHistorySection
+            history={ansibleHistory.history}
+            loading={ansibleHistory.loading}
+          />
+        </div>
       </CardContent>
     </Card>
   );

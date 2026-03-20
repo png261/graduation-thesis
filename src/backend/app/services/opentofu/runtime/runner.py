@@ -111,7 +111,11 @@ async def _run_command_stream(
 
 
 def _event_prefix(run_mode: str) -> str:
-    return "deploy" if run_mode == "apply" else "plan"
+    if run_mode == "apply":
+        return "deploy"
+    if run_mode == "destroy":
+        return "destroy"
+    return "plan"
 
 
 def _done_event(
@@ -159,7 +163,7 @@ def _status_failure_events(status: dict[str, Any], event_prefix: str, run_mode: 
         return _failure_events(event_prefix, "Project not found")
     if not status["opentofu_available"]:
         return _failure_events(event_prefix, "OpenTofu CLI is not available")
-    if run_mode == "apply" and not status["credential_ready"]:
+    if run_mode in {"apply", "destroy"} and not status["credential_ready"]:
         missing = ", ".join(status["missing_credentials"])
         return _failure_events(event_prefix, f"Missing credentials: {missing}")
     return None
@@ -172,11 +176,14 @@ async def _resolve_requested_modules(
     status: dict[str, Any],
     selected_modules: list[str],
     intent: str | None,
+    run_mode: str,
 ) -> list[str]:
     discovered = status["modules"]
     requested = [module for module in selected_modules if module in discovered]
     if requested:
         return requested
+    if run_mode == "destroy":
+        return list(discovered)
     selection = await select_modules_for_deploy(
         project_id=project_id,
         settings=settings,
@@ -215,14 +222,20 @@ async def _stream_context_or_failure(
     selected_modules: list[str],
     run_mode: str,
     intent: str | None,
+    destroy_plan: bool = False,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
-    event_prefix = _event_prefix(run_mode)
+    event_prefix = _event_prefix("plan" if destroy_plan else run_mode)
     status = await get_opentofu_status(project_id)
     failure = _status_failure_events(status, event_prefix, run_mode)
     if failure is not None:
         return None, failure
     requested = await _resolve_requested_modules(
-        project_id=project_id, settings=settings, status=status, selected_modules=selected_modules, intent=intent
+        project_id=project_id,
+        settings=settings,
+        status=status,
+        selected_modules=selected_modules,
+        intent=intent,
+        run_mode="destroy" if destroy_plan else run_mode,
     )
     if not requested:
         return None, _failure_events(event_prefix, f"No modules selected for {run_mode}")
@@ -234,6 +247,7 @@ async def _stream_context_or_failure(
         "requested": requested,
         "runtime": runtime or {},
         "intent": intent or "",
+        "destroy_plan": destroy_plan,
     }, None
 
 
@@ -244,12 +258,15 @@ def _init_command(run_mode: str) -> list[str]:
     return cmd
 
 
-def _run_command(run_mode: str, state_path: Path, var_files: list[Path]) -> list[str]:
-    base_cmd = (
-        ["tofu", "apply", "-auto-approve", "-input=false", "-no-color", f"-state={state_path}"]
-        if run_mode == "apply"
-        else ["tofu", "plan", "-input=false", "-no-color", "-refresh=false", f"-state={state_path}"]
-    )
+def _run_command(run_mode: str, state_path: Path, var_files: list[Path], *, destroy_plan: bool = False) -> list[str]:
+    if run_mode == "apply":
+        base_cmd = ["tofu", "apply", "-auto-approve", "-input=false", "-no-color", f"-state={state_path}"]
+    elif run_mode == "destroy":
+        base_cmd = ["tofu", "destroy", "-auto-approve", "-input=false", "-no-color", f"-state={state_path}"]
+    else:
+        base_cmd = ["tofu", "plan", "-input=false", "-no-color", "-refresh=false", f"-state={state_path}"]
+        if destroy_plan:
+            base_cmd.append("-destroy")
     for var_file in var_files:
         base_cmd.append(f"-var-file={var_file}")
     return base_cmd
@@ -335,7 +352,13 @@ def _missing_module_event(module: str) -> dict[str, Any]:
 
 
 def _module_success_event(module: str, run_mode: str) -> dict[str, Any]:
-    return {"type": "module.done", "module": module, "status": "applied" if run_mode == "apply" else "planned"}
+    if run_mode == "apply":
+        status = "applied"
+    elif run_mode == "destroy":
+        status = "destroyed"
+    else:
+        status = "planned"
+    return {"type": "module.done", "module": module, "status": status}
 
 
 def _module_result(evt: dict[str, Any], module: str) -> dict[str, Any]:
@@ -370,6 +393,7 @@ async def _stream_module_events(
     *,
     runtime: dict[str, Any],
     module: str,
+    destroy_plan: bool = False,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     module_ctx, missing_evt = _module_runtime_context(runtime=runtime, module=module)
@@ -392,12 +416,22 @@ async def _stream_module_events(
     if not init_state["ok"]:
         yield _module_done_failure(module, "init", init_state, use_tail=True)
         return
-    run_stage = "apply" if runtime["run_mode"] == "apply" else "plan"
+    if runtime["run_mode"] == "apply":
+        run_stage = "apply"
+    elif runtime["run_mode"] == "destroy":
+        run_stage = "destroy"
+    else:
+        run_stage = "plan"
     var_log = _var_files_log_event(module, run_stage, module_ctx["var_files"], runtime["project_root"])
     if var_log is not None:
         yield var_log
     run_state = _new_stage_state(track_tail=False)
-    run_cmd = _run_command(runtime["run_mode"], module_ctx["state_path"], module_ctx["var_files"])
+    run_cmd = _run_command(
+        runtime["run_mode"],
+        module_ctx["state_path"],
+        module_ctx["var_files"],
+        destroy_plan=destroy_plan,
+    )
     async for evt in _stream_stage(
         cmd=run_cmd,
         cwd=module_ctx["module_dir"],
@@ -424,6 +458,7 @@ async def _stream_orchestration(
     requested = stream_context["requested"]
     runtime = stream_context["runtime"]
     run_mode = runtime["run_mode"]
+    destroy_plan = bool(stream_context.get("destroy_plan"))
     run_id = _run_id()
     results: list[dict[str, Any]] = []
     async with project_lock(project_id):
@@ -438,6 +473,7 @@ async def _stream_orchestration(
             async for event in _stream_module_events(
                 runtime=runtime,
                 module=module,
+                destroy_plan=destroy_plan,
                 cancel_checker=cancel_checker,
             ):
                 if event["type"] == "module.done":
@@ -476,9 +512,10 @@ async def run_modules_stream(
     run_mode: str,
     intent: str | None = None,
     policy_override: bool = False,
+    destroy_plan: bool = False,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    if run_mode not in {"apply", "plan"}:
+    if run_mode not in {"apply", "plan", "destroy"}:
         raise ValueError(f"Unsupported run_mode '{run_mode}'")
     if run_mode == "apply" and not policy_override:
         policy_gate_failure_events = await _policy_gate_failure_events(project_id, _event_prefix(run_mode))
@@ -492,6 +529,7 @@ async def run_modules_stream(
         selected_modules=selected_modules,
         run_mode=run_mode,
         intent=intent,
+        destroy_plan=destroy_plan,
     )
     if failure_events is not None:
         for event in failure_events:
@@ -533,6 +571,7 @@ async def plan_modules_stream(
     settings: Settings,
     selected_modules: list[str],
     intent: str | None = None,
+    destroy_plan: bool = False,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     async for event in run_modules_stream(
@@ -540,6 +579,26 @@ async def plan_modules_stream(
         settings=settings,
         selected_modules=selected_modules,
         run_mode="plan",
+        intent=intent,
+        destroy_plan=destroy_plan,
+        cancel_checker=cancel_checker,
+    ):
+        yield event
+
+
+async def destroy_modules_stream(
+    *,
+    project_id: str,
+    settings: Settings,
+    selected_modules: list[str],
+    intent: str | None = None,
+    cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    async for event in run_modules_stream(
+        project_id=project_id,
+        settings=settings,
+        selected_modules=selected_modules,
+        run_mode="destroy",
         intent=intent,
         cancel_checker=cancel_checker,
     ):

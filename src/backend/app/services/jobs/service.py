@@ -8,14 +8,21 @@ from uuid import uuid4
 
 from celery.result import AsyncResult
 from fastapi import Request
+from kombu.exceptions import OperationalError as KombuOperationalError
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app import db
 from app.core.config import Settings, get_settings
 from app.models import Project, ProjectJob
+from app.services.ansible.runtime.summary import summarize_post_deploy_result
 from app.services.jobs import redis_bus
-from app.services.jobs.errors import JobConflictError, JobNotFoundError, JobValidationError
+from app.services.jobs.errors import (
+    JobConflictError,
+    JobNotFoundError,
+    JobQueueUnavailableError,
+    JobValidationError,
+)
 from app.services.jobs.types import ACTIVE_JOB_STATUSES, FINAL_JOB_STATUSES, MUTATING_JOB_KINDS
 from app.services.jobs.validation import parse_job_payload
 
@@ -37,11 +44,158 @@ def _parse_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         and not isinstance(options.get("override_policy"), bool)
     ):
         raise JobValidationError("options.override_policy must be a boolean")
+    if (
+        isinstance(options, dict)
+        and "post_deploy_only" in options
+        and not isinstance(options.get("post_deploy_only"), bool)
+    ):
+        raise JobValidationError("options.post_deploy_only must be a boolean")
     return parsed
 
 
-def serialize_job(job: ProjectJob) -> dict[str, Any]:
+def _first_event_at(events: list[dict[str, Any]], event_types: set[str]) -> str | None:
+    for event in events:
+        if str(event.get("type") or "") not in event_types:
+            continue
+        value = event.get("at")
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _last_event_at(events: list[dict[str, Any]], event_types: set[str]) -> str | None:
+    for event in reversed(events):
+        if str(event.get("type") or "") not in event_types:
+            continue
+        value = event.get("at")
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _last_event(events: list[dict[str, Any]], event_types: set[str]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if str(event.get("type") or "") in event_types:
+            return event
+    return None
+
+
+def _stage_state(
+    *,
+    status: str | None,
+    started_at: str | None,
+    finished_at: str | None,
+    message: str,
+) -> dict[str, Any] | None:
+    if not status and not started_at and not finished_at:
+        return None
     return {
+        "status": status or "unknown",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "message": message,
+    }
+
+
+def _stage_message(label: str, status: str | None) -> str:
+    value = str(status or "unknown")
+    if value == "ok":
+        return f"{label} succeeded"
+    if value == "failed":
+        return f"{label} failed"
+    if value == "skipped":
+        return f"{label} skipped"
+    return f"{label} {value}"
+
+
+def _readiness_status(readiness: dict[str, Any], events: list[dict[str, Any]]) -> str | None:
+    value = str(readiness.get("status") or "")
+    if value:
+        return value
+    event = _last_event(events, {"ssm_readiness.done", "ssm_readiness.progress", "ssm_readiness.start"})
+    if event is None:
+        return None
+    value = str(event.get("status") or "")
+    return value or None
+
+
+def _readiness_message(readiness: dict[str, Any], status: str | None) -> str:
+    blocker_message = str(readiness.get("blocker_message") or "").strip()
+    if blocker_message:
+        return blocker_message
+    messages = {
+        "ready": "AWS Systems Manager targets are ready",
+        "failed": "AWS Systems Manager readiness failed",
+        "waiting": "AWS Systems Manager readiness in progress",
+        "canceled": "AWS Systems Manager readiness canceled",
+    }
+    value = str(status or "unknown")
+    return messages.get(value, f"AWS Systems Manager readiness {value}")
+
+
+def _stage_summary(job: ProjectJob) -> dict[str, Any] | None:
+    result = job.result_json if isinstance(job.result_json, dict) else {}
+    events = [row for row in (job.event_tail_json or []) if isinstance(row, dict)]
+    params = job.params_json if isinstance(job.params_json, dict) else {}
+    options = params.get("options") if isinstance(params.get("options"), dict) else {}
+    summary: dict[str, Any] = {}
+
+    if job.kind == "pipeline":
+        apply = result.get("apply") if isinstance(result.get("apply"), dict) else {}
+        readiness = result.get("ssm_readiness") if isinstance(result.get("ssm_readiness"), dict) else {}
+        ansible = result.get("ansible") if isinstance(result.get("ansible"), dict) else {}
+        post_deploy = result.get("post_deploy") if isinstance(result.get("post_deploy"), dict) else {}
+        readiness_status = _readiness_status(readiness, events)
+        summary["apply"] = _stage_state(
+            status=str(apply.get("status") or ""),
+            started_at=_first_event_at(events, {"deploy.start"}) or _iso(job.started_at),
+            finished_at=_last_event_at(events, {"deploy.done"}),
+            message=_stage_message("Provisioning", apply.get("status")),
+        )
+        summary["ssm_readiness"] = _stage_state(
+            status=readiness_status,
+            started_at=_first_event_at(events, {"ssm_readiness.start", "ssm_readiness.progress", "ssm_readiness.done"}),
+            finished_at=_last_event_at(events, {"ssm_readiness.done"}),
+            message=_readiness_message(readiness, readiness_status),
+        )
+        summary["ansible"] = _stage_state(
+            status=str(ansible.get("status") or ""),
+            started_at=_first_event_at(events, {"config.start"}),
+            finished_at=_last_event_at(events, {"config.done"}),
+            message=_stage_message("Configuration", ansible.get("status")),
+        )
+        summary["post_deploy"] = _stage_state(
+            status=str(post_deploy.get("status") or ""),
+            started_at=_first_event_at(events, {"post_deploy.start"}),
+            finished_at=_last_event_at(events, {"post_deploy.done"}),
+            message=_stage_message("Post-deploy logging", post_deploy.get("status")),
+        )
+    elif job.kind == "ansible":
+        post_deploy = result.get("post_deploy") if isinstance(result.get("post_deploy"), dict) else {}
+        config_status = "skipped" if options.get("post_deploy_only") else str(result.get("status") or "")
+        summary["ansible"] = _stage_state(
+            status=config_status,
+            started_at=_first_event_at(events, {"config.start"}) or _iso(job.started_at),
+            finished_at=_last_event_at(events, {"config.done"}),
+            message=(
+                "Configuration skipped for post-deploy rerun"
+                if options.get("post_deploy_only")
+                else _stage_message("Configuration", config_status)
+            ),
+        )
+        summary["post_deploy"] = _stage_state(
+            status=str(post_deploy.get("status") or ""),
+            started_at=_first_event_at(events, {"post_deploy.start"}),
+            finished_at=_last_event_at(events, {"post_deploy.done"}) or _iso(job.finished_at),
+            message=_stage_message("Post-deploy logging", post_deploy.get("status")),
+        )
+
+    normalized = {key: value for key, value in summary.items() if value is not None}
+    return normalized or None
+
+
+def serialize_job(job: ProjectJob) -> dict[str, Any]:
+    serialized = {
         "id": job.id,
         "project_id": job.project_id,
         "user_id": job.user_id,
@@ -58,6 +212,17 @@ def serialize_job(job: ProjectJob) -> dict[str, Any]:
         "finished_at": _iso(job.finished_at),
         "cancel_requested_at": _iso(job.cancel_requested_at),
     }
+    post_deploy_summary = summarize_post_deploy_result(job.result_json if isinstance(job.result_json, dict) else None)
+    if post_deploy_summary is not None:
+        serialized["post_deploy_summary"] = post_deploy_summary
+    result = job.result_json if isinstance(job.result_json, dict) else {}
+    post_deploy = result.get("post_deploy") if isinstance(result.get("post_deploy"), dict) else {}
+    if isinstance(post_deploy.get("hosts"), list):
+        serialized["post_deploy_hosts"] = post_deploy.get("hosts")
+    stage_summary = _stage_summary(job)
+    if stage_summary is not None:
+        serialized["stage_summary"] = stage_summary
+    return serialized
 
 
 async def _has_mutating_conflict(project_id: str) -> bool:
@@ -101,7 +266,11 @@ async def enqueue_project_job(
     except IntegrityError as exc:
         raise JobConflictError() from exc
     await append_job_event_by_id(job.id, {"type": "job.queued", "kind": kind})
-    celery_task_id = enqueue_celery_task(job.id, kind)
+    try:
+        celery_task_id = enqueue_celery_task(job.id, kind)
+    except JobQueueUnavailableError as exc:
+        await mark_job_enqueue_failed(job.id, error={"code": exc.code, "message": exc.message})
+        raise
     if celery_task_id:
         await set_job_celery_task(job.id, celery_task_id)
     return await get_job_by_id(project.id, str(project.user_id or ""), job.id)
@@ -113,6 +282,7 @@ def enqueue_celery_task(job_id: str, kind: str) -> str | None:
     handlers = {
         "plan": tasks.run_plan,
         "apply": tasks.run_apply,
+        "destroy": tasks.run_destroy,
         "ansible": tasks.run_ansible,
         "graph": tasks.run_graph,
         "cost": tasks.run_cost,
@@ -122,7 +292,10 @@ def enqueue_celery_task(job_id: str, kind: str) -> str | None:
     handler = handlers.get(kind)
     if handler is None:
         return None
-    task = handler.delay(job_id)
+    try:
+        task = handler.delay(job_id)
+    except (KombuOperationalError, OSError, ConnectionError, TimeoutError) as exc:
+        raise JobQueueUnavailableError() from exc
     return str(task.id)
 
 
@@ -133,6 +306,19 @@ async def set_job_celery_task(job_id: str, celery_task_id: str) -> None:
             return
         job.celery_task_id = celery_task_id
         await session.flush()
+
+
+async def mark_job_enqueue_failed(job_id: str, *, error: dict[str, Any]) -> None:
+    async with db.get_session() as session:
+        job = await session.get(ProjectJob, job_id)
+        if job is None or job.status in FINAL_JOB_STATUSES:
+            return
+        job.status = "failed"
+        job.result_json = None
+        job.error_json = error
+        job.finished_at = _now()
+        await session.flush()
+    await append_job_event_by_id(job_id, {"type": "job.terminal", "status": "failed", **error})
 
 
 async def merge_job_options(job_id: str, options: dict[str, Any]) -> None:
@@ -223,9 +409,11 @@ async def request_cancel(
         if job.status in FINAL_JOB_STATUSES:
             return serialize_job(job)
         job.cancel_requested_at = _now()
-        if job.status == "queued":
+        if job.status in {"queued", "running"}:
             job.status = "canceled"
             job.finished_at = _now()
+            if job.result_json is None:
+                job.result_json = {"status": "canceled"}
         await session.flush()
         serialized = serialize_job(job)
     if serialized.get("celery_task_id"):
@@ -238,12 +426,23 @@ async def request_cancel(
     return serialized
 
 
-async def rerun_job(*, project: Project, source_job_id: str) -> dict[str, Any]:
+async def rerun_job(
+    *,
+    project: Project,
+    source_job_id: str,
+    options_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source = await _load_job(project.id, str(project.user_id or ""), source_job_id)
-    payload = source.params_json if isinstance(source.params_json, dict) else {}
+    payload = dict(source.params_json or {}) if isinstance(source.params_json, dict) else {}
+    current_options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+    next_options = {**current_options, **(options_override or {})}
+    payload["options"] = next_options
+    kind = source.kind
+    if bool(next_options.get("post_deploy_only")) and source.kind in {"pipeline", "ansible"}:
+        kind = "ansible"
     return await enqueue_project_job(
         project=project,
-        kind=source.kind,
+        kind=kind,
         payload=payload,
         rerun_of_job_id=source.id,
     )
@@ -293,6 +492,8 @@ async def mark_job_terminal(
         job = await session.get(ProjectJob, job_id)
         if job is None:
             return None
+        if job.status in FINAL_JOB_STATUSES:
+            return serialize_job(job)
         job.status = status
         job.result_json = result
         job.error_json = error

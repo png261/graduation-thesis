@@ -17,6 +17,9 @@ interface ImportRepoDialogProps {
   loading: boolean;
   busy: boolean;
   error: string;
+  connected: boolean;
+  actionLabel: string;
+  pendingConfirmationMessage: string;
   session: { authenticated: boolean; login?: string };
   repos: RepoOption[];
   repoName: string;
@@ -53,6 +56,7 @@ function ImportRepoAuthPrompt({ onLogin }: { onLogin: () => void }) {
 }
 
 function ImportRepoForm({
+  connected,
   session,
   repos,
   repoName,
@@ -60,6 +64,7 @@ function ImportRepoForm({
   onRepoNameChange,
   onBaseBranchChange,
 }: {
+  connected: boolean;
   session: { authenticated: boolean; login?: string };
   repos: RepoOption[];
   repoName: string;
@@ -70,10 +75,16 @@ function ImportRepoForm({
   return (
     <>
       <ImportRepoSessionLabel login={session.login} />
-      <ImportRepoSelector repos={repos} repoName={repoName} onRepoNameChange={onRepoNameChange} onBaseBranchChange={onBaseBranchChange} />
-      <ImportRepoBaseBranchInput repos={repos} repoName={repoName} baseBranch={baseBranch} onBaseBranchChange={onBaseBranchChange} />
+      <ImportRepoModeSummary connected={connected} />
+      <ImportRepoSelector connected={connected} repos={repos} repoName={repoName} onRepoNameChange={onRepoNameChange} onBaseBranchChange={onBaseBranchChange} />
+      <ImportRepoBaseBranchInput connected={connected} repos={repos} repoName={repoName} baseBranch={baseBranch} onBaseBranchChange={onBaseBranchChange} />
     </>
   );
+}
+
+function ImportRepoModeSummary({ connected }: { connected: boolean }) {
+  if (!connected) return null;
+  return <p className="text-xs text-[var(--da-muted)]">The connected repository will be synced back into the workspace baseline.</p>;
 }
 
 function ImportRepoSessionLabel({ login }: { login?: string }) {
@@ -81,11 +92,13 @@ function ImportRepoSessionLabel({ login }: { login?: string }) {
 }
 
 function ImportRepoSelector({
+  connected,
   repos,
   repoName,
   onRepoNameChange,
   onBaseBranchChange,
 }: {
+  connected: boolean;
   repos: RepoOption[];
   repoName: string;
   onRepoNameChange: (value: string) => void;
@@ -94,7 +107,7 @@ function ImportRepoSelector({
   return (
     <div className="space-y-2">
       <Label>Repository</Label>
-      <Select value={repoName || "__none__"} onValueChange={(value) => handleRepoSelection(value, repos, onRepoNameChange, onBaseBranchChange)}>
+      <Select value={repoName || "__none__"} onValueChange={(value) => handleRepoSelection(value, repos, onRepoNameChange, onBaseBranchChange)} disabled={connected}>
         <SelectTrigger>
           <SelectValue placeholder="Select repository" />
         </SelectTrigger>
@@ -108,11 +121,13 @@ function ImportRepoSelector({
 }
 
 function ImportRepoBaseBranchInput({
+  connected,
   repos,
   repoName,
   baseBranch,
   onBaseBranchChange,
 }: {
+  connected: boolean;
   repos: RepoOption[];
   repoName: string;
   baseBranch: string;
@@ -122,7 +137,7 @@ function ImportRepoBaseBranchInput({
   return (
     <div className="space-y-2">
       <Label>Base branch</Label>
-      <Input value={baseBranch} onChange={(event) => onBaseBranchChange(event.target.value)} placeholder={defaultBranch} />
+      <Input value={baseBranch} onChange={(event) => onBaseBranchChange(event.target.value)} placeholder={defaultBranch} disabled={connected} />
     </div>
   );
 }
@@ -132,7 +147,14 @@ function ImportRepoDialogBody(props: ImportRepoDialogProps) {
     <div className="space-y-3">
       <ImportRepoLoadingState loading={props.loading} />
       {!props.loading && !props.session.authenticated ? <ImportRepoAuthPrompt onLogin={props.onLogin} /> : null}
-      {!props.loading && props.session.authenticated ? <ImportRepoForm session={props.session} repos={props.repos} repoName={props.repoName} baseBranch={props.baseBranch} onRepoNameChange={props.onRepoNameChange} onBaseBranchChange={props.onBaseBranchChange} /> : null}
+      {!props.loading && props.session.authenticated ? <ImportRepoForm connected={props.connected} session={props.session} repos={props.repos} repoName={props.repoName} baseBranch={props.baseBranch} onRepoNameChange={props.onRepoNameChange} onBaseBranchChange={props.onBaseBranchChange} /> : null}
+      {props.pendingConfirmationMessage ? <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-100">
+        <AlertTitle>Replace workspace files?</AlertTitle>
+        <AlertDescription className="space-y-2">
+          <p>{props.pendingConfirmationMessage}</p>
+          <p>Only AGENTS.md, .agents/skills/, .claude/skills/, .opentofu-runtime/, and .git are preserved automatically.</p>
+        </AlertDescription>
+      </Alert> : null}
       {props.error ? <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
         <AlertTitle>Import failed</AlertTitle>
         <AlertDescription>{props.error}</AlertDescription>
@@ -146,6 +168,7 @@ function ImportRepoDialogFooter({
   loading,
   authenticated,
   repoName,
+  actionLabel,
   onOpenChange,
   onSubmit,
 }: {
@@ -153,13 +176,14 @@ function ImportRepoDialogFooter({
   loading: boolean;
   authenticated: boolean;
   repoName: string;
+  actionLabel: string;
   onOpenChange: (open: boolean) => void;
   onSubmit: () => void;
 }) {
   return (
     <DialogFooter>
       <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
-      <Button onClick={onSubmit} disabled={busy || loading || !authenticated || !repoName}>{busy ? "Importing..." : "Import Repository"}</Button>
+      <Button onClick={onSubmit} disabled={busy || loading || !authenticated || !repoName}>{busy ? `${actionLabel}...` : actionLabel}</Button>
     </DialogFooter>
   );
 }
@@ -170,10 +194,10 @@ export function ImportRepoDialog(props: ImportRepoDialogProps) {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Import from GitHub</DialogTitle>
-          <DialogDescription>Connect this project to a repository and import files into the empty workspace.</DialogDescription>
+          <DialogDescription>Connect this project to a repository and make it the workspace baseline before later generation work.</DialogDescription>
         </DialogHeader>
         <ImportRepoDialogBody {...props} />
-        <ImportRepoDialogFooter busy={props.busy} loading={props.loading} authenticated={props.session.authenticated} repoName={props.repoName} onOpenChange={props.onOpenChange} onSubmit={props.onSubmit} />
+        <ImportRepoDialogFooter busy={props.busy} loading={props.loading} authenticated={props.session.authenticated} repoName={props.repoName} actionLabel={props.actionLabel} onOpenChange={props.onOpenChange} onSubmit={props.onSubmit} />
       </DialogContent>
     </Dialog>
   );

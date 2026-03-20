@@ -2,6 +2,14 @@ import { RefreshCw } from "lucide-react";
 
 import type { ProjectJob, ProjectJobEvent, ProjectJobKind, ProjectJobStatus } from "../../../api/projects";
 import { Button } from "../../../components/ui/button";
+import { buildStageSummary, eventStage } from "./events";
+
+const STAGE_ORDER = [
+  { key: "apply", title: "Provisioning" },
+  { key: "ssm_readiness", title: "SSM readiness" },
+  { key: "ansible", title: "Configuration" },
+  { key: "post_deploy", title: "Post-deploy logging" },
+] as const;
 
 const STATUS_OPTIONS: Array<{ label: string; value: ProjectJobStatus | "" }> = [
   { label: "All statuses", value: "" },
@@ -17,6 +25,7 @@ const KIND_OPTIONS: Array<{ label: string; value: ProjectJobKind | "" }> = [
   { label: "Pipeline", value: "pipeline" },
   { label: "Apply", value: "apply" },
   { label: "Plan", value: "plan" },
+  { label: "Destroy", value: "destroy" },
   { label: "Ansible", value: "ansible" },
   { label: "Graph", value: "graph" },
   { label: "Cost", value: "cost" },
@@ -84,6 +93,7 @@ export function JobsWorkspaceSidebarPanel(props: {
               <span className={statusTone(job.status)}>{job.status}</span>
             </div>
             <div className="truncate font-mono text-[11px] text-zinc-200">{job.id}</div>
+            <div className="mt-1 line-clamp-2 text-[11px] text-[var(--da-muted)]">{sidebarSummary(job)}</div>
           </button>
         ))}
         {!props.loading && props.jobs.length < 1 ? <p className="px-2 py-3 text-xs text-[var(--da-muted)]">No jobs found.</p> : null}
@@ -111,6 +121,71 @@ function resultSummary(job: ProjectJob): string {
   return "result available";
 }
 
+function sidebarSummary(job: ProjectJob): string {
+  const summary = buildStageSummary(job, job.event_tail);
+  if (summary) {
+    const parts = STAGE_ORDER.map((stage) =>
+      summary[stage.key] ? `${stage.title} ${stageStatusLabel(summary[stage.key]?.status)}` : null,
+    ).filter(Boolean);
+    if (parts.length > 0) return parts.join(" · ");
+  }
+  return resultSummary(job);
+}
+
+function stageStatusLabel(status?: string) {
+  if (!status) return "unknown";
+  if (status === "ok") return "succeeded";
+  return status;
+}
+
+function buildStageChain(job: ProjectJob, events: ProjectJobEvent[]) {
+  const summary = buildStageSummary(job, events);
+  if (!summary) return "";
+  const parts = STAGE_ORDER.map((stage) =>
+    summary[stage.key] ? `${stage.title} ${stageStatusLabel(summary[stage.key]?.status)}` : null,
+  ).filter(Boolean);
+  return parts.join(" · ");
+}
+
+function groupedStageEvents(events: ProjectJobEvent[]) {
+  return {
+    apply: events.filter((event) => eventStage(event) === "apply"),
+    ssm_readiness: events.filter((event) => eventStage(event) === "ssm_readiness"),
+    ansible: events.filter((event) => eventStage(event) === "ansible"),
+    post_deploy: events.filter((event) => eventStage(event) === "post_deploy"),
+  };
+}
+
+function StageSection({
+  title,
+  state,
+  events,
+}: {
+  title: string;
+  state?: { status?: string; message?: string | null } | null;
+  events: ProjectJobEvent[];
+}) {
+  if (!state && events.length < 1) return null;
+  return (
+    <div className="rounded border border-white/10 bg-black/20 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-white">{title}</p>
+        <span className="text-xs uppercase text-[var(--da-muted)]">{stageStatusLabel(state?.status)}</span>
+      </div>
+      {state?.message ? <p className="mb-2 text-xs text-[var(--da-muted)]">{state.message}</p> : null}
+      <details open className="text-[11px] text-blue-100/85">
+        <summary className="cursor-pointer font-mono text-[11px] text-[var(--da-muted)]">Raw events</summary>
+        <div className="mt-2 space-y-1 font-mono">
+          {events.length < 1 ? <p className="text-[var(--da-muted)]">No raw events for this stage.</p> : null}
+          {events.map((event, index) => (
+            <div key={`${title}-${index}-${event.type}-${String(event.seq ?? "")}`}>{buildEventLine(event)}</div>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function JobsWorkspaceMainPanel(props: {
   selectedJob: ProjectJob | null;
   selectedSummary: string;
@@ -124,6 +199,19 @@ export function JobsWorkspaceMainPanel(props: {
   }
   const canCancel = props.selectedJob.status === "queued" || props.selectedJob.status === "running";
   const createdAt = props.selectedJob.created_at ? new Date(props.selectedJob.created_at).toLocaleString() : "-";
+  const stageSummary = buildStageSummary(props.selectedJob, props.events);
+  const stageEvents = groupedStageEvents(props.events);
+  const stageChain = buildStageChain(props.selectedJob, props.events);
+  const showStageView = Boolean(
+    stageSummary?.apply ||
+      stageSummary?.ssm_readiness ||
+      stageSummary?.ansible ||
+      stageSummary?.post_deploy ||
+      stageEvents.apply.length ||
+      stageEvents.ssm_readiness.length ||
+      stageEvents.ansible.length ||
+      stageEvents.post_deploy.length,
+  );
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0a0f17]">
       <div className="space-y-2 border-b border-[var(--da-border)] p-3">
@@ -138,13 +226,24 @@ export function JobsWorkspaceMainPanel(props: {
           </div>
         </div>
         <p className="text-xs text-[var(--da-muted)]">Created: {createdAt} {props.streaming ? "· streaming" : ""}</p>
-        <p className="text-xs text-[var(--da-muted)]">Summary: {resultSummary(props.selectedJob)}</p>
+        <p className="text-xs text-[var(--da-muted)]">Summary: {stageChain || resultSummary(props.selectedJob)}</p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px] text-blue-100/85">
-        {props.events.length < 1 ? <p className="text-[var(--da-muted)]">No events yet.</p> : null}
-        {props.events.map((event, index) => (
-          <div key={`${index}-${event.type}-${String(event.seq ?? "")}`} className="mb-1">{buildEventLine(event)}</div>
-        ))}
+        {showStageView ? (
+          <div className="space-y-3 font-sans text-sm">
+            <StageSection title="Provisioning" state={stageSummary?.apply} events={stageEvents.apply} />
+            <StageSection title="SSM readiness" state={stageSummary?.ssm_readiness} events={stageEvents.ssm_readiness} />
+            <StageSection title="Configuration" state={stageSummary?.ansible} events={stageEvents.ansible} />
+            <StageSection title="Post-deploy logging" state={stageSummary?.post_deploy} events={stageEvents.post_deploy} />
+          </div>
+        ) : (
+          <>
+            {props.events.length < 1 ? <p className="text-[var(--da-muted)]">No events yet.</p> : null}
+            {props.events.map((event, index) => (
+              <div key={`${index}-${event.type}-${String(event.seq ?? "")}`} className="mb-1">{buildEventLine(event)}</div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );

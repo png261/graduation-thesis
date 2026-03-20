@@ -73,18 +73,25 @@ function getActionLabel(mode: WorkflowMode) {
   return "plan";
 }
 
-function getMissingCredentialMessage(status: OpenTofuStatus) {
-  if (!status.missing_credentials || status.missing_credentials.length < 1) {
-    return "Missing required cloud credentials.";
-  }
-  return `Missing credentials: ${status.missing_credentials.join(", ")}`;
+const DEPLOY_GATE_MESSAGES: Record<string, string> = {
+  saved_credentials_incomplete:
+    "Saved AWS credentials are incomplete. Finish the Credentials section before apply or destroy.",
+  generation_readiness_required: "Generate Terraform and Ansible artifacts before continuing.",
+  plan_review_required: "Review the latest plan in this session before continuing.",
+  destroy_plan_review_required: "Run and review a destroy plan in this session before continuing.",
+  partial_scope_confirmation_required: "Acknowledge the advanced partial-scope warning before continuing.",
+  drift_refresh_required: "Refresh drift on the primary state backend before continuing.",
+  destroy_confirmation_required: "Type the project name and destroy before starting destroy.",
+};
+
+function toDeployGateProblem(code: string) {
+  const guidance = DEPLOY_GATE_MESSAGES[code];
+  if (!guidance) return null;
+  return `${guidance} Resolve it in the Deploy modal before retrying.`;
 }
 
-function ensureWorkflowReady(status: OpenTofuStatus, mode: WorkflowMode) {
+function ensureWorkflowReady(status: OpenTofuStatus, _mode: WorkflowMode) {
   if (!status.opentofu_available) throw new Error("OpenTofu workflow is unavailable. Configure runners first.");
-  if ((mode === "apply" || mode === "pipeline") && !status.credential_ready) {
-    throw new Error(getMissingCredentialMessage(status));
-  }
   if (!status.modules || status.modules.length < 1) throw new Error("No OpenTofu modules found for this project.");
   return status.modules;
 }
@@ -146,12 +153,15 @@ function handleWorkflowErrorEvent(args: {
   pushProblem: PushProblemFn;
   setWorkflowError: (value: string) => void;
 }) {
-  const message = asString(args.event.message, "Workflow failed");
+  const code = asString(args.event.code);
+  const deployGateProblem = toDeployGateProblem(code);
+  const message = deployGateProblem ?? asString(args.event.message, "Workflow failed");
   args.setWorkflowError(message);
   args.pushLog(`Error: ${message}`);
   args.pushProblem(args.mode, message, {
     module: asString(args.event.module) || undefined,
     stage: asString(args.event.stage) || undefined,
+    source: deployGateProblem ? "deploy-gate" : undefined,
   });
 }
 
@@ -170,6 +180,24 @@ function handleWorkflowDoneEvent(args: {
   const message = `Workflow ${args.actionLabel} failed`;
   args.setWorkflowError(message);
   args.pushProblem(args.mode, message);
+}
+
+function handlePipelineStageDoneEvent(args: {
+  event: SseEvent;
+  mode: WorkflowMode;
+  pushLog: (message: string) => void;
+  pushProblem: PushProblemFn;
+  setWorkflowError: (value: string) => void;
+}) {
+  const type = asString(args.event.type);
+  const stageName = type === "deploy.done" ? "Provisioning" : "Configuration";
+  const status = asString(args.event.status);
+  const ok = status === "ok" || status === "succeeded";
+  args.pushLog(ok ? `${stageName} stage completed` : `${stageName} stage failed`);
+  if (ok) return;
+  const message = `${stageName} stage failed`;
+  args.setWorkflowError(message);
+  args.pushProblem(args.mode, message, { stage: type === "deploy.done" ? "apply" : "ansible" });
 }
 
 function handleConfigEvent(event: SseEvent, pushLog: (message: string) => void) {
@@ -219,7 +247,10 @@ function handleWorkflowEvent(args: {
   if (type === "config.start" || type === "host.start" || type === "task.log" || type === "host.done") {
     return handleConfigEvent(event, args.pushLog);
   }
-  if (type === "deploy.done" || type === "plan.done" || type === "pipeline.done" || type === "config.done" || type === "job.terminal") {
+  if ((type === "deploy.done" || type === "config.done") && args.mode === "pipeline") {
+    return handlePipelineStageDoneEvent({ event, mode: args.mode, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
+  }
+  if (type === "deploy.done" || type === "plan.done" || type === "pipeline.done" || type === "job.terminal") {
     return handleWorkflowDoneEvent({ event, mode: args.mode, actionLabel: args.actionLabel, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
   }
   if (type.startsWith("job.")) return handleJobMetaEvent(event, args.pushLog);

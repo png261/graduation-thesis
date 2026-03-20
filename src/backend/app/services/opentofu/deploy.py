@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.services.opentofu.runtime.runner import (
     apply_modules_collect,
     apply_modules_stream,
+    destroy_modules_stream,
     plan_modules_stream,
 )
 from app.services.opentofu.runtime.costs import get_costs
@@ -19,5 +20,6 @@ __all__ = [
     "get_graph",
     "apply_modules_stream",
     "plan_modules_stream",
+    "destroy_modules_stream",
     "apply_modules_collect",
 ]

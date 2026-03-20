@@ -58,10 +58,16 @@ export async function cancelProjectJob(projectId: string, jobId: string): Promis
   return apiJson<ProjectJob>(res);
 }
 
-export async function rerunProjectJob(projectId: string, jobId: string): Promise<ProjectJob> {
+export async function rerunProjectJob(
+  projectId: string,
+  jobId: string,
+  options?: { options?: Record<string, unknown> },
+): Promise<ProjectJob> {
   const res = await apiRequest(`/api/projects/${projectId}/jobs/${jobId}/rerun`, {
     method: "POST",
     credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ options: options?.options ?? {} }),
   });
   return apiJson<ProjectJob>(res);
 }

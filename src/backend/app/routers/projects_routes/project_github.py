@@ -18,6 +18,11 @@ router = APIRouter()
 class GitHubConnectBody(BaseModel):
     repo_full_name: str
     base_branch: str | None = None
+    confirm_workspace_switch: bool = False
+
+
+class GitHubSyncBody(BaseModel):
+    confirm_workspace_switch: bool = False
 
 
 class GitHubPullRequestBody(BaseModel):
@@ -79,11 +84,37 @@ async def connect_project_github(
             access_token=context.github_auth.access_token,
             repo_full_name=body.repo_full_name,
             base_branch=body.base_branch,
+            confirm_workspace_switch=body.confirm_workspace_switch,
         )
     except github_projects.GitHubProjectError as exc:
         github_deps.raise_github_project_http_error(exc)
     except github_auth.GitHubAuthError as exc:
         _raise_route_auth_error(exc, code="github_connect_failed")
+
+    invalidate_agent(project_id)
+    return _connect_response(payload, context.github_auth.login)
+
+
+@router.post("/{project_id}/github/sync")
+async def sync_project_github(
+    project_id: str,
+    body: GitHubSyncBody,
+    session: AsyncSession = Depends(github_deps.get_db_session),
+    context: github_deps.ProjectAccountContext = Depends(
+        github_deps.require_project_with_connected_account
+    ),
+) -> dict:
+    try:
+        payload = await github_projects.sync_project_repository(
+            session,
+            project=context.project,
+            access_token=context.github_auth.access_token,
+            confirm_workspace_switch=body.confirm_workspace_switch,
+        )
+    except github_projects.GitHubProjectError as exc:
+        github_deps.raise_github_project_http_error(exc)
+    except github_auth.GitHubAuthError as exc:
+        _raise_route_auth_error(exc, code="github_sync_failed")
 
     invalidate_agent(project_id)
     return _connect_response(payload, context.github_auth.login)
@@ -111,6 +142,22 @@ async def disconnect_project_github(
         "connected_account_login": None,
         "session_account_matches": False,
     }
+
+
+@router.get("/{project_id}/github/pull-request/defaults")
+async def project_pull_request_defaults(
+    session: AsyncSession = Depends(github_deps.get_db_session),
+    context: github_deps.ProjectAccountContext = Depends(
+        github_deps.require_project_with_connected_account
+    ),
+) -> dict:
+    try:
+        return await github_projects.build_project_pull_request_defaults(
+            session,
+            context.project,
+        )
+    except github_projects.GitHubProjectError as exc:
+        github_deps.raise_github_project_http_error(exc)
 
 
 @router.post("/{project_id}/github/pull-request")

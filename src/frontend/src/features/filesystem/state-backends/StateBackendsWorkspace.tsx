@@ -8,6 +8,7 @@ import type {
   GitLabRepo,
   GitLabSession,
   PolicyAlert,
+  ProjectDeployDriftSummary,
   StateBackend,
   StateBackendImportCandidate,
   StateBackendSettings,
@@ -30,6 +31,75 @@ function SourceIcon({ source }: { source: string }) {
   if (source === "github") return <GitBranch className="h-4 w-4" />;
   if (source === "gitlab") return <Gitlab className="h-4 w-4" />;
   return <Cloud className="h-4 w-4" />;
+}
+
+function isPrimaryDeployBackend(backend: StateBackend | null) {
+  return backend?.settings["primary_for_deploy"] === true;
+}
+
+function readinessTone(summary: ProjectDeployDriftSummary | null) {
+  if (!summary) return "text-[var(--da-muted)]";
+  if (summary.blocking) return "text-amber-300";
+  return "text-emerald-300";
+}
+
+function freshnessLabel(summary: ProjectDeployDriftSummary | null) {
+  if (!summary) return "-";
+  if (summary.freshness_minutes === null) return "Unknown";
+  return `${summary.freshness_minutes} minute${summary.freshness_minutes === 1 ? "" : "s"}`;
+}
+
+function lastRefreshLabel(summary: ProjectDeployDriftSummary | null) {
+  if (!summary?.last_successful_refresh_at) return "Never";
+  return new Date(summary.last_successful_refresh_at).toLocaleString();
+}
+
+function ReadinessMetric(props: { label: string; value: string | number }) {
+  return (
+    <div className="rounded border border-white/10 bg-black/20 p-2">
+      <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--da-muted)]">{props.label}</p>
+      <p className="mt-1 text-sm text-white">{props.value}</p>
+    </div>
+  );
+}
+
+function DeployDriftReadinessCard(props: {
+  summary: ProjectDeployDriftSummary | null;
+  loading: boolean;
+  error: string;
+}) {
+  return (
+    <div className="rounded border border-white/10 bg-black/20 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-sm font-semibold">Deploy Drift Readiness</p>
+          <p className={`text-xs ${readinessTone(props.summary)}`}>
+            {props.error || props.summary?.reason || (props.loading ? "Refreshing deploy drift summary..." : "No deploy drift summary yet.")}
+          </p>
+        </div>
+        {props.summary ? (
+          <span className={`rounded border border-white/10 px-2 py-0.5 text-xs uppercase ${readinessTone(props.summary)}`}>
+            {props.summary.blocking ? "Blocked" : "Ready"}
+          </span>
+        ) : null}
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
+        <ReadinessMetric label="Status" value={props.summary?.status || "-"} />
+        <ReadinessMetric label="Primary Backend" value={props.summary?.primary_backend?.name || "Not configured"} />
+        <ReadinessMetric label="Last Refresh" value={lastRefreshLabel(props.summary)} />
+        <ReadinessMetric label="Freshness" value={freshnessLabel(props.summary)} />
+      </div>
+      <div className="mt-2 grid gap-2 md:grid-cols-2">
+        <ReadinessMetric label="Drift Alerts" value={props.summary?.active_drift_alert_count ?? 0} />
+        <ReadinessMetric label="Source" value={props.summary?.source || "-"} />
+      </div>
+      {props.summary?.source === "local_runtime_fallback" ? (
+        <p className="mt-3 rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          Local runtime fallback only
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 export function StateBackendsSidebarPanel(props: {
@@ -561,6 +631,9 @@ function ConnectDialogActions(props: {
 
 export function StateBackendsMainPanel(props: {
   backend: StateBackend | null;
+  deployDriftSummary: ProjectDeployDriftSummary | null;
+  deployDriftLoading: boolean;
+  deployDriftError: string;
   activeTab: BackendTab;
   onTabChange: (tab: BackendTab) => void;
   loading: boolean;
@@ -578,18 +651,41 @@ export function StateBackendsMainPanel(props: {
   settingsPayload: StateBackendSettings | null;
   onSettingsChange: (value: StateBackendSettings) => void;
   onSync: () => void;
+  onSetPrimary: (backendId: string) => void;
   onSaveSettings: () => void;
   onDeleteBackend: () => void;
   onFixPlan: (alertId: string) => void;
   onFixAll: () => void;
 }) {
   if (!props.backend) {
-    return <div className="flex h-full items-center justify-center text-sm text-[var(--da-muted)]">Select or connect a state backend.</div>;
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-[#0a0f17] p-3">
+        <DeployDriftReadinessCard
+          summary={props.deployDriftSummary}
+          loading={props.deployDriftLoading}
+          error={props.deployDriftError}
+        />
+        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-[var(--da-muted)]">
+          Select or connect a state backend.
+        </div>
+      </div>
+    );
   }
+  const backend = props.backend;
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#0a0f17]">
       <div className="space-y-3 border-b border-[var(--da-border)] p-3">
-        <StateBackendHeader backend={props.backend} onSync={props.onSync} />
+        <DeployDriftReadinessCard
+          summary={props.deployDriftSummary}
+          loading={props.deployDriftLoading}
+          error={props.deployDriftError}
+        />
+        <StateBackendHeader
+          backend={backend}
+          primaryForDeploy={isPrimaryDeployBackend(backend)}
+          onSync={props.onSync}
+          onSetPrimary={() => props.onSetPrimary(backend.id)}
+        />
         <StateBackendTabs activeTab={props.activeTab} onTabChange={props.onTabChange} />
         <StateBackendFilters
           search={props.search}
@@ -607,14 +703,26 @@ export function StateBackendsMainPanel(props: {
   );
 }
 
-function StateBackendHeader(props: { backend: StateBackend; onSync: () => void }) {
+function StateBackendHeader(props: {
+  backend: StateBackend;
+  primaryForDeploy: boolean;
+  onSync: () => void;
+  onSetPrimary: () => void;
+}) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <p className="text-lg font-semibold">{props.backend.name}</p>
         <p className="text-xs text-[var(--da-muted)]">{props.backend.provider.toUpperCase()} · {props.backend.source_type} · Last sync: {props.backend.last_sync_at ? new Date(props.backend.last_sync_at).toLocaleString() : "never"}</p>
       </div>
-      <Button size="sm" onClick={props.onSync}><RefreshCw className="mr-1 h-3.5 w-3.5" />Sync</Button>
+      <div className="flex flex-wrap items-center gap-2">
+        {props.primaryForDeploy ? (
+          <Button size="sm" variant="secondary" disabled>Primary for Deploy</Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={props.onSetPrimary}>Use for Deploy Decisions</Button>
+        )}
+        <Button size="sm" onClick={props.onSync}><RefreshCw className="mr-1 h-3.5 w-3.5" />Refresh Drift Status</Button>
+      </div>
     </div>
   );
 }

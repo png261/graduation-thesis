@@ -236,6 +236,9 @@ function StateBackendsMainView({ state }: { state: FilesystemPanelState }) {
   return (
     <StateBackendsMainPanel
       backend={state.selectedStateBackend}
+      deployDriftSummary={state.stateDeployDriftSummary}
+      deployDriftLoading={state.stateDeployDriftLoading}
+      deployDriftError={state.stateDeployDriftError}
       activeTab={state.stateBackendTab}
       onTabChange={state.setStateBackendTab}
       loading={state.stateDetailsLoading}
@@ -253,6 +256,7 @@ function StateBackendsMainView({ state }: { state: FilesystemPanelState }) {
       settingsPayload={state.stateSettingsPayload}
       onSettingsChange={state.setStateSettingsPayload}
       onSync={state.syncSelectedStateBackend}
+      onSetPrimary={state.markStateBackendPrimaryForDeploy}
       onSaveSettings={state.saveStateBackendSettings}
       onDeleteBackend={state.removeSelectedStateBackend}
       onFixPlan={state.requestStateFixPlan}
@@ -273,8 +277,14 @@ function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; ac
   return (
     <>
       <CreateRepoDialog open={state.createRepoOpen} onOpenChange={state.setCreateRepoOpen} name={state.createRepoName} onNameChange={state.setCreateRepoName} description={state.createRepoDescription} onDescriptionChange={state.setCreateRepoDescription} isPrivate={state.createRepoPrivate} onPrivateChange={state.setCreateRepoPrivate} busy={state.createRepoBusy} error={state.createRepoError} onSubmit={actions.onCreateRepo} />
-      <CreatePullRequestDialog open={state.prOpen} onOpenChange={state.setPrOpen} title={state.prTitle} onTitleChange={state.setPrTitle} baseBranch={state.prBaseBranch} onBaseBranchChange={state.setPrBaseBranch} description={state.prDescription} onDescriptionChange={state.setPrDescription} error={state.prError} busy={state.prBusy} onSubmit={actions.onCreatePullRequest} githubConnected={Boolean(state.githubStatus?.connected)} placeholderBase={state.githubStatus?.base_branch || "main"} />
-      <ImportRepoDialog open={state.importRepoOpen} onOpenChange={state.setImportRepoOpen} loading={state.importRepoLoading} busy={state.importRepoBusy} error={state.importRepoError} session={state.importRepoSession} repos={state.importRepoList} repoName={state.importRepoName} onRepoNameChange={state.setImportRepoName} baseBranch={state.importBaseBranch} onBaseBranchChange={state.setImportBaseBranch} onLogin={state.handleImportRepoLogin} onSubmit={actions.onImportFromGithub} />
+      <CreatePullRequestDialog open={state.prOpen} onOpenChange={state.setPrOpen} loading={state.prLoading} title={state.prTitle} onTitleChange={state.setPrTitle} baseBranch={state.prBaseBranch} onBaseBranchChange={state.setPrBaseBranch} description={state.prDescription} onDescriptionChange={state.setPrDescription} error={state.prError} busy={state.prBusy} onSubmit={actions.onCreatePullRequest} githubConnected={Boolean(state.githubStatus?.connected)} placeholderBase={state.githubStatus?.base_branch || "main"} workingBranch={state.prWorkingBranch || state.githubStatus?.working_branch || ""} suggestionCopy={state.prSuggestionCopy} />
+      <ImportRepoDialog open={state.importRepoOpen} onOpenChange={state.setImportRepoOpen} loading={state.importRepoLoading} busy={state.importRepoBusy} error={state.importRepoError} connected={Boolean(state.githubStatus?.connected)} actionLabel={state.githubStatus?.connected ? "Sync Repository Baseline" : "Import Repository"} pendingConfirmationMessage={state.pendingRepositoryConfirmation?.confirmationMessage || ""} session={state.importRepoSession} repos={state.importRepoList} repoName={state.importRepoName} onRepoNameChange={(value) => {
+        state.clearPendingRepositoryConfirmation();
+        state.setImportRepoName(value);
+      }} baseBranch={state.importBaseBranch} onBaseBranchChange={(value) => {
+        state.clearPendingRepositoryConfirmation();
+        state.setImportBaseBranch(value);
+      }} onLogin={state.handleImportRepoLogin} onSubmit={actions.onImportFromGithub} />
       <StateBackendsConnectDialog
         open={state.stateConnectOpen}
         onOpenChange={state.setStateConnectOpen}

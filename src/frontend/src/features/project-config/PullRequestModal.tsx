@@ -1,11 +1,19 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
-import { createProjectPullRequest } from "../../api/projects/index";
+import { createProjectPullRequest, getProjectPullRequestDefaults } from "../../api/projects/index";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { Textarea } from "../../components/ui/textarea";
+import {
+  applyPullRequestDefaults,
+  buildPullRequestSuggestionCopy,
+  createPullRequestDraftState,
+  type PullRequestDraftState,
+} from "../github/pullRequestDraftState";
+
+const GENERATION_SUGGESTION_COPY = "Suggested title/body come from the latest blueprint generation history and remain editable.";
 
 interface PullRequestModalProps {
   projectId: string;
@@ -15,48 +23,112 @@ interface PullRequestModalProps {
   onCreated: (url: string) => void;
 }
 
-function usePullRequestFormState(defaultBaseBranch: string) {
-  const [title, setTitle] = useState("chore: update infrastructure");
-  const [description, setDescription] = useState("");
-  const [baseBranch, setBaseBranch] = useState(defaultBaseBranch);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  return {
-    title, setTitle, description, setDescription, baseBranch, setBaseBranch, submitting, setSubmitting, error, setError,
-  };
-}
-
-function validatePullRequestTitle(title: string) {
-  return title.trim().length > 0;
-}
-
-function useSubmitPullRequest(args: {
-  projectId: string;
-  onClose: () => void;
-  onCreated: (url: string) => void;
+interface PullRequestSubmitPayload {
   title: string;
   description: string;
   baseBranch: string;
-  setSubmitting: (value: boolean) => void;
-  setError: (value: string) => void;
-}) {
-  return useCallback(async () => {
-    if (!validatePullRequestTitle(args.title)) {
-      args.setError("Pull request title is required.");
-      return;
-    }
-    args.setSubmitting(true);
-    args.setError("");
-    try {
-      const data = await createProjectPullRequest(args.projectId, args.title.trim(), args.description, args.baseBranch.trim());
-      if (data.url) args.onCreated(data.url);
-      args.onClose();
-    } catch (error: unknown) {
-      args.setError(error instanceof Error ? error.message : "Failed to create pull request");
-    } finally {
-      args.setSubmitting(false);
-    }
-  }, [args]);
+  workingBranch: string;
+}
+
+export function buildPullRequestFormDefaults(
+  draft: PullRequestDraftState,
+  defaultBaseBranch: string,
+  defaults: {
+    title: string;
+    description: string;
+    base_branch: string;
+  } | null,
+): PullRequestDraftState {
+  if (!defaults) {
+    return {
+      ...draft,
+      baseBranch: draft.baseBranch || defaultBaseBranch,
+    };
+  }
+  return applyPullRequestDefaults(draft, {
+    ...defaults,
+    working_branch: "",
+    repo_full_name: "",
+    source: "fallback",
+    blueprint_run_id: null,
+    terraform_generation_id: null,
+    ansible_generation_id: null,
+  });
+}
+
+export function buildPullRequestSubmitPayload(args: {
+  title: string;
+  description: string;
+  baseBranch: string;
+  defaultBaseBranch: string;
+  workingBranch: string;
+}): PullRequestSubmitPayload {
+  return {
+    title: args.title.trim(),
+    description: args.description,
+    baseBranch: args.baseBranch.trim() || args.defaultBaseBranch,
+    workingBranch: args.workingBranch,
+  };
+}
+
+function isValidTitle(title: string): boolean {
+  return title.trim().length > 0;
+}
+
+function usePullRequestModalState(defaultBaseBranch: string) {
+  const [draft, setDraft] = useState(() =>
+    buildPullRequestFormDefaults(createPullRequestDraftState(), defaultBaseBranch, null),
+  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [suggestionCopy, setSuggestionCopy] = useState(GENERATION_SUGGESTION_COPY);
+  return { draft, setDraft, loading, setLoading, error, setError, submitting, setSubmitting, suggestionCopy, setSuggestionCopy };
+}
+
+function useLoadPullRequestDefaults(
+  projectId: string,
+  defaultBaseBranch: string,
+  setDraft: Dispatch<SetStateAction<PullRequestDraftState>>,
+  setLoading: (value: boolean) => void,
+  setError: (value: string) => void,
+  setSuggestionCopy: (value: string) => void,
+) {
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    void (async () => {
+      try {
+        const defaults = await getProjectPullRequestDefaults(projectId);
+        if (cancelled) return;
+        setDraft((current) => buildPullRequestFormDefaults(current, defaultBaseBranch, defaults));
+        setSuggestionCopy(buildPullRequestSuggestionCopy(defaults.source));
+      } catch (error: unknown) {
+        if (cancelled) return;
+        setDraft((current) => buildPullRequestFormDefaults(current, defaultBaseBranch, null));
+        setSuggestionCopy(GENERATION_SUGGESTION_COPY);
+        setError(error instanceof Error ? error.message : "Failed to load pull request defaults");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultBaseBranch, projectId, setDraft, setError, setLoading, setSuggestionCopy]);
+}
+
+function updateDraftTitle(setDraft: Dispatch<SetStateAction<PullRequestDraftState>>, value: string) {
+  setDraft((current) => ({ ...current, title: value, titleEdited: true }));
+}
+
+function updateDraftDescription(setDraft: Dispatch<SetStateAction<PullRequestDraftState>>, value: string) {
+  setDraft((current) => ({ ...current, description: value, descriptionEdited: true }));
+}
+
+function updateDraftBaseBranch(setDraft: Dispatch<SetStateAction<PullRequestDraftState>>, value: string) {
+  setDraft((current) => ({ ...current, baseBranch: value, baseBranchEdited: true }));
 }
 
 function PullRequestDialogHeader({ workingBranch, baseBranch, defaultBaseBranch }: { workingBranch: string; baseBranch: string; defaultBaseBranch: string }) {
@@ -64,10 +136,19 @@ function PullRequestDialogHeader({ workingBranch, baseBranch, defaultBaseBranch 
     <DialogHeader>
       <DialogTitle>Create Pull Request</DialogTitle>
       <DialogDescription>
-        Working branch <code>{workingBranch}</code> into base <code>{baseBranch || defaultBaseBranch}</code>
+        Current workspace changes will be committed from <code>{workingBranch}</code> into <code>{baseBranch || defaultBaseBranch}</code>.
       </DialogDescription>
     </DialogHeader>
   );
+}
+
+function PullRequestDraftLoading({ loading }: { loading: boolean }) {
+  if (!loading) return null;
+  return <p className="text-sm text-[var(--da-muted)]">Loading suggested pull request draft...</p>;
+}
+
+function PullRequestContext({ suggestionCopy }: { suggestionCopy: string }) {
+  return <p className="text-sm text-[var(--da-muted)]">{suggestionCopy}</p>;
 }
 
 function PullRequestFields({
@@ -104,34 +185,75 @@ function PullRequestError({ error }: { error: string }) {
   );
 }
 
-function PullRequestFooter({ submitting, onClose, onSubmit }: { submitting: boolean; onClose: () => void; onSubmit: () => void }) {
+function PullRequestFooter({
+  submitting,
+  loading,
+  onClose,
+  onSubmit,
+}: {
+  submitting: boolean;
+  loading: boolean;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
   return (
     <DialogFooter>
       <Button variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
-      <Button onClick={onSubmit} disabled={submitting}>{submitting ? "Creating..." : "Create Pull Request"}</Button>
+      <Button onClick={onSubmit} disabled={submitting || loading}>{submitting ? "Creating..." : "Create Pull Request"}</Button>
     </DialogFooter>
   );
 }
 
 export function PullRequestModal({ projectId, defaultBaseBranch, workingBranch, onClose, onCreated }: PullRequestModalProps) {
-  const state = usePullRequestFormState(defaultBaseBranch);
-  const submit = useSubmitPullRequest({
+  const state = usePullRequestModalState(defaultBaseBranch);
+  useLoadPullRequestDefaults(
     projectId,
-    onClose,
-    onCreated,
-    title: state.title,
-    description: state.description,
-    baseBranch: state.baseBranch,
-    setSubmitting: state.setSubmitting,
-    setError: state.setError,
-  });
+    defaultBaseBranch,
+    state.setDraft,
+    state.setLoading,
+    state.setError,
+    state.setSuggestionCopy,
+  );
+
+  const submit = useCallback(async () => {
+    const payload = buildPullRequestSubmitPayload({
+      title: state.draft.title,
+      description: state.draft.description,
+      baseBranch: state.draft.baseBranch,
+      defaultBaseBranch,
+      workingBranch,
+    });
+    if (!isValidTitle(payload.title)) {
+      state.setError("Pull request title is required.");
+      return;
+    }
+    state.setSubmitting(true);
+    state.setError("");
+    try {
+      const data = await createProjectPullRequest(
+        projectId,
+        payload.title,
+        payload.description,
+        payload.baseBranch,
+      );
+      if (data.url) onCreated(data.url);
+      onClose();
+    } catch (error: unknown) {
+      state.setError(error instanceof Error ? error.message : "Failed to create pull request");
+    } finally {
+      state.setSubmitting(false);
+    }
+  }, [defaultBaseBranch, onClose, onCreated, projectId, state, workingBranch]);
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-3xl">
-        <PullRequestDialogHeader workingBranch={workingBranch} baseBranch={state.baseBranch} defaultBaseBranch={defaultBaseBranch} />
-        <PullRequestFields title={state.title} description={state.description} baseBranch={state.baseBranch} setTitle={state.setTitle} setDescription={state.setDescription} setBaseBranch={state.setBaseBranch} />
+        <PullRequestDialogHeader workingBranch={workingBranch} baseBranch={state.draft.baseBranch} defaultBaseBranch={defaultBaseBranch} />
+        <PullRequestDraftLoading loading={state.loading} />
+        {!state.loading ? <PullRequestContext suggestionCopy={state.suggestionCopy} /> : null}
+        {!state.loading ? <PullRequestFields title={state.draft.title} description={state.draft.description} baseBranch={state.draft.baseBranch} setTitle={(value) => updateDraftTitle(state.setDraft, value)} setDescription={(value) => updateDraftDescription(state.setDraft, value)} setBaseBranch={(value) => updateDraftBaseBranch(state.setDraft, value)} /> : null}
         <PullRequestError error={state.error} />
-        <PullRequestFooter submitting={state.submitting} onClose={onClose} onSubmit={() => void submit()} />
+        <PullRequestFooter submitting={state.submitting} loading={state.loading} onClose={onClose} onSubmit={() => void submit()} />
       </DialogContent>
     </Dialog>
   );

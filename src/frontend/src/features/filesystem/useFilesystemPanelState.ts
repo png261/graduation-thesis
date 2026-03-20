@@ -244,6 +244,9 @@ function stateBackendsOverviewSection(stateBackends: ReturnType<typeof useStateB
     setStateSettingsPayload: stateBackends.setSettingsPayload,
     stateDetailsLoading: stateBackends.detailsLoading,
     stateDetailsError: stateBackends.detailsError,
+    stateDeployDriftSummary: stateBackends.deployDriftSummary,
+    stateDeployDriftLoading: stateBackends.deployDriftLoading,
+    stateDeployDriftError: stateBackends.deployDriftError,
     stateSearch: stateBackends.search,
     setStateSearch: stateBackends.setSearch,
     stateActiveOnly: stateBackends.activeOnly,
@@ -321,6 +324,7 @@ function stateBackendsActionSection(stateBackends: ReturnType<typeof useStateBac
     syncSelectedStateBackend: stateBackends.syncSelectedBackend,
     removeSelectedStateBackend: stateBackends.removeSelectedBackend,
     saveStateBackendSettings: stateBackends.saveSettings,
+    markStateBackendPrimaryForDeploy: stateBackends.setPrimaryDeployBackend,
     requestStateFixPlan: stateBackends.requestFixPlan,
     requestStateFixAllPlan: stateBackends.requestFixAllPlan,
   };

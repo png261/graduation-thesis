@@ -16,21 +16,24 @@ from sqlalchemy import delete, select
 from app import db
 from app.core.config import Settings, get_settings
 from app.models import DriftAlert, PolicyAlert, Project, StateBackend, StateResource, StateSnapshot, StateSyncRun
+from app.services.incident import service as incident_service
+from app.services.jobs import service as jobs_service
+from app.services.opentofu.runtime.shared import discover_modules_from_project_dir
 from app.services.project import files as project_files
 from app.services.telegram import notifications as telegram_notifications
 
 from .cloud_adapters import (
     CloudAdapter,
-    CloudObject,
-    CloudObjectVersion,
     get_cloud_adapter,
     likely_state_objects,
     normalize_cloud_provider,
     parse_state_payload,
 )
 from .credential_profiles import resolve_profile_credentials
-from .crypto import decrypt_text, encrypt_text
+from .crypto import decrypt_text
 from .scanners import scan_backend_candidates
+
+DRIFT_REFRESH_MAX_AGE_MINUTES = 60
 
 
 def _now() -> datetime:
@@ -76,6 +79,115 @@ def _serialize_backend(row: StateBackend) -> dict[str, Any]:
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
     }
+
+
+def _is_primary_for_deploy(settings: dict[str, Any] | None) -> bool:
+    return bool((settings or {}).get("primary_for_deploy"))
+
+
+def _normalize_settings_patch(settings: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(settings)
+    if not normalized.get("primary_for_deploy"):
+        normalized.pop("primary_for_deploy", None)
+    return normalized
+
+
+async def _load_project(project_id: str) -> Project | None:
+    async with db.get_session() as session:
+        return await session.get(Project, project_id)
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _refresh_timestamp(sync_run: dict[str, Any] | None) -> str | None:
+    if not isinstance(sync_run, dict):
+        return None
+    finished_at = sync_run.get("finished_at")
+    if isinstance(finished_at, str) and finished_at:
+        return finished_at
+    created_at = sync_run.get("created_at")
+    if isinstance(created_at, str) and created_at:
+        return created_at
+    return None
+
+
+def _freshness_minutes(last_successful_refresh_at: str | None) -> int | None:
+    parsed = _parse_iso_datetime(last_successful_refresh_at)
+    if parsed is None:
+        return None
+    delta = _now() - parsed
+    return max(0, int(delta.total_seconds() // 60))
+
+
+async def get_local_runtime_drift_status(*, project_id: str, user_id: str) -> dict[str, Any]:
+    modules = discover_modules_from_project_dir(project_id)
+    project_root = project_files.ensure_project_dir(project_id)
+    state_root = project_root / ".opentofu-runtime" / "state"
+    modules_without_state = [module for module in modules if not (state_root / f"{module}.tfstate").is_file()]
+
+    latest_plan = await jobs_service.list_jobs(
+        project_id=project_id,
+        user_id=user_id,
+        status=None,
+        kind="plan",
+        limit=1,
+        offset=0,
+    )
+    latest_apply = await jobs_service.list_jobs(
+        project_id=project_id,
+        user_id=user_id,
+        status=None,
+        kind="apply",
+        limit=1,
+        offset=0,
+    )
+
+    latest_plan_job = latest_plan["items"][0] if latest_plan["items"] else None
+    latest_apply_job = latest_apply["items"][0] if latest_apply["items"] else None
+
+    if not modules:
+        status = "no_modules"
+    elif modules_without_state:
+        status = "state_missing"
+    elif not latest_plan_job:
+        status = "plan_missing"
+    elif latest_apply_job and str(latest_plan_job.get("created_at", "")) < str(latest_apply_job.get("created_at", "")):
+        status = "plan_outdated"
+    else:
+        status = "in_sync"
+
+    return {
+        "status": status,
+        "module_count": len(modules),
+        "modules_without_state": modules_without_state,
+        "last_plan_job": latest_plan_job,
+        "last_apply_job": latest_apply_job,
+    }
+
+
+def _deploy_drift_status(
+    *,
+    primary_backend: dict[str, Any],
+    latest_sync: dict[str, Any] | None,
+    last_successful_refresh_at: str | None,
+    freshness_minutes: int | None,
+    active_drift_alert_count: int,
+) -> tuple[str, bool, str]:
+    if primary_backend.get("last_error") or str((latest_sync or {}).get("status") or "") == "failed":
+        return "error", True, str(primary_backend.get("last_error") or "Primary backend drift refresh failed.")
+    if last_successful_refresh_at is None or freshness_minutes is None or freshness_minutes > DRIFT_REFRESH_MAX_AGE_MINUTES:
+        return "refresh_required", True, "Refresh the primary backend drift status before deploy."
+    if active_drift_alert_count > 0:
+        return "drift_detected", True, f"{active_drift_alert_count} active drift alert(s) detected."
+    return "in_sync", False, "Primary backend drift status is fresh and in sync."
 
 
 def _serialize_resource(row: StateResource, *, show_sensitive: bool) -> dict[str, Any]:
@@ -907,19 +1019,64 @@ async def _notify_alerts_if_needed(
     drift_alerts: list[DriftAlert],
     policy_alerts: list[PolicyAlert],
     settings: Settings,
-) -> None:
+) -> dict[str, Any] | None:
+    if not drift_alerts and not policy_alerts:
+        return None
+    correlation_id = str(uuid4())
+    recent_jobs = await incident_service.recent_project_jobs(project_id=project_id, limit=20)
+    decision, memories, events = await incident_service.build_decision(
+        backend=backend,
+        drift_alerts=drift_alerts,
+        policy_alerts=policy_alerts,
+        recent_jobs=recent_jobs,
+        correlation_id=correlation_id,
+        settings=settings,
+    )
+    summary = await incident_service.store_incident_summary(
+        project_id=project_id,
+        backend_id=backend.id,
+        decision=decision,
+        memories=memories,
+        correlation_id=correlation_id,
+    )
     severity_set = set(settings.state_alert_notify_severity_list())
     relevant_drift = [row for row in drift_alerts if row.severity.lower() in severity_set and row.status == "active"]
     relevant_policy = [row for row in policy_alerts if row.severity.lower() in severity_set and row.status == "active"]
-    if not relevant_drift and not relevant_policy:
-        return
-    lines = [
-        f"State backend: {backend.name}",
-        f"Provider: {backend.provider}",
-        f"Active drift alerts: {len(relevant_drift)}",
-        f"Active policy alerts: {len(relevant_policy)}",
-    ]
-    await telegram_notifications.notify_by_project_id(project_id, settings, "\n".join(lines))
+    should_notify = bool(relevant_drift or relevant_policy)
+    if should_notify:
+        should_notify = await incident_service.should_emit_alert(
+            project_id=project_id,
+            incident_key=decision["incident_key"],
+            settings=settings,
+        )
+    if should_notify:
+        lines = [
+            f"State backend: {backend.name}",
+            f"Provider: {backend.provider}",
+            f"Active drift alerts: {len(relevant_drift)}",
+            f"Active policy alerts: {len(relevant_policy)}",
+            f"Severity: {decision['severity']}",
+            f"Confidence: {decision['confidence']:.2f}",
+            f"Recommended action: {decision['recommended_action']}",
+        ]
+        await telegram_notifications.notify_by_project_id(project_id, settings, "\n".join(lines))
+    if decision["action_class"] == incident_service.ACTION_BLOCKED:
+        events.append(
+            {
+                "type": "incident.action.blocked",
+                "correlationId": correlation_id,
+                "incidentKey": decision["incident_key"],
+                "reason": "blocked_action_class",
+            }
+        )
+    return {
+        "summary": summary,
+        "decision": decision,
+        "events": events,
+        "memories": memories,
+        "correlation_id": correlation_id,
+        "notified": should_notify,
+    }
 
 
 async def _cleanup_retention(session, backend: StateBackend) -> None:
@@ -1105,14 +1262,14 @@ async def _execute_backend_sync(
         active_policy=active_policy,
     )
     await session.flush()
-    await _notify_alerts_if_needed(
+    incident_result = await _notify_alerts_if_needed(
         project_id=backend.project_id,
         backend=backend,
         drift_alerts=active_drift,
         policy_alerts=active_policy,
         settings=cfg,
     )
-    return {"summary": summary}
+    return {"summary": summary, "incident": incident_result}
 
 
 async def run_backend_sync(
@@ -1142,7 +1299,10 @@ async def run_backend_sync(
             result = await _execute_backend_sync(session=session, backend=backend, cfg=cfg)
             run.status = "succeeded"
             run.finished_at = _now()
-            run.summary_json = result["summary"]
+            run.summary_json = {
+                **result["summary"],
+                "incident": result.get("incident"),
+            }
             await session.flush()
 
             return {
@@ -1275,6 +1435,18 @@ async def update_backend_settings(
         if settings_patch and isinstance(settings_patch, dict):
             merged = dict(backend.settings_json or {})
             merged.update(settings_patch)
+            merged = _normalize_settings_patch(merged)
+            if merged.get("primary_for_deploy") is True:
+                rows = await session.execute(
+                    select(StateBackend).where(
+                        StateBackend.project_id == project_id,
+                        StateBackend.id != backend_id,
+                    )
+                )
+                for row in rows.scalars().all():
+                    sibling_settings = _normalize_settings_patch(dict(row.settings_json or {}))
+                    sibling_settings.pop("primary_for_deploy", None)
+                    row.settings_json = sibling_settings
             backend.settings_json = merged
         await session.flush()
     return _serialize_backend(backend)
@@ -1392,6 +1564,60 @@ async def get_sync_runs(*, project_id: str, backend_id: str, limit: int = 30) ->
         }
         for row in runs
     ]
+
+
+async def get_project_deploy_drift_summary(project_id: str) -> dict[str, Any]:
+    project = await _load_project(project_id)
+    if project is None:
+        raise ValueError("project_not_found")
+
+    backends = await list_state_backends(project_id=project_id)
+    primary_backend = next((row for row in backends if _is_primary_for_deploy(row.get("settings"))), None)
+    if primary_backend is None:
+        return {
+            "source": "local_runtime_fallback",
+            "status": "primary_backend_required",
+            "blocking": True,
+            "reason": "Select one state backend as the primary backend for deploy decisions.",
+            "primary_backend": None,
+            "last_successful_refresh_at": None,
+            "freshness_minutes": None,
+            "active_drift_alert_count": 0,
+            "fallback_runtime": await get_local_runtime_drift_status(
+                project_id=project_id,
+                user_id=str(project.user_id or ""),
+            ),
+        }
+
+    sync_runs = await get_sync_runs(project_id=project_id, backend_id=str(primary_backend["id"]), limit=20)
+    latest_sync = sync_runs[0] if sync_runs else None
+    latest_successful = next((row for row in sync_runs if row.get("status") == "succeeded"), None)
+    last_successful_refresh_at = _refresh_timestamp(latest_successful)
+    freshness_minutes = _freshness_minutes(last_successful_refresh_at)
+    active_drift_alerts = await list_drift_alerts(
+        project_id=project_id,
+        backend_id=str(primary_backend["id"]),
+        active_only=True,
+    )
+    active_drift_alert_count = len(active_drift_alerts)
+    status, blocking, reason = _deploy_drift_status(
+        primary_backend=primary_backend,
+        latest_sync=latest_sync,
+        last_successful_refresh_at=last_successful_refresh_at,
+        freshness_minutes=freshness_minutes,
+        active_drift_alert_count=active_drift_alert_count,
+    )
+    return {
+        "source": "primary_backend",
+        "status": status,
+        "blocking": blocking,
+        "reason": reason,
+        "primary_backend": primary_backend,
+        "last_successful_refresh_at": last_successful_refresh_at,
+        "freshness_minutes": freshness_minutes,
+        "active_drift_alert_count": active_drift_alert_count,
+        "fallback_runtime": None,
+    }
 
 
 async def get_gitlab_token_for_user(*, user_id: str, settings: Settings) -> str | None:

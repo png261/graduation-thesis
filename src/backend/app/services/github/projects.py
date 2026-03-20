@@ -80,6 +80,11 @@ def _apply_connection_state(project: Project, *, repo_full_name: str, resolved_b
     project.github_connected_at = datetime.now(timezone.utc)
 
 
+def _apply_sync_state(project: Project, *, resolved_base: str, working_branch: str) -> None:
+    project.github_base_branch = resolved_base
+    project.github_working_branch = working_branch
+
+
 def _raise_clone_error(exc: github_git.GitCommandError) -> None:
     message = str(exc)
     if "non-system files" in message.lower():
@@ -94,19 +99,56 @@ async def _fetch_repo(access_token: str, repo_full_name: str) -> dict[str, objec
     return repo
 
 
-def _clone_connection_repo(
+def _connected_repo_name(project: Project) -> str:
+    if not (project.github_repo_full_name or "").strip():
+        raise GitHubProjectError(
+            "Project is not connected to GitHub",
+            status_code=400,
+            code="project_not_connected",
+        )
+    return normalize_repo_full_name(project.github_repo_full_name or "")
+
+
+def _ensure_workspace_switch_confirmation(project_root: Path, *, confirm_workspace_switch: bool) -> None:
+    if confirm_workspace_switch:
+        return
+    if not github_git.workspace_requires_confirmation(project_root):
+        return
+    raise GitHubProjectError(
+        "Confirm repository import to replace local workspace files",
+        status_code=409,
+        code="workspace_switch_confirmation_required",
+    )
+
+
+def _working_branch_value(project: Project) -> str:
+    return github_git.normalize_branch_name(project.github_working_branch) or _working_branch_for_project(project.name)
+
+
+def _connected_branches(project: Project) -> tuple[str, str]:
+    base_branch = github_git.normalize_branch_name(project.github_base_branch) or "main"
+    working_branch = _working_branch_value(project)
+    return base_branch, working_branch
+
+
+def _sync_repository_workspace(
     *,
     project: Project,
-    normalized_repo: str,
+    repo_full_name: str,
     access_token: str,
     requested_base: str,
     working_branch: str,
+    confirm_workspace_switch: bool,
 ) -> str:
     project_root = project_files.ensure_project_dir(project.id)
+    _ensure_workspace_switch_confirmation(
+        project_root,
+        confirm_workspace_switch=confirm_workspace_switch,
+    )
     try:
         return github_git.clone_and_prepare_repo(
             project_root=project_root,
-            repo_full_name=normalized_repo,
+            repo_full_name=repo_full_name,
             access_token=access_token,
             base_branch=requested_base,
             working_branch=working_branch,
@@ -122,6 +164,7 @@ async def connect_project_repository(
     access_token: str,
     repo_full_name: str,
     base_branch: str | None,
+    confirm_workspace_switch: bool = False,
 ) -> dict:
     _ensure_not_connected(project)
     normalized_repo = normalize_repo_full_name(repo_full_name)
@@ -129,12 +172,13 @@ async def connect_project_repository(
     _ensure_push_permission(repo)
     requested_base = _resolve_requested_branch(repo, base_branch)
     working_branch = _working_branch_for_project(project.name)
-    resolved_base = _clone_connection_repo(
+    resolved_base = _sync_repository_workspace(
         project=project,
-        normalized_repo=normalized_repo,
+        repo_full_name=normalized_repo,
         access_token=access_token,
         requested_base=requested_base,
         working_branch=working_branch,
+        confirm_workspace_switch=confirm_workspace_switch,
     )
 
     _apply_connection_state(
@@ -147,6 +191,31 @@ async def connect_project_repository(
     return connection_payload(project)
 
 
+async def sync_project_repository(
+    session: AsyncSession,
+    *,
+    project: Project,
+    access_token: str,
+    confirm_workspace_switch: bool = False,
+) -> dict:
+    repo_full_name = _connected_repo_name(project)
+    repo = await _fetch_repo(access_token, repo_full_name)
+    _ensure_push_permission(repo)
+    requested_base = _resolve_requested_branch(repo, project.github_base_branch)
+    working_branch = _working_branch_value(project)
+    resolved_base = _sync_repository_workspace(
+        project=project,
+        repo_full_name=repo_full_name,
+        access_token=access_token,
+        requested_base=requested_base,
+        working_branch=working_branch,
+        confirm_workspace_switch=confirm_workspace_switch,
+    )
+    _apply_sync_state(project, resolved_base=resolved_base, working_branch=working_branch)
+    await session.flush()
+    return connection_payload(project)
+
+
 async def disconnect_project_repository(session: AsyncSession, *, project: Project) -> dict:
     project.github_repo_full_name = None
     project.github_base_branch = None
@@ -154,6 +223,199 @@ async def disconnect_project_repository(session: AsyncSession, *, project: Proje
     project.github_connected_at = None
     await session.flush()
     return connection_payload(project)
+
+
+def _summary_payload(record: object | None) -> dict[str, object]:
+    summary = getattr(record, "summary_json", None)
+    if isinstance(summary, dict):
+        return summary
+    return {}
+
+
+def _artifact_count(summary: dict[str, object], key: str) -> int | None:
+    value = summary.get(key)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _latest_active_blueprint_reference(project: Project) -> dict[str, str | None] | None:
+    raw = project.active_blueprints_json if isinstance(project.active_blueprints_json, dict) else {}
+    references: list[dict[str, str | None]] = []
+    for selection in raw.values():
+        if not isinstance(selection, dict):
+            continue
+        created_at = selection.get("latest_run_created_at") or selection.get("selected_at")
+        references.append(
+            {
+                "run_id": str(selection.get("latest_run_id") or "") or None,
+                "blueprint_name": str(selection.get("blueprint_name") or "") or None,
+                "created_at": str(created_at or "") or None,
+            }
+        )
+    references = [item for item in references if item.get("run_id") or item.get("blueprint_name")]
+    if not references:
+        return None
+    references.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return references[0]
+
+
+def _pull_request_title_for_source(
+    *,
+    ansible_generation,
+    terraform_generation,
+    blueprint_reference: dict[str, str | None] | None,
+) -> tuple[str, str]:
+    ansible_summary = _summary_payload(ansible_generation)
+    terraform_summary = _summary_payload(terraform_generation)
+    if ansible_generation is not None:
+        blueprint_name = str(ansible_summary.get("blueprintName") or "infrastructure").strip()
+        return f"chore: update infra from {blueprint_name} ansible generation", "ansible_generation"
+    if terraform_generation is not None:
+        blueprint_name = str(terraform_summary.get("blueprintName") or "infrastructure").strip()
+        return f"chore: update infra from {blueprint_name} terraform generation", "terraform_generation"
+    if blueprint_reference and blueprint_reference.get("blueprint_name"):
+        return f"chore: update infra from {blueprint_reference['blueprint_name']}", "blueprint_run"
+    return "chore: update infrastructure", "fallback"
+
+
+def _append_blueprint_context(
+    lines: list[str],
+    *,
+    source: str,
+    blueprint_run_id: str | None,
+    ansible_generation_id: str | None,
+    terraform_generation_id: str | None,
+) -> None:
+    lines.extend(["## Blueprint Context", ""])
+    if source == "fallback":
+        lines.append("- No recent blueprint or generation history was found for this project.")
+    else:
+        if blueprint_run_id:
+            lines.append(f"- Blueprint run id: `{blueprint_run_id}`")
+        if terraform_generation_id:
+            lines.append(f"- Terraform generation id: `{terraform_generation_id}`")
+        if ansible_generation_id:
+            lines.append(f"- Ansible generation id: `{ansible_generation_id}`")
+    lines.append("")
+
+
+def _append_generated_artifacts(
+    lines: list[str],
+    *,
+    terraform_generation,
+    ansible_generation,
+) -> None:
+    terraform_summary = _summary_payload(terraform_generation)
+    ansible_summary = _summary_payload(ansible_generation)
+    lines.extend(["## Generated Artifacts", ""])
+    if terraform_generation is not None:
+        module_count = _artifact_count(terraform_summary, "moduleCount")
+        file_count = _artifact_count(terraform_summary, "fileCount")
+        if module_count is not None and file_count is not None:
+            lines.append(f"- Terraform modules/files: {module_count} modules, {file_count} files")
+    if ansible_generation is not None:
+        role_count = _artifact_count(ansible_summary, "roleCount")
+        file_count = _artifact_count(ansible_summary, "fileCount")
+        if role_count is not None and file_count is not None:
+            lines.append(f"- Ansible roles/files: {role_count} roles, {file_count} files")
+    if lines[-1] == "":
+        lines.append("- No persisted Terraform or Ansible generation counts are available yet.")
+    lines.append("")
+
+
+def _append_review_notes(
+    lines: list[str],
+    *,
+    base_branch: str,
+    working_branch: str,
+) -> None:
+    lines.extend(
+        [
+            "## Review Notes",
+            "",
+            "This pull request includes all current workspace changes on the project working branch.",
+            f"- Base branch: `{base_branch}`",
+            f"- Working branch: `{working_branch}`",
+            "",
+        ]
+    )
+
+
+def _blueprint_run_id(
+    *,
+    terraform_generation,
+    ansible_generation,
+    blueprint_reference: dict[str, str | None] | None,
+) -> str | None:
+    ansible_run_id = str(_summary_payload(ansible_generation).get("blueprintRunId") or "").strip()
+    if ansible_run_id:
+        return ansible_run_id
+    terraform_run_id = str(_summary_payload(terraform_generation).get("blueprintRunId") or "").strip()
+    if terraform_run_id:
+        return terraform_run_id
+    if blueprint_reference:
+        return blueprint_reference.get("run_id")
+    return None
+
+
+async def build_project_pull_request_defaults(
+    session: AsyncSession,
+    project: Project,
+) -> dict[str, object]:
+    from app.services.blueprints import service as blueprint_service
+
+    terraform_generation = await blueprint_service.get_latest_terraform_generation(session, project.id)
+    ansible_generation = await blueprint_service.get_latest_ansible_generation(session, project.id)
+    blueprint_reference = _latest_active_blueprint_reference(project)
+    title, source = _pull_request_title_for_source(
+        ansible_generation=ansible_generation,
+        terraform_generation=terraform_generation,
+        blueprint_reference=blueprint_reference,
+    )
+    base_branch, working_branch = _connected_branches(project)
+    blueprint_run_id = _blueprint_run_id(
+        terraform_generation=terraform_generation,
+        ansible_generation=ansible_generation,
+        blueprint_reference=blueprint_reference,
+    )
+    terraform_generation_id = getattr(terraform_generation, "id", None)
+    ansible_generation_id = getattr(ansible_generation, "id", None)
+    description_lines = [
+        "## Summary",
+        "",
+        f"- Repository: `{project.github_repo_full_name}`",
+        f"- Suggested source: `{source}`",
+        "",
+    ]
+    _append_blueprint_context(
+        description_lines,
+        source=source,
+        blueprint_run_id=blueprint_run_id,
+        ansible_generation_id=ansible_generation_id,
+        terraform_generation_id=terraform_generation_id,
+    )
+    _append_generated_artifacts(
+        description_lines,
+        terraform_generation=terraform_generation,
+        ansible_generation=ansible_generation,
+    )
+    _append_review_notes(
+        description_lines,
+        base_branch=base_branch,
+        working_branch=working_branch,
+    )
+    return {
+        "title": title,
+        "description": "\n".join(description_lines).strip(),
+        "base_branch": base_branch,
+        "working_branch": working_branch,
+        "repo_full_name": project.github_repo_full_name,
+        "source": source,
+        "blueprint_run_id": blueprint_run_id,
+        "terraform_generation_id": terraform_generation_id,
+        "ansible_generation_id": ansible_generation_id,
+    }
 
 
 async def create_project_pull_request(

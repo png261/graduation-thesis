@@ -4,16 +4,17 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 from app import db
-from app.models import Project, Thread, User
+from app.models import Project, Thread, ThreadMessage, User
 from app.routers import auth_dependencies as auth_deps
 from app.services.agent import invalidate_agent
+from app.services.opentofu.runtime.shared import required_credential_fields
 from app.services.project import credentials as project_credentials
 from app.services.project import files as project_files
 
@@ -78,14 +79,22 @@ class CredentialsUpdate(BaseModel):
     credentials: dict
 
 
-@router.get("/{project_id}/credentials")
-async def get_credentials(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
-    creds = project_credentials.parse_credentials(project.credentials)
-
+def _credentials_payload(project: Project, creds: dict[str, str]) -> dict[str, Any]:
+    required_fields = required_credential_fields(project.provider)
+    missing_fields = [field for field in required_fields if not creds.get(field)]
     return {
         "provider": project.provider,
         "credentials": mask_credentials(creds),
+        "required_fields": required_fields,
+        "missing_fields": missing_fields,
+        "apply_ready": len(required_fields) > 0 and len(missing_fields) == 0,
     }
+
+
+@router.get("/{project_id}/credentials")
+async def get_credentials(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
+    creds = project_credentials.parse_credentials(project.credentials)
+    return _credentials_payload(project, creds)
 
 
 @router.put("/{project_id}/credentials")
@@ -102,12 +111,34 @@ async def update_credentials(
         owned.credentials = json.dumps(merged)
 
     invalidate_agent(project.id)
-    return {"ok": True, "credentials": mask_credentials(merged)}
+    return _credentials_payload(project, merged)
 
 
 class ThreadCreate(BaseModel):
     id: str
     title: str = ""
+
+
+class ThreadMessageUpsert(BaseModel):
+    item: dict[str, Any]
+
+
+def _extract_message_id(item: dict[str, Any]) -> str:
+    message = item.get("message")
+    if not isinstance(message, dict):
+        raise HTTPException(status_code=400, detail="message payload is required")
+    raw_id = message.get("id")
+    if not isinstance(raw_id, str) or not raw_id.strip():
+        raise HTTPException(status_code=400, detail="message.id is required")
+    return raw_id.strip()
+
+
+async def _load_owned_thread(project_id: str, thread_id: str) -> Thread | None:
+    async with db.get_session() as session:
+        result = await session.execute(
+            select(Thread).where(Thread.id == thread_id, Thread.project_id == project_id)
+        )
+        return result.scalar_one_or_none()
 
 
 @router.get("/{project_id}/threads")
@@ -158,6 +189,58 @@ async def delete_thread(
         await session.execute(
             delete(Thread).where(Thread.id == thread_id, Thread.project_id == project.id)
         )
+    return {"ok": True}
+
+
+@router.get("/{project_id}/threads/{thread_id}/messages")
+async def list_thread_messages(
+    thread_id: str,
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    thread = await _load_owned_thread(project.id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    async with db.get_session() as session:
+        result = await session.execute(
+            select(ThreadMessage)
+            .where(ThreadMessage.thread_id == thread_id)
+            .order_by(ThreadMessage.created_at)
+        )
+        rows = result.scalars().all()
+    messages = [row.payload_json for row in rows if isinstance(row.payload_json, dict)]
+    head_id = rows[-1].message_id if rows else None
+    return {"headId": head_id, "messages": messages}
+
+
+@router.post("/{project_id}/threads/{thread_id}/messages")
+async def append_thread_message(
+    thread_id: str,
+    body: ThreadMessageUpsert,
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    thread = await _load_owned_thread(project.id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    message_id = _extract_message_id(body.item)
+    async with db.get_session() as session:
+        result = await session.execute(
+            select(ThreadMessage).where(
+                ThreadMessage.thread_id == thread_id,
+                ThreadMessage.message_id == message_id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            session.add(
+                ThreadMessage(
+                    id=str(uuid.uuid4()),
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    payload_json=body.item,
+                )
+            )
+        else:
+            existing.payload_json = body.item
     return {"ok": True}
 
 

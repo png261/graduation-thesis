@@ -74,7 +74,7 @@ async def select_modules_for_deploy(
     if not modules:
         return _fallback_selection([], "No OpenTofu modules found under /modules.")
 
-    if not settings.google_api_key:
+    if not settings.llm_api_key or not settings.llm_model:
         return _fallback_selection(modules, "Selector model unavailable, falling back to all discovered modules.")
 
     model = create_chat_model(settings)

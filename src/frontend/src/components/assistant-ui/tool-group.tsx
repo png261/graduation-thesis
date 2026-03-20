@@ -1,7 +1,6 @@
 ﻿import type { PropsWithChildren } from "react";
 
-export function ToolGroup({ children, startIndex, endIndex }: PropsWithChildren<{ startIndex: number; endIndex: number }>) {
-  const count = endIndex - startIndex + 1;
+export function ToolGroup({ children, count }: PropsWithChildren<{ count: number }>) {
   return (
     <details className="rounded-xl border border-[var(--da-border)] bg-[var(--da-elevated)]">
       <summary className="cursor-pointer px-4 py-2 text-xs uppercase tracking-[0.2em] text-[var(--da-muted)]">

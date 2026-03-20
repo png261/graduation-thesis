@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from http import HTTPStatus
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -28,9 +28,9 @@ from app.routers import state as state_router
 from app.routers import telegram as telegram_router
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.chat import service as chat_service
+from app.services.jobs import redis_bus as jobs_redis_bus
 from app.services.jobs import service as jobs_service
 from app.services.jobs.errors import JobsError
-from app.services.jobs import redis_bus as jobs_redis_bus
 from app.services.telegram import notifications as telegram_notifications
 
 settings = get_settings()
@@ -128,6 +128,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _error_response(status_code=500, code="internal_error", message="Internal server error")
 
 
+def _is_chat_queue_unavailable(exc: JobsError | None) -> bool:
+    if exc is None:
+        return False
+    return exc.status_code == 503 or exc.code in {"job_queue_unavailable", "chat_queue_unavailable"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db(settings.database_url)
@@ -148,6 +154,7 @@ app.include_router(telegram_router.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list(),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,6 +187,30 @@ async def chat_stream(
     chat_service.ensure_settings(settings)
     chat_service.ensure_payload(payload)
     resolved_thread_id = payload.thread_id or str(uuid.uuid4())
+    await _ensure_project_thread(project.id, resolved_thread_id)
+    enqueued_job_id: str | None = None
+    enqueue_error: JobsError | None = None
+    try:
+        job = await jobs_service.enqueue_project_job(
+            project=project,
+            kind="chat",
+            payload={
+                "project_id": project.id,
+                "thread_id": resolved_thread_id,
+                "messages": [{"role": msg.role.value, "content": msg.content} for msg in payload.messages],
+                "options": {"notify_telegram": True, "delivery_ack": False},
+            },
+        )
+        enqueued_job_id = str(job["id"])
+    except JobsError as exc:
+        enqueue_error = exc
+    except Exception as exc:
+        logger.exception("failed to enqueue chat job", exc_info=exc)
+        enqueue_error = JobsError(
+            "Chat queue is unavailable",
+            code="chat_queue_unavailable",
+            status_code=503,
+        )
 
     def _decode_stream_event(raw: str) -> dict[str, Any] | None:
         normalized = normalize_sse_item(raw)
@@ -191,25 +222,38 @@ async def chat_stream(
             return parsed
         return None
 
+    async def _stream_inline_chat_events() -> AsyncIterator[str]:
+        inline_payload = payload.model_copy(update={"thread_id": resolved_thread_id})
+        async for event in chat_service.stream_response_events(
+            inline_payload,
+            settings,
+            cancel_checker=request.is_disconnected,
+        ):
+            if event.get("type") == "policy.check.result" and inline_payload.project_id:
+                await telegram_notifications.notify_policy_check_by_project_id(
+                    inline_payload.project_id,
+                    settings,
+                    event,
+                )
+            yield sse_json(event)
+            if await request.is_disconnected():
+                break
+
     async def event_stream():
-        job_id: str | None = None
-        seen_terminal = False
         try:
-            job = await jobs_service.enqueue_project_job(
-                project=project,
-                kind="chat",
-                payload={
-                    "project_id": project.id,
-                    "thread_id": resolved_thread_id,
-                    "messages": [{"role": msg.role.value, "content": msg.content} for msg in payload.messages],
-                    "options": {"notify_telegram": False},
-                },
-            )
-            job_id = str(job["id"])
+            if _is_chat_queue_unavailable(enqueue_error):
+                async for event in _stream_inline_chat_events():
+                    yield event
+                return
+            if enqueue_error is not None:
+                raise enqueue_error
+            if enqueued_job_id is None:
+                raise RuntimeError("chat job enqueue failed")
+            yield sse_json({"type": "chat.job", "jobId": enqueued_job_id, "threadId": resolved_thread_id})
             async for raw in jobs_service.stream_job_events(
                 project_id=project.id,
                 user_id=str(project.user_id or ""),
-                job_id=job_id,
+                job_id=enqueued_job_id,
                 request=request,
             ):
                 event = _decode_stream_event(raw)
@@ -219,7 +263,7 @@ async def chat_stream(
                 if event_type in {"job.queued", "job.running", "job.cancel_requested", "job.canceled"}:
                     continue
                 if event_type == "job.terminal":
-                    seen_terminal = True
+                    await jobs_service.merge_job_options(enqueued_job_id, {"delivery_ack": True})
                     break
                 if event.get("type") == "policy.check.result" and payload.project_id:
                     await telegram_notifications.notify_policy_check_by_project_id(
@@ -230,8 +274,6 @@ async def chat_stream(
                 yield sse_json(event)
                 if await request.is_disconnected():
                     break
-            if not seen_terminal and job_id and await request.is_disconnected():
-                await jobs_service.merge_job_options(job_id, {"notify_telegram": True})
         except JobsError as exc:
             yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
         except Exception:
@@ -241,6 +283,21 @@ async def chat_stream(
             yield sse_json({"type": "done"})
 
     return sse_response(event_stream)
+
+
+async def _ensure_project_thread(project_id: str, thread_id: str) -> None:
+    async with db.get_session() as session:
+        existing = await session.get(Thread, thread_id)
+        if existing is None:
+            session.add(Thread(id=thread_id, project_id=project_id, title=""))
+            await session.flush()
+            return
+        if existing.project_id != project_id:
+            auth_deps.raise_http_error(
+                409,
+                code="thread_project_mismatch",
+                message="Thread belongs to another project",
+            )
 
 
 async def _validate_chat_access(

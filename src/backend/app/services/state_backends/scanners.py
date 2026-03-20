@@ -18,6 +18,15 @@ _ENV_KEYS = {
 }
 
 
+def _normalized_backend_value(raw: object) -> str:
+    if isinstance(raw, list):
+        if not raw:
+            return ""
+        first = raw[0]
+        return str(first or "").strip()
+    return str(raw or "").strip()
+
+
 def _parse_backend_body(kind: str, body: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for match in _ASSIGN_RE.finditer(body):
@@ -67,9 +76,9 @@ def _extract_with_hcl(content: str) -> list[dict[str, str]]:
                 candidates.append(
                     {
                         "provider": provider,
-                        "bucket": str(body.get("bucket") or "").strip(),
-                        "key": str(body.get("key") or "").strip(),
-                        "prefix": str(body.get("prefix") or "").strip(),
+                        "bucket": _normalized_backend_value(body.get("bucket")),
+                        "key": _normalized_backend_value(body.get("key")),
+                        "prefix": _normalized_backend_value(body.get("prefix")),
                     }
                 )
     return candidates

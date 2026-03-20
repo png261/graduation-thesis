@@ -16,6 +16,7 @@ dependencies = [
   "clerk-backend-api>=3.2.0",
   "langchain>=0.2.0",
   "langchain-openai>=0.1.0",
+  "langchain-mcp-adapters>=0.2.1",
   "deepagents>=0.2.0",
   "anyio>=4.0.0",
   "httpx>=0.27.0",
@@ -41,9 +42,6 @@ dependencies = [
 dev = [
   "black>=25.1.0",
   "ruff>=0.12.0",
-  "pytest>=8.0.0",
-  "pytest-asyncio>=0.23.0",
-  "pytest-cov>=6.0.0",
 ]
 
 [tool.black]
@@ -62,13 +60,6 @@ exclude = [
 select = ["E", "F", "I"]
 ignore = ["E501"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-
-[tool.coverage.report]
-fail_under = 70
-
 [tool.setuptools]
 packages = [
   "app",
@@ -80,6 +71,7 @@ packages = [
   "app.services.agent",
   "app.services.agent.runtime",
   "app.services.chat",
+  "app.services.blueprints",
   "app.services.ansible",
   "app.services.ansible.runtime",
   "app.services.github",
@@ -88,6 +80,7 @@ packages = [
   "app.services.opentofu.runtime",
   "app.services.policy",
   "app.services.project",
+  "app.services.project_execution",
   "app.services.telegram",
   "app.services.jobs",
   "app.services.state_backends",

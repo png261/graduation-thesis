@@ -74,6 +74,13 @@ def move_all_entries_to_temp(project_root: Path) -> tuple[tempfile.TemporaryDire
     return tmp, moved
 
 
+def _remove_entry(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+        return
+    path.unlink()
+
+
 def restore_entry_tree_without_overwrite(src: Path, dst: Path) -> None:
     if src.is_dir():
         if dst.exists() and not dst.is_dir():
@@ -89,6 +96,18 @@ def restore_entry_tree_without_overwrite(src: Path, dst: Path) -> None:
     shutil.move(str(src), str(dst))
 
 
+def restore_all_entries(project_root: Path, tmp_dir: str, moved: list[str]) -> None:
+    for entry in list(project_root.iterdir()):
+        _remove_entry(entry)
+    for name in moved:
+        src = Path(tmp_dir) / name
+        dst = project_root / name
+        if not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+
+
 def restore_entries_without_overwrite(project_root: Path, tmp_dir: str, moved: list[str]) -> None:
     for name in moved:
         src = Path(tmp_dir) / name
@@ -100,9 +119,49 @@ def restore_entries_without_overwrite(project_root: Path, tmp_dir: str, moved: l
         restore_entry_tree_without_overwrite(src, dst)
 
 
+def _nested_entries_match(directory: Path, allowed_names: set[str]) -> bool:
+    if not directory.is_dir():
+        return False
+    for child in directory.iterdir():
+        if child.name not in allowed_names:
+            return False
+    return True
+
+
+def workspace_has_non_system_entries(project_root: Path) -> bool:
+    if not project_root.exists():
+        return False
+    for entry in project_root.iterdir():
+        name = entry.name
+        if name in {".git", "AGENTS.md", ".opentofu-runtime"}:
+            continue
+        if name == ".agents" and _nested_entries_match(entry, {"skills"}):
+            continue
+        if name == ".claude" and _nested_entries_match(entry, {"skills"}):
+            continue
+        return True
+    return False
+
+
+def restore_repo_managed_entries(project_root: Path, tmp_dir: str) -> None:
+    entries = [
+        ("AGENTS.md", "AGENTS.md"),
+        (".agents/skills", ".agents/skills"),
+        (".claude/skills", ".claude/skills"),
+        (".opentofu-runtime", ".opentofu-runtime"),
+    ]
+    for relative_src, relative_dst in entries:
+        src = Path(tmp_dir) / relative_src
+        dst = project_root / relative_dst
+        if not src.exists():
+            continue
+        restore_entry_tree_without_overwrite(src, dst)
+
+
 GITIGNORE_LINES = [
-    "AGENT.md",
-    "skills/",
+    "AGENTS.md",
+    ".agents/skills/",
+    ".claude/skills/",
     ".opentofu-runtime/",
 ]
 

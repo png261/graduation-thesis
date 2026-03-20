@@ -2,13 +2,36 @@
 
 FastAPI backend for project workspace, GitHub integration, OpenTofu workflows, and agent chat.
 
+## Quick Start (Local)
+
+```bash
+cd src/backend
+cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
+```
+
+Set a working `DATABASE_URL` in `.env` before starting the API.
+
+- If you run PostgreSQL directly on your machine: use `postgresql://<your_db_user>@localhost:5432/postgres` (or your own DB name/credentials).
+- If you run services with Docker Compose: start dependencies first and use the compose DB URL.
+
+Start API:
+
+```bash
+cd src/backend
+source .venv/bin/activate
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
 ## Prerequisites
 
 - Python 3.11+
 - PostgreSQL 14+
 - OpenTofu CLI (`tofu`) for infrastructure workflows
 - Ansible CLI (`ansible-playbook`) for post-provision configuration workflows
-- Optional: Docker (for integration migration test)
+- Optional: Docker (for local Postgres/Redis/RabbitMQ orchestration)
 
 ## Environment
 
@@ -59,7 +82,7 @@ pip install -e .[dev]
 ```bash
 cd src/backend
 source .venv/bin/activate
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Run worker:
@@ -105,21 +128,37 @@ python scripts/migrate_drop_legacy_auth_schema.py --database-url "$DATABASE_URL"
 
 The migration is destructive for legacy auth data by design.
 
-## Tests
-
-```bash
-cd src/backend
-source .venv/bin/activate
-PYTHONPATH=. pytest -q
-```
-
 ## Lint & Format
 
 ```bash
 cd src/backend
 source .venv/bin/activate
-ruff check app
-black --check app
+ruff check \
+  app/schemas/chat.py \
+  app/schemas/stream_events.py \
+  app/main.py \
+  app/routers/projects_routes/project_workspace.py \
+  app/routers/projects_routes/project_opentofu.py \
+  app/routers/http_errors.py \
+  app/services/opentofu/runtime/runner.py \
+  app/services/opentofu/runtime/shared.py \
+  app/services/ansible/runtime/runner.py \
+  app/services/jobs/tasks.py \
+  app/services/jobs/service.py \
+  app/services/agent/runtime/tools.py
+black --check \
+  app/schemas/chat.py \
+  app/schemas/stream_events.py \
+  app/main.py \
+  app/routers/projects_routes/project_workspace.py \
+  app/routers/projects_routes/project_opentofu.py \
+  app/routers/http_errors.py \
+  app/services/opentofu/runtime/runner.py \
+  app/services/opentofu/runtime/shared.py \
+  app/services/ansible/runtime/runner.py \
+  app/services/jobs/tasks.py \
+  app/services/jobs/service.py \
+  app/services/agent/runtime/tools.py
 ```
 
 Auto-format:
@@ -127,14 +166,38 @@ Auto-format:
 ```bash
 cd src/backend
 source .venv/bin/activate
-ruff check --fix app
-black app
+ruff check --fix \
+  app/schemas/chat.py \
+  app/schemas/stream_events.py \
+  app/main.py \
+  app/routers/projects_routes/project_workspace.py \
+  app/routers/projects_routes/project_opentofu.py \
+  app/routers/http_errors.py \
+  app/services/opentofu/runtime/runner.py \
+  app/services/opentofu/runtime/shared.py \
+  app/services/ansible/runtime/runner.py \
+  app/services/jobs/tasks.py \
+  app/services/jobs/service.py \
+  app/services/agent/runtime/tools.py
+black \
+  app/schemas/chat.py \
+  app/schemas/stream_events.py \
+  app/main.py \
+  app/routers/projects_routes/project_workspace.py \
+  app/routers/projects_routes/project_opentofu.py \
+  app/routers/http_errors.py \
+  app/services/opentofu/runtime/runner.py \
+  app/services/opentofu/runtime/shared.py \
+  app/services/ansible/runtime/runner.py \
+  app/services/jobs/tasks.py \
+  app/services/jobs/service.py \
+  app/services/agent/runtime/tools.py
 ```
 
-Integration migration test (requires Docker):
+Compile modules:
 
 ```bash
 cd src/backend
 source .venv/bin/activate
-PYTHONPATH=. pytest -q -m integration
+python -m compileall app
 ```

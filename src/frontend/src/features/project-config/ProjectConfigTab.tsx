@@ -12,6 +12,7 @@ interface ProjectConfigTabProps {
   provider: string | null | undefined;
   projectCount: number;
   onDeleteProject: () => Promise<void>;
+  onOpenRunDetails: (runId: string) => void;
 }
 
 function ProjectConfigHeader({ projectName }: { projectName: string }) {
@@ -29,17 +30,26 @@ function ProjectConfigTabs({
   provider,
   projectName,
   projectCount,
+  onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
   projectId: string;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
+  onOpenRunDetails: (runId: string) => void;
 }) {
   return (
     <Tabs value={state.configTab} onValueChange={(value) => state.setConfigTab(value as ConfigTab)}>
       <ProjectConfigTabsHeader />
-      <ProjectConfigTabsContent state={state} projectId={projectId} provider={provider} projectName={projectName} projectCount={projectCount} />
+      <ProjectConfigTabsContent
+        state={state}
+        projectId={projectId}
+        provider={provider}
+        projectName={projectName}
+        projectCount={projectCount}
+        onOpenRunDetails={onOpenRunDetails}
+      />
     </Tabs>
   );
 }
@@ -60,12 +70,14 @@ function ProjectConfigTabsContent({
   provider,
   projectName,
   projectCount,
+  onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
   projectId: string;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
+  onOpenRunDetails: (runId: string) => void;
 }) {
   return (
     <>
@@ -76,15 +88,35 @@ function ProjectConfigTabsContent({
         <CredentialsSection state={state} provider={provider} />
       </TabsContent>
       <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
-        <GeneralSettingsSection state={state} projectName={projectName} projectCount={projectCount} />
+        <GeneralSettingsSection
+          state={state}
+          projectName={projectName}
+          projectCount={projectCount}
+          onOpenRunDetails={onOpenRunDetails}
+        />
       </TabsContent>
     </>
   );
 }
 
-function DeployModalGate({ projectId, state }: { projectId: string; state: ReturnType<typeof useProjectConfigState> }) {
+function DeployModalGate({
+  projectId,
+  projectName,
+  state,
+}: {
+  projectId: string;
+  projectName: string;
+  state: ReturnType<typeof useProjectConfigState>;
+}) {
   if (!state.deployOpen || !state.deployStatus) return null;
-  return <OpenTofuDeployModal projectId={projectId} status={state.deployStatus} onClose={() => state.setDeployOpen(false)} />;
+  return (
+    <OpenTofuDeployModal
+      projectId={projectId}
+      projectName={projectName}
+      status={state.deployStatus}
+      onClose={() => state.setDeployOpen(false)}
+    />
+  );
 }
 
 function onPullRequestCreated(state: ReturnType<typeof useProjectConfigState>, url: string) {
@@ -105,13 +137,27 @@ function PullRequestModalGate({ projectId, state }: { projectId: string; state: 
   );
 }
 
-export function ProjectConfigTab({ projectId, projectName, provider, projectCount, onDeleteProject }: ProjectConfigTabProps) {
+export function ProjectConfigTab({
+  projectId,
+  projectName,
+  provider,
+  projectCount,
+  onDeleteProject,
+  onOpenRunDetails,
+}: ProjectConfigTabProps) {
   const state = useProjectConfigState({ projectId, provider, onDeleteProject });
   return (
     <div className="space-y-3">
       <ProjectConfigHeader projectName={projectName} />
-      <ProjectConfigTabs state={state} projectId={projectId} provider={provider} projectName={projectName} projectCount={projectCount} />
-      <DeployModalGate projectId={projectId} state={state} />
+      <ProjectConfigTabs
+        state={state}
+        projectId={projectId}
+        provider={provider}
+        projectName={projectName}
+        projectCount={projectCount}
+        onOpenRunDetails={onOpenRunDetails}
+      />
+      <DeployModalGate projectId={projectId} projectName={projectName} state={state} />
       <PullRequestModalGate projectId={projectId} state={state} />
     </div>
   );

@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./projects";
+export * from "./blueprints";
 export * from "./workspace";
 export * from "./filesystem";
 export * from "./threads";

@@ -1,4 +1,5 @@
 import { Alert, AlertDescription, AlertTitle } from "../../../components/ui/alert";
+import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/card";
 import { Input } from "../../../components/ui/input";
@@ -71,6 +72,30 @@ function CredentialsError({ error }: { error: string }) {
       <AlertTitle>Credentials error</AlertTitle>
       <AlertDescription>{error}</AlertDescription>
     </Alert>
+  );
+}
+
+function CredentialsReadiness({ state }: { state: ProjectConfigState }) {
+  if (state.credentialsLoading || state.providerFields.length < 1) return null;
+  if (state.missingCredentialFields.length > 0) {
+    return (
+      <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-100">
+        <AlertTitle>Missing required saved fields</AlertTitle>
+        <AlertDescription className="flex flex-wrap gap-2">
+          {state.missingCredentialFields.map((field) => (
+            <code key={field} className="rounded bg-black/20 px-1.5 py-0.5 text-xs text-amber-50">
+              {field}
+            </code>
+          ))}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (!state.applyReady) return null;
+  return (
+    <Badge className="bg-green-500/20 text-green-200 hover:bg-green-500/20">
+      Saved credentials ready for apply and destroy
+    </Badge>
   );
 }
 
@@ -184,6 +209,7 @@ export function CredentialsSection(props: CredentialsSectionProps) {
         <CardContent className="space-y-3">
           <CredentialsLoadState state={props.state} />
           <CredentialsFields state={props.state} />
+          <CredentialsReadiness state={props.state} />
           <CredentialsError error={props.state.credentialsError} />
           <CredentialsActions state={props.state} />
         </CardContent>

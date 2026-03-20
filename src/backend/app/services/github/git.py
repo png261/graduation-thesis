@@ -13,9 +13,11 @@ from .git_helpers import (
     move_all_entries_to_temp,
     origin_with_auth,
     public_repo_url,
-    restore_entries_without_overwrite,
+    restore_all_entries,
+    restore_repo_managed_entries,
     sanitize_error_message,
     slugify,
+    workspace_has_non_system_entries,
 )
 
 
@@ -167,13 +169,18 @@ def clone_and_prepare_repo(
                 working_branch=working_branch,
             )
         except Exception as exc:
+            restore_all_entries(project_root, tmp.name, moved)
             _raise_git_error(exc, access_token=access_token)
 
-        restore_entries_without_overwrite(project_root, tmp.name, moved)
+        restore_repo_managed_entries(project_root, tmp.name)
         ensure_system_gitignore(project_root)
         return resolved_base
     finally:
         tmp.cleanup()
+
+
+def workspace_requires_confirmation(project_root: Path) -> bool:
+    return workspace_has_non_system_entries(project_root)
 
 
 def _checkout_missing_working_branch(

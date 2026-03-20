@@ -45,9 +45,13 @@ async def close_redis() -> None:
     global _redis_client, _redis_url
     if _redis_client is None:
         return
-    await _redis_client.aclose()
+    client = _redis_client
     _redis_client = None
     _redis_url = None
+    try:
+        await client.aclose()
+    except Exception:
+        logger.exception("failed to close redis client")
 
 
 async def publish_job_event(

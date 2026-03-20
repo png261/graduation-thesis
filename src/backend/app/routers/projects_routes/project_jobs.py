@@ -12,6 +12,7 @@ from app.models import Project
 from app.routers import auth_dependencies as auth_deps
 from app.services.jobs.errors import JobsError
 from app.services.jobs import service as jobs_service
+from app.services.project_execution.contracts import ProjectExecutionRequest
 
 router = APIRouter()
 
@@ -20,6 +21,14 @@ class EnqueueJobBody(BaseModel):
     kind: str
     selected_modules: list[str] = Field(default_factory=list)
     intent: str | None = None
+    review_session_id: str | None = None
+    review_target: str | None = None
+    scope_mode: str | None = None
+    confirmation: dict[str, Any] | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class RerunJobBody(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -32,15 +41,22 @@ async def enqueue_job(
     body: EnqueueJobBody,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict[str, Any]:
+    payload = ProjectExecutionRequest.from_payload(
+        {
+            "selected_modules": body.selected_modules,
+            "intent": body.intent,
+            "review_session_id": body.review_session_id,
+            "review_target": body.review_target,
+            "scope_mode": body.scope_mode,
+            "confirmation": body.confirmation,
+            "options": body.options,
+        }
+    ).to_job_payload()
     try:
         return await jobs_service.enqueue_project_job(
             project=project,
             kind=body.kind,
-            payload={
-                "selected_modules": body.selected_modules,
-                "intent": body.intent,
-                "options": body.options,
-            },
+            payload=payload,
         )
     except JobsError as exc:
         _raise_jobs_error(exc)
@@ -118,9 +134,14 @@ async def cancel_job(
 @router.post("/{project_id}/jobs/{job_id}/rerun")
 async def rerun_job(
     job_id: str,
+    body: RerunJobBody | None = None,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict[str, Any]:
     try:
-        return await jobs_service.rerun_job(project=project, source_job_id=job_id)
+        return await jobs_service.rerun_job(
+            project=project,
+            source_job_id=job_id,
+            options_override=body.options if body is not None else None,
+        )
     except JobsError as exc:
         _raise_jobs_error(exc)

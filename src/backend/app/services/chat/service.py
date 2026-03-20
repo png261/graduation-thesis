@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -7,11 +8,14 @@ from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
+from app import db
 from app.core.config import Settings
+from app.models import Project
 from app.schemas.chat import ChatRequest
-from app.services.policy import checks as policy_checks
+from app.services.blueprints import service as blueprint_service
 from app.services.agent import get_agent
 from app.services.model.factory import create_chat_model
+from app.services.policy import checks as policy_checks
 
 from .streaming_helpers import (
     extract_messages_from_obj,
@@ -30,10 +34,47 @@ from .usage import (
 
 CancelChecker = Callable[[], Awaitable[bool]]
 
+_REQUEST_HINTS = ("can you", "could you", "please", "help me", "i need", "i want", "let's", "lets")
+_BLUEPRINT_SUGGESTION_ACTIONS = ("show", "suggest", "recommend", "list")
+_BLUEPRINT_REFERENCE_TERMS = ("blueprint", "template")
+_CONFIGURATION_HOST_ACTIONS = ("install", "configure")
+_CONFIGURATION_HOST_TARGETS = ("host", "server", "vm", "instance", "machine", "node")
+_CONFIGURATION_SOFTWARE_ACTIONS = ("install", "configure", "set up", "setup")
+_CONFIGURATION_SOFTWARE_TARGETS = ("openclaw", "package", "agent", "daemon")
+_CONFIGURATION_GENERATE_ACTIONS = ("create", "build", "generate")
+_CONFIGURATION_GENERATE_TARGETS = ("ansible", "playbook", "role", "inventory")
+_PROVISIONING_ACTIONS = ("provision", "create", "build", "generate", "deploy", "spin up", "scaffold", "bootstrap", "set up", "setup")
+_PROVISIONING_TARGETS = (
+    "terraform",
+    "opentofu",
+    "infrastructure",
+    "infra",
+    "iac",
+    "aws",
+    "gcp",
+    "azure",
+    "ec2",
+    "vpc",
+    "subnet",
+    "rds",
+    "eks",
+    "cluster",
+    "kubernetes",
+    "load balancer",
+    "lb",
+    "vm",
+    "instance",
+    "server",
+    "database",
+    "network",
+)
+
 
 def ensure_settings(settings: Settings) -> None:
-    if not settings.google_api_key:
-        raise HTTPException(status_code=500, detail="GOOGLE_API_KEY is not set")
+    if not settings.llm_api_key:
+        raise HTTPException(status_code=500, detail="LLM_API_KEY is not set")
+    if not settings.llm_model:
+        raise HTTPException(status_code=500, detail="LLM_MODEL is not set")
 
 
 def ensure_payload(payload: ChatRequest) -> None:
@@ -45,8 +86,42 @@ def _to_langchain_messages(request: ChatRequest) -> list[dict]:
     return [{"role": message.role, "content": message.content} for message in request.messages]
 
 
+def _approx_token_count(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def _messages_token_count(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for row in messages:
+        total += _approx_token_count(str(row.get("content") or ""))
+    return total
+
+
+def _apply_token_budget(
+    messages: list[dict[str, Any]],
+    token_budget: int,
+) -> tuple[list[dict[str, Any]], dict[str, int] | None]:
+    budget = max(256, int(token_budget or 0))
+    original_tokens = _messages_token_count(messages)
+    if original_tokens <= budget:
+        return messages, None
+    kept: list[dict[str, Any]] = []
+    running = 0
+    for row in reversed(messages):
+        row_tokens = _approx_token_count(str(row.get("content") or ""))
+        if kept and running + row_tokens > budget:
+            break
+        kept.append(row)
+        running += row_tokens
+    kept.reverse()
+    if not kept:
+        kept = messages[-1:]
+        running = _messages_token_count(kept)
+    return kept, {"originalTokens": original_tokens, "usedTokens": running}
+
+
 def _resolve_model_info(settings: Settings) -> tuple[str | None, int | None]:
-    configured_model_id = normalize_model_id(settings.gemini_model)
+    configured_model_id = normalize_model_id(settings.llm_model)
     resolved_model_id = configured_model_id
     context_window: int | None = None
 
@@ -88,6 +163,195 @@ def _project_id(payload: ChatRequest) -> str:
     return payload.project_id or "default"
 
 
+def _latest_user_message_text(payload: ChatRequest) -> str:
+    for message in reversed(payload.messages):
+        if message.role.value == "user" and message.content.strip():
+            return message.content.strip()
+    return ""
+
+
+def _normalize_request_text(request_text: str) -> str:
+    return re.sub(r"\s+", " ", request_text.lower()).strip()
+
+
+def _contains_term(text: str, term: str) -> bool:
+    return re.search(rf"\b{re.escape(term)}\b", text) is not None
+
+
+def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(_contains_term(text, term) for term in terms)
+
+
+def _starts_with_term(text: str, terms: tuple[str, ...]) -> bool:
+    return any(text == term or text.startswith(f"{term} ") for term in terms)
+
+
+def _is_request_like(text: str, actions: tuple[str, ...]) -> bool:
+    return _starts_with_term(text, actions) or _contains_any_term(text, _REQUEST_HINTS)
+
+
+def _matches_action_request(text: str, actions: tuple[str, ...], targets: tuple[str, ...]) -> bool:
+    return _is_request_like(text, actions) and _contains_any_term(text, actions) and _contains_any_term(text, targets)
+
+
+def _matches_blueprint_reference_request(text: str, targets: tuple[str, ...]) -> bool:
+    return (
+        _is_request_like(text, _BLUEPRINT_SUGGESTION_ACTIONS)
+        and _contains_any_term(text, _BLUEPRINT_REFERENCE_TERMS)
+        and _contains_any_term(text, targets)
+    )
+
+
+def _blueprint_kind_for_request(request_text: str) -> str | None:
+    lowered = _normalize_request_text(request_text)
+    if not lowered:
+        return None
+    if _matches_action_request(lowered, _CONFIGURATION_HOST_ACTIONS, _CONFIGURATION_HOST_TARGETS):
+        return "configuration"
+    if _matches_action_request(lowered, _CONFIGURATION_SOFTWARE_ACTIONS, _CONFIGURATION_SOFTWARE_TARGETS):
+        return "configuration"
+    if _matches_action_request(lowered, _CONFIGURATION_GENERATE_ACTIONS, _CONFIGURATION_GENERATE_TARGETS):
+        return "configuration"
+    if _matches_blueprint_reference_request(
+        lowered,
+        _CONFIGURATION_SOFTWARE_TARGETS + _CONFIGURATION_GENERATE_TARGETS,
+    ):
+        return "configuration"
+    if _matches_action_request(lowered, _PROVISIONING_ACTIONS, _PROVISIONING_TARGETS):
+        return "provisioning"
+    if _matches_blueprint_reference_request(lowered, _PROVISIONING_TARGETS):
+        return "provisioning"
+    return None
+
+
+def _blueprint_input_payload(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": item["key"],
+        "label": item["label"],
+        "required": bool(item.get("required", False)),
+        "riskClass": item.get("risk_class", "safe"),
+        "defaultValue": item.get("default_value"),
+        "resolved": bool(item.get("resolved", False)),
+        "value": item.get("value"),
+    }
+
+
+def _blueprint_step_payload(step: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": step["id"],
+        "type": step["type"],
+        "title": step["title"],
+        "description": step["description"],
+        "requiredInputs": list(step.get("required_inputs", [])),
+        "expectedResult": step["expected_result"],
+    }
+
+
+def _blueprint_payload(definition: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": definition["id"],
+        "kind": definition["kind"],
+        "name": definition["name"],
+        "summary": definition["summary"],
+        "resourcesOrActions": list(definition.get("resources_or_actions", [])),
+        "requiredInputs": [_blueprint_input_payload(item) for item in definition.get("required_inputs", [])],
+        "steps": [_blueprint_step_payload(step) for step in definition.get("steps", [])],
+    }
+
+
+def _selection_has_unresolved_required_inputs(selection: dict[str, Any]) -> bool:
+    for item in selection.get("required_inputs", []):
+        if item.get("required") and not item.get("resolved"):
+            return True
+    return False
+
+
+def _blueprint_suggestions_event(request_text: str, kind: str) -> dict[str, Any]:
+    suggestions = blueprint_service.rank_blueprints_for_request(request_text, kind, limit=3)
+    return {
+        "type": "blueprint.suggestions",
+        "kind": kind,
+        "suggestions": [_blueprint_payload(item) for item in suggestions],
+    }
+
+
+def _selection_provenance_event(kind: str, selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "blueprint.provenance",
+        "kind": kind,
+        "source": "selection",
+        "runId": selection.get("latest_run_id"),
+        "createdAt": selection.get("latest_run_created_at"),
+        "inputs": dict(selection.get("inputs", {})),
+        "blueprint": _blueprint_payload(
+            {
+                "id": selection["blueprint_id"],
+                "kind": selection["kind"],
+                "name": selection["blueprint_name"],
+                "summary": selection["summary"],
+                "resources_or_actions": selection.get("resources_or_actions", []),
+                "required_inputs": selection.get("required_inputs", []),
+                "steps": selection.get("steps", []),
+            }
+        ),
+    }
+
+
+def _run_provenance_event(kind: str, run: Any) -> dict[str, Any]:
+    snapshot = run.snapshot_json if isinstance(run.snapshot_json, dict) else {}
+    return {
+        "type": "blueprint.provenance",
+        "kind": kind,
+        "source": "run",
+        "runId": run.id,
+        "createdAt": run.created_at.isoformat() if run.created_at else None,
+        "inputs": dict(run.inputs_json or {}),
+        "blueprint": _blueprint_payload(snapshot),
+    }
+
+
+def _blueprint_inputs_summary_event(kind: str, selection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "blueprint.inputs.summary",
+        "kind": kind,
+        "blueprintId": selection["blueprint_id"],
+        "blueprintName": selection["blueprint_name"],
+        "inputs": [_blueprint_input_payload(item) for item in selection.get("required_inputs", [])],
+    }
+
+
+async def _load_blueprint_preflight(
+    payload: ChatRequest,
+    request_text: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    project_id = payload.project_id
+    if not project_id:
+        return ([], True)
+    kind = _blueprint_kind_for_request(request_text)
+    if kind is None:
+        return ([], True)
+    async with db.get_session() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            return ([], True)
+        active = blueprint_service.get_active_blueprints(project).get(kind)
+        if active is None:
+            return ([_blueprint_suggestions_event(request_text, kind)], False)
+        run_id = active.get("latest_run_id")
+        if run_id:
+            run = await blueprint_service.get_blueprint_run(session, project_id, run_id)
+            if run is not None:
+                events = [_run_provenance_event(kind, run)]
+            else:
+                events = [_selection_provenance_event(kind, active)]
+        else:
+            events = [_selection_provenance_event(kind, active)]
+    if _selection_has_unresolved_required_inputs(active):
+        events.append(_blueprint_inputs_summary_event(kind, active))
+        return (events, False)
+    return (events, True)
+
+
 def _tool_start_event(tool_call: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "tool.start",
@@ -109,15 +373,32 @@ def _ai_message_events(
     seen_tool_calls: set[str],
     tool_call_map: dict[str, dict[str, Any]],
     usage_state: dict[str, tuple[int, int] | None],
+    state: dict[str, Any],
+    *,
+    max_tool_calls: int,
+    correlation_id: str,
 ) -> list[dict[str, Any]]:
     _update_usage_from_ai_message(message, usage_state)
     events: list[dict[str, Any]] = []
     for tool_call in normalize_tool_calls(message):
+        if state["tool_call_count"] >= max_tool_calls:
+            state["interrupted"] = True
+            events.append(
+                {
+                    "type": "incident.action.blocked",
+                    "correlationId": correlation_id,
+                    "incidentKey": "chat-tool-budget",
+                    "recommendedAction": "tool_call_budget_exceeded",
+                    "reason": "max_tool_calls_exceeded",
+                }
+            )
+            break
         tool_call_id = tool_call["toolCallId"]
         if tool_call_id in seen_tool_calls:
             continue
         seen_tool_calls.add(tool_call_id)
         tool_call_map[tool_call_id] = tool_call
+        state["tool_call_count"] += 1
         events.append(_tool_start_event(tool_call))
     return events
 
@@ -185,12 +466,14 @@ def _usage_event(
     model_context_window: int | None,
 ) -> dict[str, Any]:
     prompt_tokens, completion_tokens = usage_tokens or (0, 0)
+    estimated_cost = round((prompt_tokens * 0.00000015) + (completion_tokens * 0.0000006), 8)
     return {
         "type": "usage",
         "promptTokens": prompt_tokens,
         "completionTokens": completion_tokens,
         "modelId": model_id,
         "modelContextWindow": model_context_window,
+        "estimatedCostUsd": estimated_cost,
     }
 
 
@@ -211,16 +494,72 @@ async def _policy_result_event(project_id: str) -> dict[str, Any]:
     }
 
 
-async def _emit_policy_events(project_id: str, changed_paths: set[str]) -> AsyncIterator[dict[str, Any]]:
+def _policy_incident_events(
+    *,
+    summary: dict[str, Any],
+    correlation_id: str,
+    threshold: float,
+) -> list[dict[str, Any]]:
+    by = summary.get("bySeverity") if isinstance(summary, dict) else {}
+    by_severity = by if isinstance(by, dict) else {}
+    total = int(summary.get("total", 0) or 0)
+    critical = int(by_severity.get("CRITICAL", 0) or 0)
+    high = int(by_severity.get("HIGH", 0) or 0)
+    severity = "critical" if critical > 0 else ("high" if high > 0 else ("medium" if total > 0 else "low"))
+    confidence = round(min(0.95, 0.35 + (total * 0.03) + (critical * 0.15) + (high * 0.08)), 3)
+    recommended_action = "run_policy_fix_after_review" if severity in {"critical", "high"} else "monitor_and_review"
+    approval_required = severity in {"critical", "high"} and confidence >= threshold
+    analysis_only = confidence < threshold
+    if analysis_only:
+        recommended_action = "analysis_only"
+        approval_required = False
+    return [
+        {
+            "type": "incident.classified",
+            "correlationId": correlation_id,
+            "incidentKey": "policy-check",
+            "severity": severity,
+            "confidence": confidence,
+            "evidence": [{"type": "policy_issues", "count": total}],
+        },
+        {
+            "type": "incident.recommendation",
+            "correlationId": correlation_id,
+            "incidentKey": "policy-check",
+            "severity": severity,
+            "confidence": confidence,
+            "recommendedAction": recommended_action,
+            "approvalRequired": approval_required,
+            "actionClass": "approval_required" if approval_required else "safe",
+            "analysisOnly": analysis_only,
+        },
+    ]
+
+
+async def _emit_policy_events(
+    project_id: str,
+    changed_paths: set[str],
+    *,
+    correlation_id: str,
+    settings: Settings,
+) -> AsyncIterator[dict[str, Any]]:
     if not changed_paths:
         return
     sorted_paths = sorted(changed_paths)
     yield {"type": "policy.check.start", "changedPaths": sorted_paths}
     result_event = await _policy_result_event(project_id)
-    yield {**result_event, "changedPaths": sorted_paths}
+    payload = {**result_event, "changedPaths": sorted_paths}
+    yield payload
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    for event in _policy_incident_events(
+        summary=summary,
+        correlation_id=correlation_id,
+        threshold=float(settings.incident_confidence_threshold or 0.7),
+    ):
+        yield event
 
 
-def _new_stream_state() -> dict[str, Any]:
+def _new_stream_state(*, correlation_id: str) -> dict[str, Any]:
     return {
         "seen_tool_calls": set(),
         "tool_call_map": {},
@@ -228,6 +567,8 @@ def _new_stream_state() -> dict[str, Any]:
         "buffers": {"text": "", "reasoning": ""},
         "usage_state": {"tokens": None},
         "interrupted": False,
+        "tool_call_count": 0,
+        "correlation_id": correlation_id,
     }
 
 
@@ -238,15 +579,28 @@ async def _stream_agent_events(
     config: dict[str, Any],
     cancel_checker: CancelChecker | None,
     state: dict[str, Any],
+    max_tool_calls: int,
 ) -> AsyncIterator[dict[str, Any]]:
     async for chunk in agent.astream({"messages": messages}, config, stream_mode=["messages", "updates"]):
+        if state["interrupted"]:
+            break
         if cancel_checker is not None and await cancel_checker():
             state["interrupted"] = True
             break
         for message in extract_messages_from_obj(chunk):
             if isinstance(message, AIMessage):
-                for event in _ai_message_events(message, state["seen_tool_calls"], state["tool_call_map"], state["usage_state"]):
+                for event in _ai_message_events(
+                    message,
+                    state["seen_tool_calls"],
+                    state["tool_call_map"],
+                    state["usage_state"],
+                    state,
+                    max_tool_calls=max(1, max_tool_calls),
+                    correlation_id=str(state["correlation_id"]),
+                ):
                     yield event
+                if state["interrupted"]:
+                    break
                 for event in extract_text_events(message, state["buffers"]):
                     yield event
                 continue
@@ -266,10 +620,27 @@ async def stream_response_events(
 ) -> AsyncIterator[dict[str, Any]]:
     ensure_settings(settings)
     ensure_payload(payload)
+    request_text = _latest_user_message_text(payload)
+    preflight_events, can_continue = await _load_blueprint_preflight(payload, request_text)
+    correlation_id = str(uuid.uuid4())
+    messages, compaction = _apply_token_budget(
+        _to_langchain_messages(payload),
+        int(settings.incident_token_budget or 16000),
+    )
+    if compaction:
+        yield {
+            "type": "incident.context.compacted",
+            "correlationId": correlation_id,
+            "incidentKey": "chat-token-budget",
+            **compaction,
+        }
+    for event in preflight_events:
+        yield event
+    if not can_continue:
+        return
     agent = await get_agent(settings, _project_id(payload))
-    messages = _to_langchain_messages(payload)
     config = _make_config(payload)
-    state = _new_stream_state()
+    state = _new_stream_state(correlation_id=correlation_id)
     model_id, model_context_window = _resolve_model_info(settings)
 
     async for event in _stream_agent_events(
@@ -278,6 +649,7 @@ async def stream_response_events(
         config=config,
         cancel_checker=cancel_checker,
         state=state,
+        max_tool_calls=max(1, int(settings.agent_max_tool_calls or 25)),
     ):
         yield event
 
@@ -286,7 +658,12 @@ async def stream_response_events(
     if cancel_checker is not None and await cancel_checker():
         return
 
-    async for event in _emit_policy_events(_project_id(payload), state["changed_paths"]):
+    async for event in _emit_policy_events(
+        _project_id(payload),
+        state["changed_paths"],
+        correlation_id=correlation_id,
+        settings=settings,
+    ):
         yield event
 
     if cancel_checker is not None and await cancel_checker():
@@ -299,7 +676,7 @@ async def generate_response(payload: ChatRequest, settings: Settings) -> str:
     ensure_settings(settings)
     ensure_payload(payload)
     agent = await get_agent(settings, _project_id(payload))
-    messages = _to_langchain_messages(payload)
+    messages, _ = _apply_token_budget(_to_langchain_messages(payload), int(settings.incident_token_budget or 16000))
     config = _make_config(payload)
 
     result = await run_in_threadpool(agent.invoke, {"messages": messages}, config)
@@ -316,7 +693,8 @@ async def generate_basic_response(payload: ChatRequest, settings: Settings) -> s
     ensure_settings(settings)
     ensure_payload(payload)
     model = create_chat_model(settings)
-    result = await run_in_threadpool(model.invoke, _to_langchain_messages(payload))
+    messages, _ = _apply_token_budget(_to_langchain_messages(payload), int(settings.incident_token_budget or 16000))
+    result = await run_in_threadpool(model.invoke, messages)
     if isinstance(result, BaseMessage):
         return text_from_content(getattr(result, "content", ""))
     return str(result)

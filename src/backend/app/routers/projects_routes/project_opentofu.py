@@ -1,21 +1,26 @@
 """OpenTofu deploy endpoints for projects."""
 
 from __future__ import annotations
-from typing import AsyncIterator
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette import EventSourceResponse
 
 from app.core.config import get_settings
-from app.core.sse import normalize_sse_item, sse_json, sse_response
 from app.models import Project
 from app.routers import auth_dependencies as auth_deps
+from app.routers.projects_routes.streaming import stream_enqueued_project_job
+from app.services.ansible.runtime import status as ansible_status_service
+from app.services.ansible.runtime.ssm_readiness import get_ssm_readiness
 from app.services.jobs import service as jobs_service
-from app.services.jobs.errors import JobsError
 from app.services.opentofu import deploy as opentofu_deploy
-from app.services.opentofu.runtime.shared import discover_modules_from_project_dir
-from app.services.project import files as project_files
+from app.services.opentofu.runtime import review_gate
+from app.services.opentofu.runtime import target_contract as target_contract_service
+from app.services.project_execution import policy as execution_policy
+from app.services.project_execution.contracts import ExecutionConfirmation, ProjectExecutionRequest
+from app.services.state_backends import service as state_backends_service
 
 router = APIRouter()
 
@@ -24,10 +29,52 @@ class OpenTofuPreviewBody(BaseModel):
     intent: str | None = None
 
 
+class OpenTofuConfirmationBody(BaseModel):
+    project_name: str | None = None
+    keyword: str | None = None
+    selected_modules: list[str] = Field(default_factory=list)
+
+
 class OpenTofuApplyBody(BaseModel):
-    selected_modules: list[str] = []
+    selected_modules: list[str] = Field(default_factory=list)
     intent: str | None = None
     override_policy: bool = False
+    review_session_id: str | None = None
+    review_target: str | None = None
+    scope_mode: str | None = None
+    confirmation: OpenTofuConfirmationBody | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenTofuDestroyBody(BaseModel):
+    selected_modules: list[str] = Field(default_factory=list)
+    intent: str | None = None
+    review_session_id: str | None = None
+    review_target: str | None = None
+    scope_mode: str | None = None
+    confirmation: OpenTofuConfirmationBody | None = None
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+def _body_options(body: OpenTofuApplyBody | OpenTofuDestroyBody) -> dict[str, Any]:
+    options = dict(body.options or {})
+    if isinstance(body, OpenTofuApplyBody) and body.override_policy:
+        options["override_policy"] = body.override_policy
+    return options
+
+
+def _execution_request_from_body(body: OpenTofuApplyBody | OpenTofuDestroyBody) -> ProjectExecutionRequest:
+    return ProjectExecutionRequest(
+        selected_modules=tuple(body.selected_modules),
+        intent=body.intent,
+        review_session_id=body.review_session_id,
+        review_target=body.review_target,
+        scope_mode=body.scope_mode,
+        confirmation=(
+            None if body.confirmation is None else ExecutionConfirmation.from_value(body.confirmation.model_dump())
+        ),
+        options=_body_options(body),
+    )
 
 
 def _raise_runtime_error(data: dict) -> None:
@@ -48,12 +95,114 @@ def _is_fatal_runtime_error(data: dict) -> bool:
     return code in {"invalid_module", "invalid_graph_type", "missing_api_key", "tool_unavailable"}
 
 
+async def _latest_successful_plan_result(project: Project) -> dict[str, Any] | None:
+    history = await jobs_service.list_jobs(
+        project_id=project.id,
+        user_id=str(project.user_id or ""),
+        status="succeeded",
+        kind="plan",
+        limit=1,
+        offset=0,
+    )
+    latest = history["items"][0] if history["items"] else None
+    result = latest.get("result") if isinstance(latest, dict) else None
+    return result if isinstance(result, dict) else None
+
+
+async def _resolved_review(
+    *,
+    project: Project,
+    request: ProjectExecutionRequest,
+) -> dict[str, Any]:
+    return review_gate.resolve_plan_review(
+        project_id=project.id,
+        review_result=await _latest_successful_plan_result(project),
+        review_session_id=request.review_session_id,
+        review_target=request.resolved_review_target(),
+        scope_mode=request.effective_scope_mode(),
+        selected_modules=request.selected_modules_list(),
+    )
+
+
+def _history_item_with_post_deploy(item: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(item)
+    post_deploy_summary = normalized.get("post_deploy_summary")
+    result = normalized.get("result")
+    if post_deploy_summary is None and isinstance(result, dict):
+        post_deploy = result.get("post_deploy")
+        if isinstance(post_deploy, dict):
+            summary = post_deploy.get("summary") if isinstance(post_deploy.get("summary"), dict) else {}
+            hosts = post_deploy.get("hosts") if isinstance(post_deploy.get("hosts"), list) else []
+            skipped_hosts = (
+                post_deploy.get("skipped_hosts") if isinstance(post_deploy.get("skipped_hosts"), list) else []
+            )
+            normalized["post_deploy_summary"] = {
+                "status": str(post_deploy.get("status") or summary.get("status") or "failed"),
+                "host_count": int(summary.get("host_count") or len(hosts)),
+                "skipped_host_count": int(summary.get("skipped_host_count") or len(skipped_hosts)),
+                "service_count": int(summary.get("service_count") or 0),
+                "health_summary": str(summary.get("health_summary") or "No health checks collected."),
+                "collected_at": post_deploy.get("collected_at"),
+            }
+    if "post_deploy_hosts" not in normalized and isinstance(result, dict):
+        post_deploy = result.get("post_deploy")
+        if isinstance(post_deploy, dict) and isinstance(post_deploy.get("hosts"), list):
+            normalized["post_deploy_hosts"] = post_deploy.get("hosts")
+    return normalized
+
+
 @router.get("/{project_id}/opentofu/status")
 async def opentofu_status(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
     status = await opentofu_deploy.get_opentofu_status(project.id)
     if not status["project_found"]:
         raise HTTPException(status_code=404, detail="Project not found")
     return status
+
+
+@router.get("/{project_id}/opentofu/deploy/preflight")
+async def opentofu_deploy_preflight(
+    review_session_id: str | None = Query(default=None),
+    review_target: str = Query(default="apply"),
+    scope_mode: str = Query(default="full"),
+    selected_modules: list[str] = Query(default=[]),
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    execution_request = ProjectExecutionRequest(
+        selected_modules=tuple(selected_modules),
+        review_session_id=review_session_id,
+        review_target=review_target,
+        scope_mode=scope_mode,
+    )
+    settings = get_settings()
+    opentofu_status = await opentofu_deploy.get_opentofu_status(project.id)
+    ansible_status = await ansible_status_service.get_ansible_status(project.id, settings)
+    drift_refresh = await state_backends_service.get_project_deploy_drift_summary(project.id)
+    target_contract = target_contract_service.get_target_contract_status(project.id)
+    ssm_readiness = await get_ssm_readiness(
+        project.id,
+        settings,
+        selected_modules if scope_mode == "partial" else [],
+    )
+    preflight = execution_policy.build_deploy_preflight_state(
+        request=execution_request,
+        opentofu_status=opentofu_status,
+        ansible_status=ansible_status,
+        target_contract=target_contract,
+        resolved_review=await _resolved_review(
+            project=project,
+            request=execution_request,
+        ),
+        drift_refresh=drift_refresh,
+        ssm_readiness=ssm_readiness,
+    )
+    return preflight.as_dict()
+
+
+@router.post("/{project_id}/opentofu/target-contract/validate")
+async def opentofu_validate_target_contract(
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    return {"target_contract": target_contract_service.validate_target_contract(project.id, get_settings())}
 
 
 @router.post("/{project_id}/opentofu/deploy/preview")
@@ -77,35 +226,14 @@ async def opentofu_apply_stream(
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    async def event_stream() -> AsyncIterator[str]:
-        try:
-            job = await jobs_service.enqueue_project_job(
-                project=project,
-                kind="apply",
-                payload={
-                    "selected_modules": body.selected_modules,
-                    "intent": body.intent,
-                    "options": {"override_policy": body.override_policy},
-                },
-            )
-            async for payload in jobs_service.stream_job_events(
-                project_id=project.id,
-                user_id=str(project.user_id or ""),
-                job_id=str(job["id"]),
-                request=request,
-                from_seq=0,
-            ):
-                if await request.is_disconnected():
-                    break
-                yield normalize_sse_item(payload)
-        except JobsError as exc:
-            yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
-        except Exception:
-            yield sse_json(
-                {"type": "error", "code": "opentofu_apply_failed", "message": "opentofu_apply_failed"}
-            )
-
-    return sse_response(event_stream)
+    return stream_enqueued_project_job(
+        jobs_service=jobs_service,
+        project=project,
+        kind="apply",
+        payload=_execution_request_from_body(body).to_job_payload(),
+        request=request,
+        fallback_error_code="opentofu_apply_failed",
+    )
 
 
 @router.get("/{project_id}/runs/history")
@@ -124,55 +252,16 @@ async def runs_history(
     )
     return {
         "total": history["total"],
-        "items": history["items"],
+        "items": [_history_item_with_post_deploy(item) for item in history["items"]],
     }
 
 
 @router.get("/{project_id}/drift/status")
 async def drift_status(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
-    modules = discover_modules_from_project_dir(project.id)
-    project_root = project_files.ensure_project_dir(project.id)
-    state_root = project_root / ".opentofu-runtime" / "state"
-    modules_without_state = [module for module in modules if not (state_root / f"{module}.tfstate").is_file()]
-
-    latest_plan = await jobs_service.list_jobs(
+    return await state_backends_service.get_local_runtime_drift_status(
         project_id=project.id,
         user_id=str(project.user_id or ""),
-        status=None,
-        kind="plan",
-        limit=1,
-        offset=0,
     )
-    latest_apply = await jobs_service.list_jobs(
-        project_id=project.id,
-        user_id=str(project.user_id or ""),
-        status=None,
-        kind="apply",
-        limit=1,
-        offset=0,
-    )
-
-    latest_plan_job = latest_plan["items"][0] if latest_plan["items"] else None
-    latest_apply_job = latest_apply["items"][0] if latest_apply["items"] else None
-
-    if not modules:
-        status = "no_modules"
-    elif modules_without_state:
-        status = "state_missing"
-    elif not latest_plan_job:
-        status = "plan_missing"
-    elif latest_apply_job and str(latest_plan_job.get("created_at", "")) < str(latest_apply_job.get("created_at", "")):
-        status = "plan_outdated"
-    else:
-        status = "in_sync"
-
-    return {
-        "status": status,
-        "module_count": len(modules),
-        "modules_without_state": modules_without_state,
-        "last_plan_job": latest_plan_job,
-        "last_apply_job": latest_apply_job,
-    }
 
 
 @router.post("/{project_id}/opentofu/deploy/plan/stream")
@@ -181,33 +270,30 @@ async def opentofu_plan_stream(
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    async def event_stream() -> AsyncIterator[str]:
-        try:
-            job = await jobs_service.enqueue_project_job(
-                project=project,
-                kind="plan",
-                payload={
-                    "selected_modules": body.selected_modules,
-                    "intent": body.intent,
-                    "options": {},
-                },
-            )
-            async for payload in jobs_service.stream_job_events(
-                project_id=project.id,
-                user_id=str(project.user_id or ""),
-                job_id=str(job["id"]),
-                request=request,
-                from_seq=0,
-            ):
-                if await request.is_disconnected():
-                    break
-                yield normalize_sse_item(payload)
-        except JobsError as exc:
-            yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
-        except Exception:
-            yield sse_json({"type": "error", "code": "opentofu_plan_failed", "message": "opentofu_plan_failed"})
+    return stream_enqueued_project_job(
+        jobs_service=jobs_service,
+        project=project,
+        kind="plan",
+        payload=_execution_request_from_body(body).to_job_payload(),
+        request=request,
+        fallback_error_code="opentofu_plan_failed",
+    )
 
-    return sse_response(event_stream)
+
+@router.post("/{project_id}/opentofu/deploy/destroy/stream")
+async def opentofu_destroy_stream(
+    body: OpenTofuDestroyBody,
+    request: Request,
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> EventSourceResponse:
+    return stream_enqueued_project_job(
+        jobs_service=jobs_service,
+        project=project,
+        kind="destroy",
+        payload=_execution_request_from_body(body).to_job_payload(),
+        request=request,
+        fallback_error_code="opentofu_destroy_failed",
+    )
 
 
 @router.get("/{project_id}/opentofu/costs")

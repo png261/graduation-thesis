@@ -27,6 +27,6 @@ export interface WorkflowProblem {
   path?: string;
   line?: number;
   ruleId?: string;
-  source?: "misconfig" | "secret";
+  source?: "misconfig" | "secret" | "deploy-gate";
   at: string;
 }

@@ -9,12 +9,33 @@ import type {
   StateResource,
 } from "./types";
 
+export interface ProjectDeployDriftSummary {
+  source: "primary_backend" | "local_runtime_fallback";
+  status: string;
+  blocking: boolean;
+  reason: string;
+  primary_backend: StateBackend | null;
+  last_successful_refresh_at: string | null;
+  freshness_minutes: number | null;
+  active_drift_alert_count: number;
+  fallback_runtime: Record<string, unknown> | null;
+}
+
 export async function listStateBackends(projectId: string): Promise<StateBackend[]> {
   const res = await apiRequest(`/api/projects/${projectId}/state-backends`, {
     credentials: "include",
   });
   const data = await apiJson<{ backends: StateBackend[] }>(res);
   return data.backends;
+}
+
+export async function getProjectDeployDriftSummary(
+  projectId: string,
+): Promise<ProjectDeployDriftSummary> {
+  const res = await apiRequest(`/api/projects/${projectId}/state-backends/deploy-drift`, {
+    credentials: "include",
+  });
+  return apiJson<ProjectDeployDriftSummary>(res);
 }
 
 export async function listCloudBuckets(
@@ -219,6 +240,15 @@ export async function updateStateBackendSettings(
     body: JSON.stringify(payload),
   });
   return apiJson<StateBackend>(res);
+}
+
+export async function setPrimaryStateBackend(
+  projectId: string,
+  backendId: string,
+): Promise<StateBackend> {
+  return updateStateBackendSettings(projectId, backendId, {
+    settings: { primary_for_deploy: true },
+  });
 }
 
 export async function deleteStateBackend(projectId: string, backendId: string): Promise<void> {

@@ -48,6 +48,13 @@ async def list_state_backends(
     return {"backends": items}
 
 
+@router.get("/{project_id}/state-backends/deploy-drift")
+async def deploy_drift_summary(
+    project: Project = Depends(auth_deps.get_owned_project_or_404),
+) -> dict:
+    return await state_service.get_project_deploy_drift_summary(project.id)
+
+
 @router.get("/{project_id}/state-backends/import/cloud/buckets")
 async def list_cloud_buckets(
     provider: str = Query(...),

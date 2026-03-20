@@ -14,6 +14,20 @@ function toInitialCredentialFields(credentials: Record<string, string>) {
   return initial;
 }
 
+export function normalizeCredentialsResponse(data: {
+  provider: string | null;
+  credentials?: Record<string, string> | null;
+  missing_fields?: string[] | null;
+  apply_ready?: boolean | null;
+}) {
+  return {
+    provider: data.provider,
+    credentialFields: toInitialCredentialFields(data.credentials ?? {}),
+    missingCredentialFields: Array.isArray(data.missing_fields) ? data.missing_fields.map((field) => String(field)) : [],
+    applyReady: Boolean(data.apply_ready),
+  };
+}
+
 function toLoadCredentialsError(error: unknown) {
   if (error instanceof Error && error.name === "AbortError") {
     return "Loading credentials timed out. Check API server and try again.";
@@ -27,7 +41,7 @@ function resolveProviderFields(provider: string | null): ProviderField[] {
   return [];
 }
 
-function buildCredentialPatch(providerFields: ProviderField[], credentialFields: Record<string, string>) {
+export function buildCredentialPatch(providerFields: ProviderField[], credentialFields: Record<string, string>) {
   const patch: Record<string, string> = {};
   for (const { key } of providerFields) {
     const value = credentialFields[key];
@@ -49,13 +63,23 @@ function initializeCredentialsLoad(
 
 function applyCredentialsResponse(
   active: boolean,
-  data: { provider: string | null; credentials?: Record<string, string> | null },
+  data: {
+    provider: string | null;
+    credentials?: Record<string, string> | null;
+    missing_fields?: string[] | null;
+    apply_ready?: boolean | null;
+  },
   setCredentialsProvider: Dispatch<SetStateAction<string | null>>,
   setCredentialFields: Dispatch<SetStateAction<Record<string, string>>>,
+  setMissingCredentialFields: Dispatch<SetStateAction<string[]>>,
+  setApplyReady: Dispatch<SetStateAction<boolean>>,
 ) {
   if (!active) return;
-  setCredentialsProvider(data.provider);
-  setCredentialFields(toInitialCredentialFields(data.credentials ?? {}));
+  const normalized = normalizeCredentialsResponse(data);
+  setCredentialsProvider(normalized.provider);
+  setCredentialFields(normalized.credentialFields);
+  setMissingCredentialFields(normalized.missingCredentialFields);
+  setApplyReady(normalized.applyReady);
 }
 
 function applyCredentialsError(
@@ -82,17 +106,37 @@ function useLoadCredentialsEffect(args: {
   fallbackProvider: string | null | undefined;
   setCredentialsProvider: Dispatch<SetStateAction<string | null>>;
   setCredentialFields: Dispatch<SetStateAction<Record<string, string>>>;
+  setMissingCredentialFields: Dispatch<SetStateAction<string[]>>;
+  setApplyReady: Dispatch<SetStateAction<boolean>>;
   setCredentialsLoading: Dispatch<SetStateAction<boolean>>;
   setCredentialsError: Dispatch<SetStateAction<string>>;
 }) {
-  const { projectId, fallbackProvider, setCredentialsProvider, setCredentialFields, setCredentialsLoading, setCredentialsError } = args;
+  const {
+    projectId,
+    fallbackProvider,
+    setCredentialsProvider,
+    setCredentialFields,
+    setMissingCredentialFields,
+    setApplyReady,
+    setCredentialsLoading,
+    setCredentialsError,
+  } = args;
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), CREDENTIALS_TIMEOUT_MS);
     initializeCredentialsLoad(fallbackProvider, setCredentialsLoading, setCredentialsError, setCredentialsProvider);
     getCredentials(projectId, { signal: controller.signal })
-      .then((data) => applyCredentialsResponse(active, data, setCredentialsProvider, setCredentialFields))
+      .then((data) =>
+        applyCredentialsResponse(
+          active,
+          data,
+          setCredentialsProvider,
+          setCredentialFields,
+          setMissingCredentialFields,
+          setApplyReady,
+        ),
+      )
       .catch((error: unknown) => applyCredentialsError(active, error, setCredentialsError))
       .finally(() => finalizeCredentialsLoad(active, timeout, setCredentialsLoading));
     return () => {
@@ -100,13 +144,26 @@ function useLoadCredentialsEffect(args: {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [fallbackProvider, projectId, setCredentialFields, setCredentialsError, setCredentialsLoading, setCredentialsProvider]);
+  }, [
+    fallbackProvider,
+    projectId,
+    setApplyReady,
+    setCredentialFields,
+    setCredentialsError,
+    setCredentialsLoading,
+    setCredentialsProvider,
+    setMissingCredentialFields,
+  ]);
 }
 
 function useSaveCredentialsAction(args: {
   projectId: string;
   providerFields: ProviderField[];
   credentialFields: Record<string, string>;
+  setCredentialFields: Dispatch<SetStateAction<Record<string, string>>>;
+  setCredentialsProvider: Dispatch<SetStateAction<string | null>>;
+  setMissingCredentialFields: Dispatch<SetStateAction<string[]>>;
+  setApplyReady: Dispatch<SetStateAction<boolean>>;
   setCredentialsSaving: Dispatch<SetStateAction<boolean>>;
   setCredentialsSaved: Dispatch<SetStateAction<boolean>>;
   setCredentialsError: Dispatch<SetStateAction<string>>;
@@ -118,6 +175,12 @@ function useSaveCredentialsAction(args: {
     try {
       const patch = buildCredentialPatch(args.providerFields, args.credentialFields);
       await updateCredentials(args.projectId, patch);
+      const data = await getCredentials(args.projectId);
+      const normalized = normalizeCredentialsResponse(data);
+      args.setCredentialsProvider(normalized.provider);
+      args.setCredentialFields(normalized.credentialFields);
+      args.setMissingCredentialFields(normalized.missingCredentialFields);
+      args.setApplyReady(normalized.applyReady);
       args.setCredentialsSaved(true);
       window.setTimeout(() => args.setCredentialsSaved(false), SAVED_BADGE_MS);
     } catch (error: unknown) {
@@ -131,17 +194,32 @@ function useSaveCredentialsAction(args: {
 export function useCredentialsState(projectId: string, fallbackProvider: string | null | undefined) {
   const [credentialsProvider, setCredentialsProvider] = useState<string | null>(fallbackProvider ?? null);
   const [credentialFields, setCredentialFields] = useState<Record<string, string>>({});
+  const [missingCredentialFields, setMissingCredentialFields] = useState<string[]>([]);
+  const [applyReady, setApplyReady] = useState(false);
   const [credentialsLoading, setCredentialsLoading] = useState(true);
   const [credentialsSaving, setCredentialsSaving] = useState(false);
   const [credentialsSaved, setCredentialsSaved] = useState(false);
   const [credentialsError, setCredentialsError] = useState("");
-  useLoadCredentialsEffect({ projectId, fallbackProvider, setCredentialsProvider, setCredentialFields, setCredentialsLoading, setCredentialsError });
+  useLoadCredentialsEffect({
+    projectId,
+    fallbackProvider,
+    setCredentialsProvider,
+    setCredentialFields,
+    setMissingCredentialFields,
+    setApplyReady,
+    setCredentialsLoading,
+    setCredentialsError,
+  });
   const effectiveProvider = credentialsProvider ?? fallbackProvider ?? null;
   const providerFields = useMemo(() => resolveProviderFields(effectiveProvider), [effectiveProvider]);
   const saveCredentials = useSaveCredentialsAction({
     projectId,
     providerFields,
     credentialFields,
+    setCredentialFields,
+    setCredentialsProvider,
+    setMissingCredentialFields,
+    setApplyReady,
     setCredentialsSaving,
     setCredentialsSaved,
     setCredentialsError,
@@ -154,6 +232,8 @@ export function useCredentialsState(projectId: string, fallbackProvider: string 
     credentialsSaving,
     credentialsSaved,
     credentialsError,
+    missingCredentialFields,
+    applyReady,
     providerFields,
     saveCredentials,
   };

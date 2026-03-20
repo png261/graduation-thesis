@@ -9,6 +9,7 @@ import {
   getGitLabOauthStart,
   getGitLabSession,
   getPolicyAlerts,
+  getProjectDeployDriftSummary,
   getStateBackendSettings,
   getStateHistory,
   getStateResources,
@@ -21,6 +22,7 @@ import {
   listGitHubRepos,
   listGitLabRepos,
   listStateBackends,
+  setPrimaryStateBackend,
   syncStateBackend,
   updateStateBackendSettings,
   type CredentialProfile,
@@ -30,6 +32,7 @@ import {
   type GitLabRepo,
   type GitLabSession,
   type PolicyAlert,
+  type ProjectDeployDriftSummary,
   type StateBackend,
   type StateBackendImportCandidate,
   type StateBackendSettings,
@@ -63,6 +66,9 @@ function useBackendState() {
   const [settingsPayload, setSettingsPayload] = useState<StateBackendSettings | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState("");
+  const [deployDriftSummary, setDeployDriftSummary] = useState<ProjectDeployDriftSummary | null>(null);
+  const [deployDriftLoading, setDeployDriftLoading] = useState(false);
+  const [deployDriftError, setDeployDriftError] = useState("");
   const [search, setSearch] = useState("");
   const [activeOnly, setActiveOnly] = useState(true);
   const [showSensitive, setShowSensitive] = useState(false);
@@ -91,6 +97,12 @@ function useBackendState() {
     setDetailsLoading,
     detailsError,
     setDetailsError,
+    deployDriftSummary,
+    setDeployDriftSummary,
+    deployDriftLoading,
+    setDeployDriftLoading,
+    deployDriftError,
+    setDeployDriftError,
     search,
     setSearch,
     activeOnly,
@@ -286,7 +298,25 @@ function useBackendLoaders(projectId: string, backend: ReturnType<typeof useBack
     projectId,
   ]);
 
-  return { loadBackends, loadDetails };
+  const loadDeployDrift = useCallback(async () => {
+    backend.setDeployDriftLoading(true);
+    backend.setDeployDriftError("");
+    try {
+      backend.setDeployDriftSummary(await getProjectDeployDriftSummary(projectId));
+    } catch (error: unknown) {
+      backend.setDeployDriftSummary(null);
+      backend.setDeployDriftError(toErrorMessage(error, "Failed to load deploy drift summary"));
+    } finally {
+      backend.setDeployDriftLoading(false);
+    }
+  }, [
+    backend.setDeployDriftError,
+    backend.setDeployDriftLoading,
+    backend.setDeployDriftSummary,
+    projectId,
+  ]);
+
+  return { loadBackends, loadDetails, loadDeployDrift };
 }
 
 function useProfileLoaders(connect: ReturnType<typeof useConnectState>) {
@@ -439,6 +469,7 @@ function useConnectActions(
   pushLog: (message: string) => void,
   connect: ReturnType<typeof useConnectState>,
   loadBackends: () => Promise<void>,
+  loadDeployDrift: () => Promise<void>,
   loadGitlabSource: () => Promise<void>,
 ) {
   const openGitlabOAuth = useCallback(async () => {
@@ -487,6 +518,7 @@ function useConnectActions(
       pushLog(`Imported cloud state backend from ${connect.cloudBucket}`);
       connect.setConnectOpen(false);
       await loadBackends();
+      await loadDeployDrift();
     } catch (error: unknown) {
       connect.setConnectError(toErrorMessage(error, "Cloud import failed"));
     } finally {
@@ -503,6 +535,7 @@ function useConnectActions(
     connect.setConnectError,
     connect.setConnectOpen,
     loadBackends,
+    loadDeployDrift,
     projectId,
     pushLog,
   ]);
@@ -557,6 +590,7 @@ function useConnectActions(
       pushLog(`Imported ${result.created.length} backend(s) from GitHub`);
       connect.setConnectOpen(false);
       await loadBackends();
+      await loadDeployDrift();
     } catch (error: unknown) {
       connect.setConnectError(toErrorMessage(error, "GitHub import failed"));
     } finally {
@@ -572,6 +606,7 @@ function useConnectActions(
     connect.setConnectError,
     connect.setConnectOpen,
     loadBackends,
+    loadDeployDrift,
     projectId,
     pushLog,
   ]);
@@ -626,6 +661,7 @@ function useConnectActions(
       pushLog(`Imported ${result.created.length} backend(s) from GitLab`);
       connect.setConnectOpen(false);
       await loadBackends();
+      await loadDeployDrift();
     } catch (error: unknown) {
       connect.setConnectError(toErrorMessage(error, "GitLab import failed"));
     } finally {
@@ -641,6 +677,7 @@ function useConnectActions(
     connect.setConnectError,
     connect.setConnectOpen,
     loadBackends,
+    loadDeployDrift,
     projectId,
     pushLog,
   ]);
@@ -654,6 +691,7 @@ function useBackendActions(
   backend: ReturnType<typeof useBackendState>,
   loadBackends: () => Promise<void>,
   loadDetails: () => Promise<void>,
+  loadDeployDrift: () => Promise<void>,
 ) {
   const syncSelectedBackend = useCallback(async () => {
     if (!backend.selectedBackendId) return;
@@ -662,10 +700,11 @@ function useBackendActions(
       pushLog("State backend sync completed");
       await loadBackends();
       await loadDetails();
+      await loadDeployDrift();
     } catch (error: unknown) {
       backend.setDetailsError(toErrorMessage(error, "Failed to sync backend"));
     }
-  }, [backend.selectedBackendId, backend.setDetailsError, loadBackends, loadDetails, projectId, pushLog]);
+  }, [backend.selectedBackendId, backend.setDetailsError, loadBackends, loadDeployDrift, loadDetails, projectId, pushLog]);
 
   const removeSelectedBackend = useCallback(async () => {
     if (!backend.selectedBackendId) return;
@@ -673,7 +712,8 @@ function useBackendActions(
     pushLog("State backend deleted");
     backend.setSelectedBackendId(null);
     await loadBackends();
-  }, [backend.selectedBackendId, backend.setSelectedBackendId, loadBackends, projectId, pushLog]);
+    await loadDeployDrift();
+  }, [backend.selectedBackendId, backend.setSelectedBackendId, loadBackends, loadDeployDrift, projectId, pushLog]);
 
   const saveSettings = useCallback(async () => {
     if (!backend.selectedBackendId || !backend.settingsPayload) return;
@@ -687,7 +727,20 @@ function useBackendActions(
     pushLog("State backend settings saved");
     await loadBackends();
     await loadDetails();
-  }, [backend.selectedBackendId, backend.settingsPayload, loadBackends, loadDetails, projectId, pushLog]);
+    await loadDeployDrift();
+  }, [backend.selectedBackendId, backend.settingsPayload, loadBackends, loadDeployDrift, loadDetails, projectId, pushLog]);
+
+  const setPrimaryDeployBackend = useCallback(async (backendId: string) => {
+    try {
+      await setPrimaryStateBackend(projectId, backendId);
+      pushLog("Primary deploy backend updated");
+      await loadBackends();
+      await loadDetails();
+      await loadDeployDrift();
+    } catch (error: unknown) {
+      backend.setDetailsError(toErrorMessage(error, "Failed to update primary backend"));
+    }
+  }, [backend.setDetailsError, loadBackends, loadDeployDrift, loadDetails, projectId, pushLog]);
 
   const requestFixPlan = useCallback(async (alertId: string) => {
     if (!backend.selectedBackendId) return;
@@ -702,7 +755,7 @@ function useBackendActions(
     pushLog("Generated fix-all plan");
   }, [backend.selectedBackendId, projectId, pushLog]);
 
-  return { syncSelectedBackend, removeSelectedBackend, saveSettings, requestFixPlan, requestFixAllPlan };
+  return { syncSelectedBackend, removeSelectedBackend, saveSettings, setPrimaryDeployBackend, requestFixPlan, requestFixAllPlan };
 }
 
 function useStateBackendsEffects(args: {
@@ -711,6 +764,7 @@ function useStateBackendsEffects(args: {
   connect: ReturnType<typeof useConnectState>;
   loadBackends: () => Promise<void>;
   loadDetails: () => Promise<void>;
+  loadDeployDrift: () => Promise<void>;
   loadProfiles: () => Promise<void>;
   loadCloudBuckets: () => Promise<void>;
   loadCloudObjects: () => Promise<void>;
@@ -724,6 +778,10 @@ function useStateBackendsEffects(args: {
   useEffect(() => {
     void args.loadDetails();
   }, [args.loadDetails]);
+
+  useEffect(() => {
+    void args.loadDeployDrift();
+  }, [args.backend.backends, args.loadDeployDrift]);
 
   useEffect(() => {
     if (!args.connect.connectOpen) return;
@@ -750,10 +808,14 @@ function useStateBackendsEffects(args: {
     args.backend.setDriftAlerts([]);
     args.backend.setPolicyAlerts([]);
     args.backend.setSettingsPayload(null);
+    args.backend.setDeployDriftSummary(null);
+    args.backend.setDeployDriftError("");
     args.backend.setSearch("");
     args.backend.setSelectedBackendId(null);
     args.connect.setConnectOpen(false);
   }, [
+    args.backend.setDeployDriftError,
+    args.backend.setDeployDriftSummary,
     args.backend.setDriftAlerts,
     args.backend.setHistory,
     args.backend.setPolicyAlerts,
@@ -787,6 +849,9 @@ function buildBackendWorkspaceResult(args: {
     setSettingsPayload: args.backend.setSettingsPayload,
     detailsLoading: args.backend.detailsLoading,
     detailsError: args.backend.detailsError,
+    deployDriftSummary: args.backend.deployDriftSummary,
+    deployDriftLoading: args.backend.deployDriftLoading,
+    deployDriftError: args.backend.deployDriftError,
     search: args.backend.search,
     setSearch: args.backend.setSearch,
     activeOnly: args.backend.activeOnly,
@@ -809,6 +874,7 @@ function buildConnectWorkspaceResult(args: {
   syncSelectedBackend: () => Promise<void>;
   removeSelectedBackend: () => Promise<void>;
   saveSettings: () => Promise<void>;
+  setPrimaryDeployBackend: (backendId: string) => Promise<void>;
   requestFixPlan: (alertId: string) => Promise<void>;
   requestFixAllPlan: () => Promise<void>;
 }) {
@@ -869,6 +935,7 @@ function buildConnectWorkspaceResult(args: {
     syncSelectedBackend: args.syncSelectedBackend,
     removeSelectedBackend: args.removeSelectedBackend,
     saveSettings: args.saveSettings,
+    setPrimaryDeployBackend: args.setPrimaryDeployBackend,
     requestFixPlan: args.requestFixPlan,
     requestFixAllPlan: args.requestFixAllPlan,
   };
@@ -889,6 +956,7 @@ function buildStateBackendsResult(args: {
   syncSelectedBackend: () => Promise<void>;
   removeSelectedBackend: () => Promise<void>;
   saveSettings: () => Promise<void>;
+  setPrimaryDeployBackend: (backendId: string) => Promise<void>;
   requestFixPlan: (alertId: string) => Promise<void>;
   requestFixAllPlan: () => Promise<void>;
 }) {
@@ -907,6 +975,7 @@ function buildStateBackendsResult(args: {
       syncSelectedBackend: args.syncSelectedBackend,
       removeSelectedBackend: args.removeSelectedBackend,
       saveSettings: args.saveSettings,
+      setPrimaryDeployBackend: args.setPrimaryDeployBackend,
       requestFixPlan: args.requestFixPlan,
       requestFixAllPlan: args.requestFixAllPlan,
     }),
@@ -920,7 +989,7 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     () => backend.backends.find((row) => row.id === backend.selectedBackendId) ?? null,
     [backend.backends, backend.selectedBackendId],
   );
-  const { loadBackends, loadDetails } = useBackendLoaders(projectId, backend);
+  const { loadBackends, loadDetails, loadDeployDrift } = useBackendLoaders(projectId, backend);
   const {
     loadProfiles,
     loadCloudBuckets,
@@ -935,14 +1004,15 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     importGithubRepo,
     scanGitlabRepo,
     importGitlabRepo,
-  } = useConnectActions(projectId, pushLog, connect, loadBackends, loadGitlabSource);
+  } = useConnectActions(projectId, pushLog, connect, loadBackends, loadDeployDrift, loadGitlabSource);
   const {
     syncSelectedBackend,
     removeSelectedBackend,
     saveSettings,
+    setPrimaryDeployBackend,
     requestFixPlan,
     requestFixAllPlan,
-  } = useBackendActions(projectId, pushLog, backend, loadBackends, loadDetails);
+  } = useBackendActions(projectId, pushLog, backend, loadBackends, loadDetails, loadDeployDrift);
 
   useStateBackendsEffects({
     projectId,
@@ -950,6 +1020,7 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     connect,
     loadBackends,
     loadDetails,
+    loadDeployDrift,
     loadProfiles,
     loadCloudBuckets,
     loadCloudObjects,
@@ -972,6 +1043,7 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     syncSelectedBackend,
     removeSelectedBackend,
     saveSettings,
+    setPrimaryDeployBackend,
     requestFixPlan,
     requestFixAllPlan,
   });

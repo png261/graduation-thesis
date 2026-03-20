@@ -1,22 +1,20 @@
 """Deep agent factory and cache lifecycle."""
 from __future__ import annotations
 
-import os
 from typing import Any
-
-from sqlalchemy import select
-
-from langgraph.graph.state import CompiledStateGraph
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langgraph.graph.state import CompiledStateGraph
+from sqlalchemy import select
 
 from app import db
 from app.core.config import Settings
 from app.models import Project
-from app.services.project import files as project_files
 from app.services.model.factory import create_chat_model
+from app.services.project import files as project_files
 
+from .iac_templates import provider_credential_vars
 from .prompts import PROMPT_BUNDLE
 from .tools import build_project_tools
 
@@ -28,6 +26,10 @@ def invalidate_agent(project_id: str) -> None:
     suffix = f":{project_id}"
     for key in [cache_key for cache_key in _agents if cache_key.endswith(suffix)]:
         del _agents[key]
+
+
+def clear_agent_cache() -> None:
+    _agents.clear()
 
 
 async def _load_provider_context(project_id: str) -> str:
@@ -48,16 +50,10 @@ async def _load_provider_context(project_id: str) -> str:
         lines.append(
             "Never include raw credentials in code or prompts. Use Terraform variables only."
         )
-        if project.provider == "aws":
+        vars_by_provider = provider_credential_vars(project.provider)
+        if vars_by_provider:
             lines.append("Credential variables to reference:")
-            lines.append("  - var.aws_access_key_id")
-            lines.append("  - var.aws_secret_access_key")
-            lines.append("  - var.aws_region")
-        elif project.provider == "gcloud":
-            lines.append("Credential variables to reference:")
-            lines.append("  - var.gcp_project_id")
-            lines.append("  - var.gcp_region")
-            lines.append("  - var.gcp_credentials_json")
+            lines.extend(f"  - var.{name}" for name in vars_by_provider)
 
         return "\n".join(lines)
     except Exception:
@@ -66,40 +62,42 @@ async def _load_provider_context(project_id: str) -> str:
 
 async def get_agent(settings: Settings, project_id: str = "default") -> CompiledStateGraph:
     """Return (cached) an agent whose filesystem is scoped to local project directory."""
-    if not settings.google_api_key:
-        raise ValueError("GOOGLE_API_KEY is not set")
+    if not settings.llm_api_key:
+        raise ValueError("LLM_API_KEY is not set")
+    if not settings.llm_model:
+        raise ValueError("LLM_MODEL is not set")
 
-    cache_key = f"{settings.google_api_key}:{settings.gemini_model}:{project_id}"
+    cache_key = (
+        f"{settings.llm_base_url}:{settings.llm_api_key}:{settings.llm_model}:"
+        f"{int(settings.opentofu_mcp_enabled)}:{settings.opentofu_mcp_url}:{project_id}"
+    )
 
-    if cache_key not in _agents:
-        if "GOOGLE_API_KEY" not in os.environ:
-            os.environ["GOOGLE_API_KEY"] = settings.google_api_key
-        elif os.environ.get("GOOGLE_API_KEY") != settings.google_api_key:
-            os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+    if cache_key in _agents:
+        return _agents[cache_key]
 
-        model = create_chat_model(settings)
+    model = create_chat_model(settings)
+    provider_ctx = await _load_provider_context(project_id)
+    full_system_prompt = PROMPT_BUNDLE.system_prompt + (f"\n\n{provider_ctx}" if provider_ctx else "")
+    pid = project_id
+    project_root = project_files.ensure_project_dir(pid)
+    tools, mcp_ready = await build_project_tools(settings, pid)
 
-        provider_ctx = await _load_provider_context(project_id)
-        full_system_prompt = PROMPT_BUNDLE.system_prompt + (
-            f"\n\n{provider_ctx}" if provider_ctx else ""
-        )
+    def _backend_factory(_: Any) -> FilesystemBackend:
+        return FilesystemBackend(root_dir=project_root, virtual_mode=True)
 
-        pid = project_id
-        project_root = project_files.ensure_project_dir(pid)
+    agent = create_deep_agent(
+        tools=tools,
+        system_prompt=full_system_prompt,
+        model=model,
+        checkpointer=db.get_checkpointer(),
+        store=None,
+        memory=["/AGENT.md"],
+        skills=["/skills/"],
+        subagents=[dict(item) for item in PROMPT_BUNDLE.infra_subagents],
+        backend=_backend_factory,
+    )
 
-        def _backend_factory(_: Any) -> FilesystemBackend:
-            return FilesystemBackend(root_dir=project_root, virtual_mode=True)
-
-        _agents[cache_key] = create_deep_agent(
-            tools=build_project_tools(settings, pid),
-            system_prompt=full_system_prompt,
-            model=model,
-            checkpointer=db.get_checkpointer(),
-            store=None,
-            memory=["/AGENT.md"],
-            skills=["/skills/"],
-            subagents=[dict(item) for item in PROMPT_BUNDLE.opentofu_subagents],
-            backend=_backend_factory,
-        )
-
+    if settings.opentofu_mcp_enabled and not mcp_ready:
+        return agent
+    _agents[cache_key] = agent
     return _agents[cache_key]
