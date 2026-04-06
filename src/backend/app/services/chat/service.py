@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException, Request
@@ -11,9 +12,9 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from app import db
 from app.core.config import Settings
 from app.models import Project
-from app.schemas.chat import ChatRequest
-from app.services.blueprints import service as blueprint_service
+from app.schemas.chat import ChatAttachment, ChatMessage, ChatRequest, ChatRole
 from app.services.agent import get_agent
+from app.services.blueprints import service as blueprint_service
 from app.services.model.factory import create_chat_model
 from app.services.policy import checks as policy_checks
 
@@ -43,7 +44,18 @@ _CONFIGURATION_SOFTWARE_ACTIONS = ("install", "configure", "set up", "setup")
 _CONFIGURATION_SOFTWARE_TARGETS = ("openclaw", "package", "agent", "daemon")
 _CONFIGURATION_GENERATE_ACTIONS = ("create", "build", "generate")
 _CONFIGURATION_GENERATE_TARGETS = ("ansible", "playbook", "role", "inventory")
-_PROVISIONING_ACTIONS = ("provision", "create", "build", "generate", "deploy", "spin up", "scaffold", "bootstrap", "set up", "setup")
+_PROVISIONING_ACTIONS = (
+    "provision",
+    "create",
+    "build",
+    "generate",
+    "deploy",
+    "spin up",
+    "scaffold",
+    "bootstrap",
+    "set up",
+    "setup",
+)
 _PROVISIONING_TARGETS = (
     "terraform",
     "opentofu",
@@ -68,6 +80,126 @@ _PROVISIONING_TARGETS = (
     "database",
     "network",
 )
+_DOCUMENT_ATTACHMENT_EXTENSIONS = frozenset(
+    {
+        ".txt",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".csv",
+        ".xml",
+        ".log",
+        ".ini",
+    }
+)
+_ATTACHMENT_MAX_COUNT = 3
+_DOCUMENT_MAX_BYTES = 128 * 1024
+_DOCUMENT_MAX_CHARS_PER_FILE = 8000
+_DOCUMENT_MAX_CHARS_TOTAL = 16000
+_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_IMAGE_CONTENT_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+_EXPLICIT_BINARY_CONTENT_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
+_IMAGE_TOKEN_BUDGET = 1024
+
+
+def _bad_chat_request(message: str) -> None:
+    raise HTTPException(status_code=400, detail=message)
+
+
+def _attachment_extension(name: str) -> str:
+    return Path(name).suffix.lower()
+
+
+def _attachment_size_bytes(attachment: ChatAttachment) -> int:
+    actual_size = len(attachment.content.encode("utf-8"))
+    if attachment.size_bytes is None:
+        return actual_size
+    if attachment.type == "image":
+        return int(attachment.size_bytes)
+    return max(actual_size, int(attachment.size_bytes))
+
+
+def _is_explicitly_binary(content_type: str | None) -> bool:
+    if not content_type:
+        return False
+    lowered = content_type.lower()
+    if lowered.startswith(("image/", "audio/", "video/")):
+        return True
+    return lowered in _EXPLICIT_BINARY_CONTENT_TYPES
+
+
+def _validate_document_attachment(attachment: ChatAttachment) -> int:
+    if _attachment_extension(attachment.name) not in _DOCUMENT_ATTACHMENT_EXTENSIONS:
+        _bad_chat_request(f"Unsupported attachment '{attachment.name}'")
+    if _is_explicitly_binary(attachment.content_type):
+        _bad_chat_request(f"Unsupported attachment type for '{attachment.name}'")
+    if _attachment_size_bytes(attachment) > _DOCUMENT_MAX_BYTES:
+        _bad_chat_request(f"Attachment '{attachment.name}' exceeds {_DOCUMENT_MAX_BYTES} bytes")
+    content_chars = len(attachment.content)
+    if content_chars > _DOCUMENT_MAX_CHARS_PER_FILE:
+        _bad_chat_request(f"Attachment '{attachment.name}' exceeds {_DOCUMENT_MAX_CHARS_PER_FILE} characters")
+    return content_chars
+
+
+def _validate_image_attachment(attachment: ChatAttachment) -> None:
+    if attachment.content_type not in _IMAGE_CONTENT_TYPES:
+        _bad_chat_request(f"Unsupported image attachment '{attachment.name}'")
+    if _attachment_size_bytes(attachment) > _IMAGE_MAX_BYTES:
+        _bad_chat_request(f"Image '{attachment.name}' exceeds {_IMAGE_MAX_BYTES} bytes")
+    if not attachment.content.startswith("data:image/"):
+        _bad_chat_request(f"Invalid image attachment '{attachment.name}'")
+
+
+def _validate_message_attachments(messages: list[ChatMessage]) -> None:
+    for message in messages:
+        if message.role is not ChatRole.user and message.attachments:
+            _bad_chat_request("attachments are only supported on user messages")
+        if not message.attachments:
+            continue
+        if len(message.attachments) > _ATTACHMENT_MAX_COUNT:
+            _bad_chat_request(f"A message can include at most {_ATTACHMENT_MAX_COUNT} attachments")
+        total_document_chars = 0
+        for attachment in message.attachments:
+            if attachment.type == "image":
+                _validate_image_attachment(attachment)
+                continue
+            total_document_chars += _validate_document_attachment(attachment)
+        if total_document_chars > _DOCUMENT_MAX_CHARS_TOTAL:
+            _bad_chat_request(f"Attachment content exceeds {_DOCUMENT_MAX_CHARS_TOTAL} characters per message")
+
+
+def _attachment_block(attachment: ChatAttachment) -> str:
+    content_type = attachment.content_type or "text/plain"
+    return "\n".join(
+        (
+            f"[Attached document: {attachment.name}]",
+            f"[Content-Type: {content_type}]",
+            attachment.content,
+            f"[End attached document: {attachment.name}]",
+        )
+    )
+
+
+def _message_content(message: ChatMessage) -> str | list[dict[str, Any]]:
+    if not message.attachments:
+        return message.content
+    parts: list[dict[str, Any]] = []
+    if message.content.strip():
+        parts.append({"type": "text", "text": message.content})
+    for attachment in message.attachments:
+        if attachment.type == "image":
+            parts.append({"type": "image_url", "image_url": {"url": attachment.content}})
+            continue
+        parts.append({"type": "text", "text": _attachment_block(attachment)})
+    return parts
 
 
 def ensure_settings(settings: Settings) -> None:
@@ -80,10 +212,11 @@ def ensure_settings(settings: Settings) -> None:
 def ensure_payload(payload: ChatRequest) -> None:
     if not payload.messages:
         raise HTTPException(status_code=400, detail="messages are required")
+    _validate_message_attachments(payload.messages)
 
 
 def _to_langchain_messages(request: ChatRequest) -> list[dict]:
-    return [{"role": message.role, "content": message.content} for message in request.messages]
+    return [{"role": message.role.value, "content": _message_content(message)} for message in request.messages]
 
 
 def _approx_token_count(text: str) -> int:
@@ -93,7 +226,21 @@ def _approx_token_count(text: str) -> int:
 def _messages_token_count(messages: list[dict[str, Any]]) -> int:
     total = 0
     for row in messages:
-        total += _approx_token_count(str(row.get("content") or ""))
+        content = row.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    total += _approx_token_count(str(item))
+                    continue
+                if item.get("type") == "text":
+                    total += _approx_token_count(str(item.get("text") or ""))
+                    continue
+                if item.get("type") == "image_url":
+                    total += _IMAGE_TOKEN_BUDGET
+                    continue
+                total += _approx_token_count(str(item))
+            continue
+        total += _approx_token_count(str(content or ""))
     return total
 
 
@@ -108,7 +255,7 @@ def _apply_token_budget(
     kept: list[dict[str, Any]] = []
     running = 0
     for row in reversed(messages):
-        row_tokens = _approx_token_count(str(row.get("content") or ""))
+        row_tokens = _messages_token_count([row])
         if kept and running + row_tokens > budget:
             break
         kept.append(row)
@@ -416,7 +563,9 @@ def _tool_result_candidates(tool_result: dict[str, Any], tool_args: dict[str, An
     return candidates
 
 
-def _tool_result_event(tool_result: dict[str, Any], tool_name: str, tool_args: dict[str, Any], tool_args_text: str) -> dict[str, Any]:
+def _tool_result_event(
+    tool_result: dict[str, Any], tool_name: str, tool_args: dict[str, Any], tool_args_text: str
+) -> dict[str, Any]:
     artifact = tool_result["result"].get("artifact") if isinstance(tool_result["result"], dict) else None
     return {
         "type": "tool.result",

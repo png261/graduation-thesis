@@ -18,7 +18,11 @@ cp .env.example .env
 Important variables:
 
 - `VITE_API_URL` (default in example: `http://localhost:8000`)
-- `VITE_CLERK_PUBLISHABLE_KEY`
+- `VITE_COGNITO_DOMAIN`
+- `VITE_COGNITO_CLIENT_ID`
+- `VITE_COGNITO_ISSUER`
+- `VITE_COGNITO_REDIRECT_URI`
+- `VITE_COGNITO_SCOPE`
 
 ## Install
 

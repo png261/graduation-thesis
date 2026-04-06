@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+ARG SERVICE_DIR
+ARG SERVICE_PACKAGE
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY shared ./shared
+COPY app ./app
+COPY services/${SERVICE_DIR} ./service
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir ./shared \
+    && pip install --no-cache-dir ./service
+
+EXPOSE 8000
+
+CMD ["sh", "-c", "uvicorn ${SERVICE_PACKAGE}.asgi:app --host 0.0.0.0 --port 8000"]

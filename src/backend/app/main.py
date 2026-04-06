@@ -26,7 +26,7 @@ from app.routers import gitlab as gitlab_router
 from app.routers import projects as projects_router
 from app.routers import state as state_router
 from app.routers import telegram as telegram_router
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from app.services.chat import service as chat_service
 from app.services.jobs import redis_bus as jobs_redis_bus
 from app.services.jobs import service as jobs_service
@@ -134,6 +134,22 @@ def _is_chat_queue_unavailable(exc: JobsError | None) -> bool:
     return exc.status_code == 503 or exc.code in {"job_queue_unavailable", "chat_queue_unavailable"}
 
 
+def _chat_message_payload(message: ChatMessage) -> dict[str, Any]:
+    payload: dict[str, Any] = {"role": message.role.value, "content": message.content}
+    if not message.attachments:
+        return payload
+    payload["attachments"] = [
+        {
+            "name": attachment.name,
+            "content": attachment.content,
+            "content_type": attachment.content_type,
+            "size_bytes": attachment.size_bytes,
+        }
+        for attachment in message.attachments
+    ]
+    return payload
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db(settings.database_url)
@@ -197,7 +213,7 @@ async def chat_stream(
             payload={
                 "project_id": project.id,
                 "thread_id": resolved_thread_id,
-                "messages": [{"role": msg.role.value, "content": msg.content} for msg in payload.messages],
+                "messages": [_chat_message_payload(msg) for msg in payload.messages],
                 "options": {"notify_telegram": True, "delivery_ack": False},
             },
         )

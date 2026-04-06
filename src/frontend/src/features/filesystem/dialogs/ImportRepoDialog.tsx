@@ -52,7 +52,7 @@ function ImportRepoLoadingState({ loading }: { loading: boolean }) {
 }
 
 function ImportRepoAuthPrompt({ onLogin }: { onLogin: () => void }) {
-  return <Button type="button" variant="outline" className="w-full" onClick={onLogin}>Login with GitHub</Button>;
+  return <Button type="button" variant="outline" className="w-full" onClick={onLogin}>Connect GitHub</Button>;
 }
 
 function ImportRepoForm({

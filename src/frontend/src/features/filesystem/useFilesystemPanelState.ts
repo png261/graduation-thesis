@@ -129,6 +129,8 @@ function githubImportSection(github: ReturnType<typeof useGithubExportState>) {
     setImportRepoName: github.setImportRepoName,
     importBaseBranch: github.importBaseBranch,
     setImportBaseBranch: github.setImportBaseBranch,
+    pendingRepositoryConfirmation: github.pendingRepositoryConfirmation,
+    clearPendingRepositoryConfirmation: github.clearPendingRepositoryConfirmation,
     zipImportBusy: github.zipImportBusy,
     zipImportError: github.zipImportError,
   };
@@ -146,6 +148,9 @@ function githubPullRequestSection(github: ReturnType<typeof useGithubExportState
     setPrBaseBranch: github.setPrBaseBranch,
     prBusy: github.prBusy,
     prError: github.prError,
+    prLoading: github.prLoading,
+    prWorkingBranch: github.prWorkingBranch,
+    prSuggestionCopy: github.prSuggestionCopy,
   };
 }
 

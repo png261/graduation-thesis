@@ -1,4 +1,5 @@
 """Prompt builders and compiled runtime prompt bundle."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -38,11 +39,12 @@ def _section(title: str, lines: tuple[str, ...]) -> str:
 
 def _build_task_rules() -> tuple[str, ...]:
     return (
-        "For multi-step work, create or append TASKS.md before coding.",
-        "Execute tasks sequentially and mark each checkbox complete immediately.",
-        "Do not stop until every planned checkbox is complete.",
-        "After completion, append a short timestamped Done summary in TASKS.md.",
-        "Skip TASKS.md only for one-sentence answers and trivial lookups.",
+        "For complex multi-step work, use write_todos instead of creating planning files in the workspace.",
+        "Update todos as work progresses and mark each completed step immediately.",
+        "Do not stop until every planned todo is completed or no longer needed.",
+        "Never create TASKS.md or similar repo-backed planning files for task tracking.",
+        "Skip write_todos for trivial lookups and one-sentence answers.",
+        "Do not call write_todos more than once in the same model turn.",
     )
 
 
@@ -108,7 +110,7 @@ def _opentofu_coder_blueprint() -> SubagentBlueprint:
             "Call write_file for each required file and edit_file for existing files.",
             "Create versions.tf, providers.tf, main.tf, variables.tf, outputs.tf, README.md, and examples/basic/main.tf.",
             "Add locals.tf only when locals are needed.",
-            "Ensure outputs.tf contains output \"ansible_hosts\" with [] fallback when no hosts exist.",
+            'Ensure outputs.tf contains output "ansible_hosts" with [] fallback when no hosts exist.',
             "Finish with a concise list of created/updated paths.",
         ),
         guardrails=(
@@ -246,7 +248,8 @@ def build_default_agent_md() -> str:
             "Capture stable context, goals, and constraints for future agent runs.",
             "",
             "## Working Conventions",
-            "- Keep multi-step progress in TASKS.md and retain history across sessions.",
+            "- Use write_todos for complex multi-step progress; do not create TASKS.md or other planning files.",
+            "- Skip write_todos for trivial work and update todos immediately after each completed step.",
             "- Keep instructions concise, deterministic, and implementation focused.",
             "- Run validate_iac_structure before marking Terraform+Ansible generation complete.",
             "- Update this memory when project goals or hard constraints change.",

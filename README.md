@@ -4,8 +4,8 @@ Monorepo gồm frontend React/Vite và backend FastAPI cho workflow hạ tầng 
 
 ## Structure
 
-- `src/frontend`: React + Vite UI, Clerk auth client, assistant runtime adapters
-- `src/backend`: FastAPI API, Clerk bearer auth, project/git/opentofu services
+- `src/frontend`: React + Vite UI, Cognito auth client, assistant runtime adapters
+- `src/backend`: FastAPI API, Cognito bearer auth, project/git/opentofu services
 
 ## Prerequisites
 
@@ -37,11 +37,11 @@ uvicorn app.main:app --reload
 - Frontend: `src/frontend/.env.example`
 - Backend: `src/backend/.env.example`
 
-Auth flow là Clerk-only (GitHub OAuth qua Clerk). Legacy `/api/auth/*` đã bị loại bỏ.
+Auth flow dùng Cognito bearer tokens cho app login và GitHub OAuth cho repository operations. Legacy `/api/auth/*` đã bị loại bỏ.
 
 ## Legacy Auth Schema Migration
 
-Để drop legacy auth tables/columns sau khi chuyển Clerk-only:
+Để drop legacy auth tables/columns sau khi chuyển sang Cognito-only app login:
 
 ```bash
 cd src/backend

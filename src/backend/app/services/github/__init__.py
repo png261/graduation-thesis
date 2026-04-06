@@ -1,5 +1,5 @@
 """GitHub service modules."""
 
-from . import auth, git, projects
+from . import auth, git, oauth, projects
 
-__all__ = ["auth", "git", "projects"]
+__all__ = ["auth", "git", "oauth", "projects"]

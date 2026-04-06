@@ -61,6 +61,7 @@ export function AssistantMessage() {
                 get_current_time: ToolCallCard,
                 suggest_blueprints: BlueprintSuggestionCard,
                 update_plan: UpdatePlanCard,
+                write_todos: () => null,
               },
               Fallback: ToolCallCard,
             },

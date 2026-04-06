@@ -1,4 +1,5 @@
 """SQLAlchemy ORM models for users, projects, jobs, and state backends."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -28,6 +29,11 @@ class User(Base):
     jobs: Mapped[list[ProjectJob]] = relationship("ProjectJob", back_populates="user")
     credential_profiles: Mapped[list[CredentialProfile]] = relationship(
         "CredentialProfile",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    github_oauth_tokens: Mapped[list[GitHubOAuthToken]] = relationship(
+        "GitHubOAuthToken",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -145,9 +151,7 @@ class ProjectBlueprintRun(Base):
 
 class ProjectTerraformGeneration(Base):
     __tablename__ = "project_terraform_generations"
-    __table_args__ = (
-        Index("ix_project_terraform_generations_project_created_at", "project_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_project_terraform_generations_project_created_at", "project_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(
@@ -182,9 +186,7 @@ class ProjectTerraformGeneration(Base):
 
 class ProjectAnsibleGeneration(Base):
     __tablename__ = "project_ansible_generations"
-    __table_args__ = (
-        Index("ix_project_ansible_generations_project_created_at", "project_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_project_ansible_generations_project_created_at", "project_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(
@@ -436,9 +438,7 @@ class StateBackend(Base):
 
 class StateSnapshot(Base):
     __tablename__ = "state_snapshots"
-    __table_args__ = (
-        Index("ix_state_snapshots_backend_created_at", "backend_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_state_snapshots_backend_created_at", "backend_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     backend_id: Mapped[str] = mapped_column(
@@ -572,9 +572,7 @@ class PolicyAlert(Base):
 
 class StateSyncRun(Base):
     __tablename__ = "state_sync_runs"
-    __table_args__ = (
-        Index("ix_state_sync_runs_backend_created_at", "backend_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_state_sync_runs_backend_created_at", "backend_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     backend_id: Mapped[str] = mapped_column(
@@ -637,11 +635,40 @@ class IncidentSummary(Base):
     project: Mapped[Project] = relationship("Project", back_populates="incident_summaries")
 
 
+class GitHubOAuthToken(Base):
+    __tablename__ = "github_oauth_tokens"
+    __table_args__ = (Index("ux_github_oauth_tokens_user", "user_id", unique=True),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scope: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship("User", back_populates="github_oauth_tokens")
+
+
 class GitLabOAuthToken(Base):
     __tablename__ = "gitlab_oauth_tokens"
-    __table_args__ = (
-        Index("ux_gitlab_oauth_tokens_user", "user_id", unique=True),
-    )
+    __table_args__ = (Index("ux_gitlab_oauth_tokens_user", "user_id", unique=True),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(

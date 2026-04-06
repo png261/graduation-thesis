@@ -5,7 +5,11 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ${FRONTEND_VITE_API_URL:-__SAME_ORIGIN__}
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+        VITE_COGNITO_DOMAIN: ${VITE_COGNITO_DOMAIN:-}
+        VITE_COGNITO_CLIENT_ID: ${VITE_COGNITO_CLIENT_ID:-}
+        VITE_COGNITO_ISSUER: ${VITE_COGNITO_ISSUER:-}
+        VITE_COGNITO_REDIRECT_URI: ${VITE_COGNITO_REDIRECT_URI:-}
+        VITE_COGNITO_SCOPE: ${VITE_COGNITO_SCOPE:-}
     image: deepagents-frontend:local
     networks:
       - default

@@ -65,6 +65,45 @@ export function safeParseSerializablePlan(raw: unknown): SerializablePlan | null
   };
 }
 
+function parseWriteTodo(raw: unknown, index: number): SerializablePlanTodo | null {
+  const todo = asRecord(raw);
+  const label = readOptionalString(todo.content) ?? readOptionalString(todo.label);
+  const status = readPlanStatus(todo.status);
+  if (!label || !status) return null;
+  return {
+    id: readOptionalString(todo.id) ?? `todo-${index + 1}`,
+    label,
+    status,
+    description: readOptionalString(todo.description),
+  };
+}
+
+function parseWriteTodos(raw: unknown) {
+  if (!Array.isArray(raw)) return null;
+  const todos = raw.map(parseWriteTodo).filter((todo): todo is SerializablePlanTodo => todo !== null);
+  return todos.length === raw.length && todos.length > 0 ? todos : null;
+}
+
+function resolveWriteTodos(raw: unknown) {
+  const payload = asRecord(raw);
+  return parseWriteTodos(payload.todos) ?? parseWriteTodos(asRecord(payload.update).todos);
+}
+
+function hasTodos(todos: SerializablePlanTodo[]) {
+  return todos.length > 0;
+}
+
+export function safeParseWriteTodosPlan(raw: unknown, fallbackId: string): SerializablePlan | null {
+  const todos = resolveWriteTodos(raw);
+  if (!todos || !hasTodos(todos)) return null;
+  return {
+    id: fallbackId,
+    title: "Current Plan",
+    description: "Live task progress",
+    todos,
+  };
+}
+
 function parseAgentPlanTodo(raw: unknown, index: number): SerializablePlanTodo | null {
   const todo = asRecord(raw) as Partial<AgentPlanStep>;
   const label = readOptionalString(todo.step);

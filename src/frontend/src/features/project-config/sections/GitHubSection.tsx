@@ -1,10 +1,12 @@
+import { useCallback, useState } from "react";
+
 import { Alert, AlertDescription, AlertTitle } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/card";
 import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../components/ui/select";
-import { useAuth } from "../../../contexts/AuthContext";
+import { openGitHubOAuthPopup } from "../../github/openGitHubOAuthPopup";
 import type { ProjectConfigState } from "../useProjectConfigState";
 
 function scheduleGitHubStatusRefresh(refreshGitHubStatus: () => Promise<void>) {
@@ -12,11 +14,17 @@ function scheduleGitHubStatusRefresh(refreshGitHubStatus: () => Promise<void>) {
   window.setTimeout(() => void refreshGitHubStatus(), 3500);
 }
 
-function useConnectViaClerk(login: () => void, refreshGitHubStatus: () => Promise<void>) {
-  return () => {
-    login();
-    scheduleGitHubStatusRefresh(refreshGitHubStatus);
-  };
+function useConnectGitHub(refreshGitHubStatus: () => Promise<void>, setError: (value: string) => void) {
+  return useCallback(async () => {
+    setError("");
+    try {
+      await openGitHubOAuthPopup();
+      scheduleGitHubStatusRefresh(refreshGitHubStatus);
+      await refreshGitHubStatus();
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : "GitHub OAuth failed");
+    }
+  }, [refreshGitHubStatus, setError]);
 }
 
 function GitHubSessionInfo({ login }: { login?: string }) {
@@ -30,14 +38,14 @@ function GitHubSessionInfo({ login }: { login?: string }) {
 
 function GitHubAuthPrompt({
   authError,
-  onConnectViaClerk,
+  onConnect,
 }: {
   authError: string;
-  onConnectViaClerk: () => void;
+  onConnect: () => void;
 }) {
   return (
     <>
-      <Button variant="outline" className="w-full" onClick={onConnectViaClerk}>Connect GitHub via Clerk</Button>
+      <Button variant="outline" className="w-full" onClick={onConnect}>Connect GitHub</Button>
       {authError ? <p className="text-xs text-red-400">{authError}</p> : null}
     </>
   );
@@ -135,13 +143,13 @@ function GitHubConfirmationNotice({ state }: { state: ProjectConfigState }) {
 function GitHubSectionContent({
   state,
   authError,
-  onConnectViaClerk,
+  onConnect,
 }: {
   state: ProjectConfigState;
   authError: string;
-  onConnectViaClerk: () => void;
+  onConnect: () => void;
 }) {
-  if (!state.githubSession.authenticated) return <GitHubAuthPrompt authError={authError} onConnectViaClerk={onConnectViaClerk} />;
+  if (!state.githubSession.authenticated) return <GitHubAuthPrompt authError={authError} onConnect={onConnect} />;
   if (!state.githubStatus?.connected) return <GitHubConnectForm state={state} />;
   return <GitHubConnectedState state={state} />;
 }
@@ -164,8 +172,8 @@ function GitHubResultAlerts({ state }: { state: ProjectConfigState }) {
 }
 
 export function GitHubSection({ state }: { state: ProjectConfigState }) {
-  const { login, error: authError } = useAuth();
-  const handleConnectViaClerk = useConnectViaClerk(login, state.refreshGitHubStatus);
+  const [authError, setAuthError] = useState("");
+  const handleConnect = useConnectGitHub(state.refreshGitHubStatus, setAuthError);
   return (
     <Card>
       <CardHeader>
@@ -174,7 +182,7 @@ export function GitHubSection({ state }: { state: ProjectConfigState }) {
       </CardHeader>
       <CardContent className="space-y-3">
         <GitHubSessionInfo login={state.githubSession.login} />
-        <GitHubSectionContent state={state} authError={authError} onConnectViaClerk={handleConnectViaClerk} />
+        <GitHubSectionContent state={state} authError={authError} onConnect={handleConnect} />
         <GitHubResultAlerts state={state} />
       </CardContent>
     </Card>

@@ -16,6 +16,7 @@ export const ASSISTANT_MESSAGE_PLAN_GROUP = "plan-group";
 function resolveGroupKey(part: AssistantMessagePartLike) {
   if (part.type === "reasoning") return ASSISTANT_MESSAGE_REASONING_GROUP;
   if (part.type !== "tool-call") return undefined;
+  if (part.toolName === "write_todos") return undefined;
   if (part.toolName === "update_plan") return ASSISTANT_MESSAGE_PLAN_GROUP;
   return part.toolName === "suggest_blueprints" ? ASSISTANT_MESSAGE_BLUEPRINT_GROUP : ASSISTANT_MESSAGE_TOOL_GROUP;
 }

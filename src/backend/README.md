@@ -40,9 +40,8 @@ Copy `.env.example` to `.env` and set required values:
 - `DATABASE_URL`
 - `DATABASE_URL_DOCKER` (optional compose-only DB URL override, default uses `postgres` service)
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` (optional compose postgres defaults)
-- `CLERK_SECRET_KEY`
-- `CLERK_JWT_KEY` (if required by your Clerk setup)
-- `CLERK_AUTHORIZED_PARTIES` (comma-separated origins)
+- `COGNITO_REGION` / `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID`
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_REDIRECT_URI` (required for GitHub OAuth)
 - `GOOGLE_API_KEY`
 - `ANSIBLE_SSH_KEY_PATH` (required to run Ansible configuration stage)
 - `ANSIBLE_PLAYBOOK_PATH` (optional, default `playbooks/site.yml`)
@@ -61,7 +60,7 @@ Copy `.env.example` to `.env` and set required values:
 - `ZIP_IMPORT_MAX_FILES` (optional max file count for ZIP import, default 2000)
 - `ZIP_IMPORT_MAX_UNCOMPRESSED_BYTES` (optional max uncompressed ZIP bytes, default 80MB)
 - `PROJECTS_ROOT` (optional project files root path; default is `src/backend/projects`)
-- `STATE_ENCRYPTION_KEY` (required for encrypting credential profiles and GitLab OAuth tokens)
+- `STATE_ENCRYPTION_KEY` (required for encrypting credential profiles and Git provider OAuth tokens)
 - `STATE_SYNC_SCAN_INTERVAL_MINUTES` (optional scheduler interval for background state sync)
 - `STATE_SYNC_MAX_BACKENDS_PER_TICK` (optional scheduler batch size)
 - `STATE_ALERT_NOTIFY_SEVERITY` (comma-separated severities to notify via Telegram)
@@ -118,7 +117,7 @@ PROJECTS_HOST_PATH=/absolute/path docker compose -f src/backend/docker-compose.y
 
 ## Legacy Auth Schema Cleanup
 
-This codebase is Clerk-only. Legacy auth/session tables and columns can be dropped with:
+This codebase uses Cognito for app login and direct OAuth for Git providers. Legacy auth/session tables and columns can be dropped with:
 
 ```bash
 cd src/backend

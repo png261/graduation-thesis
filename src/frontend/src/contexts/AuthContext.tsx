@@ -1,10 +1,4 @@
 import {
-  useAuth as useClerkAuth,
-  useClerk,
-  useSignIn,
-  useUser,
-} from "@clerk/clerk-react";
-import {
   createContext,
   useCallback,
   useContext,
@@ -15,8 +9,20 @@ import {
 } from "react";
 
 import { setAuthTokenGetter } from "../api/client";
+import {
+  authSessionFromStored,
+  callbackError,
+  clearStoredCognitoAuth,
+  cognitoLogoutUrl,
+  completeCognitoLogin,
+  ensureFreshCognitoAuth,
+  isCognitoCallback,
+  resetCallbackUrl,
+  startCognitoLogin,
+  storedCognitoAuth,
+} from "./cognitoAuth";
 
-export type AuthProvider = "github";
+export type AuthProvider = "cognito";
 
 export interface AuthUser {
   id: string;
@@ -44,209 +50,118 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function extractProviders(externalProviders: string[]): AuthProvider[] {
-  return externalProviders.some((value) => value.includes("github")) ? ["github"] : [];
-}
-
 function formatAuthError(err: unknown): string {
   if (err instanceof Error && err.message.trim()) return err.message;
-  if (!err || typeof err !== "object") return "Authentication failed";
-  const value = err as { errors?: Array<{ code?: string; longMessage?: string; message?: string }> };
-  const first = value.errors?.[0];
-  if (first?.code && first?.longMessage) return `${first.code}: ${first.longMessage}`;
-  if (first?.code && first?.message) return `${first.code}: ${first.message}`;
-  return first?.longMessage || first?.message || "Authentication failed";
+  return "Authentication failed";
 }
 
-function isClerkEnvironmentServerError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const value = err as { status?: number; errors?: Array<{ code?: string; longMessage?: string; message?: string }> };
-  const status = typeof value.status === "number" ? value.status : null;
-  const first = value.errors?.[0];
-  const code = String(first?.code || "").toLowerCase();
-  const message = String(first?.longMessage || first?.message || "").toLowerCase();
-  return status !== null && status >= 500
-    ? true
-    : code.includes("internal") ||
-        message.includes("internal server error") ||
-        message.includes("/v1/environment");
-}
-
-async function retryAfterClerkCacheClear<T>(action: () => Promise<T>, clearCache: () => void): Promise<T> {
-  try {
-    return await action();
-  } catch (err) {
-    if (!isClerkEnvironmentServerError(err)) throw err;
-    clearCache();
-    return action();
-  }
-}
-
-function oauthRedirectUrl(path: string): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  return typeof window === "undefined" ? normalized : `${window.location.origin}${normalized}`;
-}
-
-function setOAuthError(setError: (value: string) => void, err: unknown): void {
-  setError(formatAuthError(err));
-}
-
-const GITHUB_SCOPES = ["repo", "read:user", "user:email"] as const;
-
-function githubOAuthUrls() {
-  return {
-    redirectUrl: oauthRedirectUrl("/sso-callback"),
-    redirectUrlComplete: oauthRedirectUrl("/"),
-  };
-}
-
-function isAuthLoadingState(isLoaded: boolean, isSignedIn: boolean, user: ReturnType<typeof useUser>["user"]): boolean {
-  return !isLoaded || (isSignedIn && !user);
-}
-
-function openGithubScopesInProfile(clerk: ReturnType<typeof useClerk>): boolean {
-  const openProfile = (clerk as { openUserProfile?: (props?: Record<string, unknown>) => void }).openUserProfile;
-  if (!openProfile) return false;
-  openProfile({ additionalOAuthScopes: { github: [...GITHUB_SCOPES] } });
-  return true;
-}
-
-function createGithubExternalAccount(
-  user: ReturnType<typeof useUser>["user"],
-  clerk: ReturnType<typeof useClerk>,
-): Promise<unknown> {
-  if (!user?.createExternalAccount) {
-    throw new Error("Unable to link social account");
-  }
-  const { redirectUrl } = githubOAuthUrls();
-  return retryAfterClerkCacheClear(
-    () =>
-      user.createExternalAccount({
-        strategy: "oauth_github",
-        redirectUrl,
-        additionalScopes: [...GITHUB_SCOPES],
-      }),
-    () => clerk.client?.clearCache(),
-  );
-}
-
-function authenticateWithGithubRedirect(
-  signIn: ReturnType<typeof useSignIn>["signIn"],
-  clerk: ReturnType<typeof useClerk>,
-): Promise<unknown> {
-  const authenticate = signIn?.authenticateWithRedirect;
-  if (!authenticate) throw new Error("Clerk OAuth redirect is not available");
-  const { redirectUrl, redirectUrlComplete } = githubOAuthUrls();
-  return retryAfterClerkCacheClear(
-    () =>
-      authenticate({
-        strategy: "oauth_github",
-        redirectUrl,
-        redirectUrlComplete,
-      }),
-    () => clerk.client?.clearCache(),
-  );
-}
-
-function useAuthTokenBinding(getToken: ReturnType<typeof useClerkAuth>["getToken"]) {
-  useEffect(() => {
-    setAuthTokenGetter(async () => (await getToken()) ?? null);
-    return () => setAuthTokenGetter(null);
-  }, [getToken]);
-}
-
-function useSessionActions(clerk: ReturnType<typeof useClerk>, setError: (value: string) => void) {
-  const refreshSession = useCallback(async () => {
-    try {
-      await clerk.session?.reload();
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to refresh session");
-    }
-  }, [clerk, setError]);
-
-  const logout = useCallback(async () => {
-    await clerk.signOut();
-    setError("");
-  }, [clerk, setError]);
-
-  const openUserSettings = useCallback(() => {
-    const openProfile = (clerk as { openUserProfile?: () => void }).openUserProfile;
-    if (!openProfile) {
-      setError("User settings is not available right now.");
-      return;
-    }
-    setError("");
-    openProfile();
-  }, [clerk, setError]);
-
-  return { refreshSession, logout, openUserSettings };
-}
-
-function buildSession(
-  isLoaded: boolean,
-  isSignedIn: boolean,
-  user: ReturnType<typeof useUser>["user"],
-  sessionClaims: ReturnType<typeof useClerkAuth>["sessionClaims"],
-): AuthSession {
-  if (!isLoaded || !isSignedIn || !user) return { authenticated: false };
-  const claims = (sessionClaims as Record<string, unknown> | null) ?? null;
-  const exp = claims && typeof claims.exp === "number" ? claims.exp : null;
-  const providers = extractProviders(
-    (user.externalAccounts ?? [])
-      .map((account) => String(account.provider || ""))
-      .filter(Boolean),
-  );
-  return {
-    authenticated: true,
-    user: {
-      id: user.id,
-      name: user.fullName || user.username || "User",
-      email: user.primaryEmailAddress?.emailAddress || "",
-      avatarUrl: user.imageUrl || null,
-      providers,
-    },
-    expiresAt: exp ? new Date(exp * 1000).toISOString() : null,
-  };
-}
-
-function useGithubLogin(setError: (value: string) => void) {
-  const { isLoaded, isSignedIn } = useClerkAuth();
-  const { user } = useUser();
-  const { signIn } = useSignIn();
-  const clerk = useClerk();
-
-  return useCallback(() => {
-    setError("");
-    if (isAuthLoadingState(isLoaded, Boolean(isSignedIn), user)) {
-      setError("Authentication is still loading. Please try again.");
-      return;
-    }
-    if (isSignedIn && user) {
-      if (openGithubScopesInProfile(clerk)) {
-        return;
-      }
-      void createGithubExternalAccount(user, clerk).catch((err: unknown) => setOAuthError(setError, err));
-      return;
-    }
-    void authenticateWithGithubRedirect(signIn, clerk).catch((err: unknown) => setOAuthError(setError, err));
-  }, [clerk, isLoaded, isSignedIn, setError, signIn, user]);
+function currentReturnTo(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
-  const { isLoaded, isSignedIn, getToken, sessionClaims } = useClerkAuth();
-  const { user } = useUser();
-  const clerk = useClerk();
+  const [session, setSession] = useState<AuthSession>({ authenticated: false });
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const login = useGithubLogin(setError);
-  const { refreshSession, logout, openUserSettings } = useSessionActions(clerk, setError);
-  useAuthTokenBinding(getToken);
 
-  const session = useMemo(() => buildSession(isLoaded, Boolean(isSignedIn), user, sessionClaims), [isLoaded, isSignedIn, sessionClaims, user]);
+  const syncSession = useCallback((auth = storedCognitoAuth()) => {
+    setSession(authSessionFromStored(auth));
+  }, []);
+
+  useEffect(() => {
+    setAuthTokenGetter(async () => {
+      try {
+        const auth = await ensureFreshCognitoAuth();
+        syncSession(auth);
+        return auth?.idToken || null;
+      } catch {
+        syncSession(null);
+        return null;
+      }
+    });
+    return () => setAuthTokenGetter(null);
+  }, [syncSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function bootstrap() {
+      setLoading(true);
+      try {
+        const oidcError = callbackError();
+        if (oidcError) {
+          clearStoredCognitoAuth();
+          if (!cancelled) {
+            setError(oidcError);
+            syncSession(null);
+            resetCallbackUrl("/");
+          }
+          return;
+        }
+        if (isCognitoCallback()) {
+          const result = await completeCognitoLogin();
+          if (!cancelled) {
+            setError("");
+            syncSession(result.auth);
+            resetCallbackUrl(result.returnTo);
+          }
+          return;
+        }
+        const auth = await ensureFreshCognitoAuth();
+        if (!cancelled) {
+          setError("");
+          syncSession(auth);
+        }
+      } catch (err) {
+        clearStoredCognitoAuth();
+        if (!cancelled) {
+          setError(formatAuthError(err));
+          syncSession(null);
+          resetCallbackUrl("/");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncSession]);
+
+  const login = useCallback(() => {
+    setError("");
+    void startCognitoLogin(currentReturnTo()).catch((err: unknown) => setError(formatAuthError(err)));
+  }, []);
+
+  const refreshSession = useCallback(async () => {
+    try {
+      const auth = await ensureFreshCognitoAuth();
+      syncSession(auth);
+      setError("");
+    } catch (err) {
+      setError(formatAuthError(err));
+    }
+  }, [syncSession]);
+
+  const logout = useCallback(async () => {
+    setError("");
+    clearStoredCognitoAuth();
+    syncSession(null);
+    const url = await cognitoLogoutUrl().catch(() => "");
+    window.location.assign(url || window.location.origin);
+  }, [syncSession]);
+
+  const openUserSettings = useCallback(() => {
+    setError("User settings are not available in this Cognito setup.");
+  }, []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ session, loading: !isLoaded, error, refreshSession, login, logout, openUserSettings }),
-    [error, isLoaded, login, logout, openUserSettings, refreshSession, session],
+    () => ({ session, loading, error, refreshSession, login, logout, openUserSettings }),
+    [error, loading, login, logout, openUserSettings, refreshSession, session],
   );
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

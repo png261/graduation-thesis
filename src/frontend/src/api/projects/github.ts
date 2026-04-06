@@ -84,6 +84,11 @@ export interface ProjectPullRequestDefaults {
   ansible_generation_id: string | null;
 }
 
+export async function getGitHubOauthStart(): Promise<{ authorize_url: string }> {
+  const res = await apiRequest("/api/github/oauth/start");
+  return apiJson<{ authorize_url: string }>(res);
+}
+
 export async function getGitHubSession(): Promise<GitHubSession> {
   const res = await apiRequest("/api/github/session");
   return apiJson<GitHubSession>(res);

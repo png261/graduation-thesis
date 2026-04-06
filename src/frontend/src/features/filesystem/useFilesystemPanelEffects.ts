@@ -36,6 +36,7 @@ interface UseFilesystemPanelEffectsArgs {
 }
 
 type SecurityProblem = Parameters<UseFilesystemPanelEffectsArgs["appendProblems"]>[0][number];
+const FILESYSTEM_SYNC_INTERVAL_MS = 5000;
 
 function buildFilePathKey(files: FileEntry[]) {
   return files.map((file) => file.path).join("|");
@@ -75,6 +76,17 @@ function buildRefreshLog(changedPath?: string) {
   return `Synced change from agent: ${changedPath}`;
 }
 
+function shouldAutoSyncFilesystem(
+  authenticated: boolean,
+  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state",
+) {
+  return authenticated && workspaceTab === "code";
+}
+
+function isDocumentHidden() {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
 async function syncFilesystemChange(args: {
   changedPath?: string;
   selectedPath: string | null;
@@ -99,6 +111,39 @@ function useRefreshRegistration(args: {
     void syncFilesystemChange({ changedPath, selectedPath: args.selectedPath, fetchFiles: args.fetchFiles, openFile: args.openFile, pushLog: args.pushLog });
   }, [args.fetchFiles, args.openFile, args.pushLog, args.selectedPath]);
   useEffect(() => args.registerRefreshCallback(onRefresh), [args.registerRefreshCallback, onRefresh]);
+}
+
+function useFilesystemAutoSync(args: {
+  authenticated: boolean;
+  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
+  fetchFiles: () => Promise<void>;
+}) {
+  const { authenticated, workspaceTab, fetchFiles } = args;
+  const mountedRef = useRef(false);
+  const syncingRef = useRef(false);
+  const sync = useCallback(async () => {
+    if (!shouldAutoSyncFilesystem(authenticated, workspaceTab) || isDocumentHidden() || syncingRef.current) return;
+    syncingRef.current = true;
+    try {
+      await fetchFiles();
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [authenticated, fetchFiles, workspaceTab]);
+  useEffect(() => {
+    if (!shouldAutoSyncFilesystem(authenticated, workspaceTab)) return;
+    if (mountedRef.current) void sync();
+    else mountedRef.current = true;
+    const handleFocus = () => void sync();
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+    const timer = window.setInterval(handleFocus, FILESYSTEM_SYNC_INTERVAL_MS);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+      window.clearInterval(timer);
+    };
+  }, [authenticated, workspaceTab, sync]);
 }
 
 function mapPolicyIssues(issues: PolicyCheckIssue[]): SecurityProblem[] {
@@ -216,6 +261,11 @@ export function useFilesystemPanelEffects(args: UseFilesystemPanelEffectsArgs) {
     pushLog: args.pushLog,
     appendProblems: args.appendProblems,
     registerPolicyCheckCallback: args.registerPolicyCheckCallback,
+  });
+  useFilesystemAutoSync({
+    authenticated: args.authenticated,
+    workspaceTab: args.workspaceTab,
+    fetchFiles: args.fetchFiles,
   });
   useInitialFilesystemLoad(args.fetchFiles, args.pushLog);
   useProjectResetEffects(args.projectId, args.resetWorkflow, args.setWorkspaceTab);

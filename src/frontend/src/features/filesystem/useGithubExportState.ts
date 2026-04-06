@@ -19,12 +19,12 @@ import {
   type ProjectPullRequestDefaults,
   type ProjectGitHubStatus,
 } from "../../api/projects/index";
-import { useAuth } from "../../contexts/AuthContext";
 import {
   applyPullRequestDefaults,
   buildPullRequestSuggestionCopy,
   createPullRequestDraftState,
 } from "../github/pullRequestDraftState";
+import { openGitHubOAuthPopup } from "../github/openGitHubOAuthPopup";
 import { toRepoName } from "./explorer/tree";
 
 interface GithubExportParams {
@@ -397,7 +397,7 @@ function useDownloadZipAction(
   pushLog: (message: string) => void,
 ) {
   return useCallback(async () => {
-    if (!requireAuthenticated(authenticated, setExportError, "Login required to export code.")) return;
+    if (!requireAuthenticated(authenticated, setExportError, "Sign in with Cognito to export code.")) return;
     setExportError("");
     try {
       const blob = await downloadProjectZip(projectId);
@@ -412,7 +412,7 @@ function useDownloadZipAction(
 
 function useOpenCreateRepoDialogAction(authenticated: boolean, createRepo: ReturnType<typeof useCreateRepoState>) {
   return useCallback(() => {
-    if (!requireAuthenticated(authenticated, createRepo.setCreateRepoError, "Login required to connect GitHub.")) return;
+    if (!requireAuthenticated(authenticated, createRepo.setCreateRepoError, "Sign in with Cognito to connect GitHub.")) return;
     createRepo.setCreateRepoError("");
     createRepo.setCreateRepoOpen(true);
   }, [authenticated, createRepo]);
@@ -424,7 +424,7 @@ function useOpenImportRepoDialogAction(
   githubStatus: ProjectGitHubStatus | null,
 ) {
   return useCallback(() => {
-    if (!requireAuthenticated(authenticated, importRepo.setImportRepoError, "Login required to import from GitHub.")) return;
+    if (!requireAuthenticated(authenticated, importRepo.setImportRepoError, "Sign in with Cognito to import from GitHub.")) return;
     importRepo.setImportRepoError("");
     importRepo.setPendingRepositoryConfirmation(null);
     if (githubStatus?.connected) {
@@ -435,10 +435,22 @@ function useOpenImportRepoDialogAction(
   }, [authenticated, githubStatus, importRepo]);
 }
 
-function useImportRepoLoginAction(login: () => void) {
-  return useCallback(() => {
-    login();
-  }, [login]);
+function useImportRepoLoginAction(
+  importRepo: ReturnType<typeof useImportRepoState>,
+) {
+  return useCallback(async () => {
+    importRepo.setImportRepoError("");
+    try {
+      await openGitHubOAuthPopup();
+      await loadImportRepoData(
+        importRepo.importRepoName,
+        importRepo,
+        () => false,
+      );
+    } catch (error: unknown) {
+      importRepo.setImportRepoError(toErrorMessage(error, "Failed to connect GitHub"));
+    }
+  }, [importRepo]);
 }
 
 function useImportFromGithubAction(
@@ -510,8 +522,8 @@ function getImportValidationError(
   importRepo: ReturnType<typeof useImportRepoState>,
   githubStatus: ProjectGitHubStatus | null,
 ): string | null {
-  if (!authenticated) return "Login required to import from GitHub.";
-  if (!importRepo.importRepoSession.authenticated) return "Login with GitHub before importing a repository.";
+  if (!authenticated) return "Sign in with Cognito to import from GitHub.";
+  if (!importRepo.importRepoSession.authenticated) return "Connect GitHub before importing a repository.";
   if (!githubStatus?.connected && !importRepo.importRepoName) return "Select a repository to import.";
   return null;
 }
@@ -550,7 +562,7 @@ function useUploadZipAction(
   pushLog: (message: string) => void,
 ) {
   return useCallback(async (file: File) => {
-    if (!requireAuthenticated(authenticated, zipImport.setZipImportError, "Login required to upload ZIP.")) return;
+    if (!requireAuthenticated(authenticated, zipImport.setZipImportError, "Sign in with Cognito to upload a ZIP.")) return;
     if (!file.name.toLowerCase().endsWith(".zip")) {
       zipImport.setZipImportError("Please select a .zip file.");
       return;
@@ -577,7 +589,7 @@ function useOpenPullRequestDialogAction(
   pullRequest: ReturnType<typeof usePullRequestState>,
 ) {
   return useCallback(async () => {
-    if (!requireAuthenticated(authenticated, setExportError, "Login required to create pull requests.")) return;
+    if (!requireAuthenticated(authenticated, setExportError, "Sign in with Cognito to create pull requests.")) return;
     pullRequest.setPrError("");
     pullRequest.setPrOpen(true);
     pullRequest.setPrLoading(true);
@@ -611,7 +623,7 @@ function createRepositoryValidationError(
   githubConnected: boolean,
   repoName: string,
 ): string | null {
-  if (!authenticated) return "Login required to connect GitHub.";
+  if (!authenticated) return "Sign in with Cognito to connect GitHub.";
   if (!repoName.trim()) return "Repository name is required.";
   if (githubConnected) return "This project is already connected to a repository.";
   return null;
@@ -620,12 +632,13 @@ function createRepositoryValidationError(
 async function createAndConnectRepository(
   projectId: string,
   createRepo: ReturnType<typeof useCreateRepoState>,
-  login: () => void,
+  connectGitHub: () => Promise<void>,
 ): Promise<string | null> {
   const session = await getGitHubSession();
   if (!session.authenticated) {
-    login();
-    return null;
+    await connectGitHub();
+    const nextSession = await getGitHubSession();
+    if (!nextSession.authenticated) return null;
   }
   const repo = await createGitHubRepository(
     createRepo.createRepoName.trim(),
@@ -644,7 +657,7 @@ function useCreateRepositoryAction(
   refreshAndOpenFirstFile: () => Promise<void>,
   refreshGitHubStatus: () => Promise<void>,
   pushLog: (message: string) => void,
-  login: () => void,
+  connectGitHub: () => Promise<void>,
 ) {
   const validationError = createRepositoryValidationError(authenticated, Boolean(githubStatus?.connected), createRepo.createRepoName);
   return useCallback(async () => {
@@ -655,7 +668,7 @@ function useCreateRepositoryAction(
     createRepo.setCreateRepoBusy(true);
     createRepo.setCreateRepoError("");
     try {
-      const repoName = await createAndConnectRepository(projectId, createRepo, login);
+      const repoName = await createAndConnectRepository(projectId, createRepo, connectGitHub);
       if (!repoName) return;
       await finishCreateRepository(repoName, createRepo.setCreateRepoOpen, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog);
     } catch (error: unknown) {
@@ -663,7 +676,7 @@ function useCreateRepositoryAction(
     } finally {
       createRepo.setCreateRepoBusy(false);
     }
-  }, [createRepo, login, projectId, pushLog, refreshAndOpenFirstFile, refreshGitHubStatus, validationError]);
+  }, [connectGitHub, createRepo, projectId, pushLog, refreshAndOpenFirstFile, refreshGitHubStatus, validationError]);
 }
 
 async function finishCreateRepository(
@@ -684,7 +697,7 @@ function createPullRequestValidationError(
   githubStatus: ProjectGitHubStatus | null,
   prTitle: string,
 ): string | null {
-  if (!authenticated) return "Login required to create pull requests.";
+  if (!authenticated) return "Sign in with Cognito to create pull requests.";
   if (!githubStatus?.connected) return "Connect this project to a repository first.";
   if (!prTitle.trim()) return "Pull request title is required.";
   return null;
@@ -788,17 +801,17 @@ function useGithubExportActions(params: {
   refreshAndOpenFirstFile: () => Promise<void>;
   refreshGitHubStatus: () => Promise<void>;
   pushLog: (message: string) => void;
-  login: () => void;
+  connectGitHub: () => Promise<void>;
 }) {
   return {
     handleDownloadZip: useDownloadZipAction(params.projectId, params.authenticated, params.setExportError, params.pushLog),
     openCreateRepoDialog: useOpenCreateRepoDialogAction(params.authenticated, params.createRepo),
     openImportRepoDialog: useOpenImportRepoDialogAction(params.authenticated, params.importRepo, params.githubStatus),
-    handleImportRepoLogin: useImportRepoLoginAction(params.login),
+    handleImportRepoLogin: useImportRepoLoginAction(params.importRepo),
     handleImportFromGitHub: useImportFromGithubAction(params.projectId, params.authenticated, params.githubStatus, params.importRepo, params.refreshAndOpenFirstFile, params.refreshGitHubStatus, params.pushLog),
     handleUploadZip: useUploadZipAction(params.projectId, params.authenticated, params.zipImport, params.refreshAndOpenFirstFile, params.pushLog),
     openPullRequestDialog: useOpenPullRequestDialogAction(params.projectId, params.authenticated, params.githubStatus, params.setExportError, params.pullRequest),
-    handleCreateGitHubRepository: useCreateRepositoryAction(params.projectId, params.authenticated, params.githubStatus, params.createRepo, params.refreshAndOpenFirstFile, params.refreshGitHubStatus, params.pushLog, params.login),
+    handleCreateGitHubRepository: useCreateRepositoryAction(params.projectId, params.authenticated, params.githubStatus, params.createRepo, params.refreshAndOpenFirstFile, params.refreshGitHubStatus, params.pushLog, params.connectGitHub),
     handleCreatePullRequest: useCreatePullRequestAction(params.projectId, params.authenticated, params.githubStatus, params.pullRequest, params.refreshGitHubStatus, params.pushLog),
   };
 }
@@ -825,7 +838,6 @@ function buildGithubExportResult(
 }
 
 export function useGithubExportState({ projectId, authenticated, fetchFiles, openFile, pushLog }: GithubExportParams) {
-  const { login } = useAuth();
   const [githubStatus, setGithubStatus] = useState<ProjectGitHubStatus | null>(null);
   const [exportError, setExportError] = useState("");
   const createRepo = useCreateRepoState(projectId);
@@ -838,6 +850,10 @@ export function useGithubExportState({ projectId, authenticated, fetchFiles, ope
   useInitialGitHubExportEffect(projectId, resetState, refreshGitHubStatus);
   useImportRepoLoader(importRepo, authenticated);
   const clearExportError = useCallback(() => setExportError(""), []);
-  const actions = useGithubExportActions({ projectId, authenticated, githubStatus, setExportError, createRepo, importRepo, zipImport, pullRequest, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog, login });
+  const connectGitHub = useCallback(async () => {
+    await openGitHubOAuthPopup();
+    await refreshGitHubStatus();
+  }, [refreshGitHubStatus]);
+  const actions = useGithubExportActions({ projectId, authenticated, githubStatus, setExportError, createRepo, importRepo, zipImport, pullRequest, refreshAndOpenFirstFile, refreshGitHubStatus, pushLog, connectGitHub });
   return buildGithubExportResult(githubStatus, exportError, clearExportError, createRepo, importRepo, zipImport, pullRequest, actions);
 }

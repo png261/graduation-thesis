@@ -1,14 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { PropsWithChildren } from "react";
 
 import {
   AssistantRuntimeProvider,
+  CompositeAttachmentAdapter,
   unstable_useRemoteThreadListRuntime,
   useLocalRuntime,
 } from "@assistant-ui/react";
 
 import { useFilesystemContext } from "../contexts/FilesystemContext";
 import { createChatModelAdapter } from "./local-runtime/createChatModelAdapter";
+import { DocumentAttachmentAdapter, ImageAttachmentAdapter } from "./local-runtime/documentAttachmentAdapter";
 import { useProjectThreadListAdapter } from "./local-runtime/useProjectThreadListAdapter";
 
 interface Props {
@@ -40,9 +42,13 @@ export function LocalRuntimeProvider({
     notifyFileChanged,
     notifyPolicyCheck,
   });
+  const attachments = useMemo(
+    () => new CompositeAttachmentAdapter([new DocumentAttachmentAdapter(), new ImageAttachmentAdapter()]),
+    [],
+  );
 
   const runtime = unstable_useRemoteThreadListRuntime({
-    runtimeHook: () => useLocalRuntime(adapter),
+    runtimeHook: () => useLocalRuntime(adapter, { adapters: { attachments } }),
     adapter: threadListAdapter,
     allowNesting: true,
   });

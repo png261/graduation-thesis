@@ -144,7 +144,7 @@ function AccountMenu({
           <>
             <DropdownMenuLabel>Guest</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onLogin}>Sign in with GitHub</DropdownMenuItem>
+            <DropdownMenuItem onSelect={onLogin}>Sign in with Cognito</DropdownMenuItem>
           </>
         )}
       </DropdownMenuContent>

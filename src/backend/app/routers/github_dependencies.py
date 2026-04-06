@@ -1,4 +1,5 @@
 """Shared FastAPI dependencies and error mapping for GitHub-backed routes."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,8 +13,8 @@ from app.core.config import get_settings
 from app.models import Project, User
 from app.routers import auth_dependencies as auth_deps
 from app.routers.http_errors import error_detail, raise_http_error
-import app.services.clerk as clerk_service
 from app.services.github import auth as github_auth
+from app.services.github import oauth as github_oauth
 from app.services.github import projects as github_projects
 
 
@@ -55,27 +56,25 @@ async def get_optional_github_auth_context(
 ) -> GitHubAuthContext | None:
     settings = get_settings()
     try:
-        oauth = clerk_service.get_github_oauth_token(
-            settings=settings, user_id=user.id)
-    except clerk_service.ClerkError as exc:
+        access_token = await github_oauth.get_user_access_token(settings=settings, user_id=user.id)
+        session = await github_oauth.get_user_session(settings=settings, user_id=user.id)
+    except Exception as exc:
         raise_http_error(500, code="auth_config_error", message=str(exc))
-    except Exception:
-        return None
-
-    if oauth is None:
+    if not access_token or not session.get("authenticated"):
         return None
 
     try:
-        gh_user = await github_auth.github_get_user(oauth.token)
+        gh_user = await github_auth.github_get_user(access_token)
     except github_auth.GitHubAuthError:
+        await github_oauth.clear_user_token(user_id=user.id)
         return None
 
     return GitHubAuthContext(
         user=user,
-        access_token=oauth.token,
+        access_token=access_token,
         login=str(gh_user.get("login") or ""),
-        github_user_id=str(gh_user.get("id") or oauth.provider_user_id or ""),
-        scopes=oauth.scopes,
+        github_user_id=str(gh_user.get("id") or session.get("provider_user_id") or ""),
+        scopes=[value for value in str(session.get("scope") or "").replace(",", " ").split() if value],
     )
 
 
@@ -105,8 +104,7 @@ class ProjectGitHubStatusContext:
 
 async def get_project_github_status_context(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext | None = Depends(
-        get_optional_github_auth_context),
+    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
 ) -> ProjectGitHubStatusContext:
     return ProjectGitHubStatusContext(
         project=project,
@@ -122,16 +120,14 @@ class ProjectAccountContext:
 
 async def require_project_and_authenticated_account(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext = Depends(
-        require_authenticated_github_context),
+    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
 ) -> ProjectAccountContext:
     return ProjectAccountContext(project=project, github_auth=github_auth)
 
 
 async def require_project_with_connected_account(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext = Depends(
-        require_authenticated_github_context),
+    github_auth: GitHubAuthContext = Depends(require_authenticated_github_context),
 ) -> ProjectAccountContext:
     if not project.github_repo_full_name:
         raise_http_error(
@@ -150,8 +146,7 @@ class ProjectDisconnectContext:
 
 async def get_project_disconnect_context(
     project: Project = Depends(get_project_or_404),
-    github_auth: GitHubAuthContext | None = Depends(
-        get_optional_github_auth_context),
+    github_auth: GitHubAuthContext | None = Depends(get_optional_github_auth_context),
 ) -> ProjectDisconnectContext:
     return ProjectDisconnectContext(
         project=project,

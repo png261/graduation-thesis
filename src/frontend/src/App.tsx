@@ -36,7 +36,7 @@ function SignInState({
       <div className="w-full max-w-md rounded-lg border border-[var(--da-border)] bg-[var(--da-panel)] p-6">
         <h1 className="text-lg font-semibold">Sign in required</h1>
         <p className="mt-2 text-sm text-[var(--da-muted)]">
-          Sign in with GitHub to access projects, chat, deploy workflows, and code sync.
+          Sign in with Cognito to access projects, chat, deploy workflows, and code sync.
         </p>
         <div className="mt-4 space-y-2">
           <button
@@ -44,7 +44,7 @@ function SignInState({
             className="h-9 w-full rounded-md bg-[var(--da-primary)] px-3 text-sm font-medium text-[var(--da-primary-foreground)]"
             onClick={login}
           >
-            Sign in with GitHub
+            Sign in with Cognito
           </button>
           {authError ? <p className="pt-1 text-xs text-red-400">{authError}</p> : null}
         </div>

@@ -176,6 +176,43 @@ function useGitHubLoadEffect(projectId: string, refreshGitHubStatus: () => Promi
   }, [projectId, refreshGitHubStatus, setGitHubError]);
 }
 
+function useAuthenticatedGitHubRefresh(
+  authenticated: boolean,
+  refreshGitHubStatus: () => Promise<void>,
+) {
+  useEffect(() => {
+    if (!authenticated) return;
+    void refreshGitHubStatus();
+  }, [authenticated, refreshGitHubStatus]);
+}
+
+function useGitHubRepoHydration(
+  connection: ReturnType<typeof useConnectionState>,
+  selection: ReturnType<typeof useSelectionState>,
+) {
+  useEffect(() => {
+    if (!connection.githubSession.authenticated || connection.githubRepos.length > 0) return;
+    let cancelled = false;
+    async function hydrate() {
+      try {
+        const repos = await listGitHubRepos();
+        if (cancelled) return;
+        connection.setGitHubRepos(repos);
+        const preferredRepo = preferredRepoName(connection.githubStatus ?? { connected: false, repo_full_name: null, base_branch: null, working_branch: null, connected_at: null }, repos);
+        selection.setSelectedRepo((prev) => prev || preferredRepo);
+        selection.setSelectedBaseBranch((prev) => prev || preferredBaseBranch(connection.githubStatus ?? { connected: false, repo_full_name: null, base_branch: null, working_branch: null, connected_at: null }, repos, preferredRepo));
+      } catch (error: unknown) {
+        if (cancelled) return;
+        connection.setGitHubError(toErrorMessage(error, "Failed to load GitHub repositories"));
+      }
+    }
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [connection, selection]);
+}
+
 function useWindowFocusRefresh(refreshGitHubStatus: () => Promise<void>) {
   useEffect(() => {
     const onWindowFocus = () => {
@@ -250,7 +287,7 @@ function useExecuteGitHubAction(
             request.mode,
             request.repoFullName,
             request.baseBranch,
-            error.message,
+            error instanceof Error ? error.message : "Confirm workspace replacement to continue.",
           ),
         );
         connection.setGitHubError("");
@@ -388,6 +425,8 @@ export function useGitHubConfigState(projectId: string) {
   const pullRequest = usePullRequestState();
   const refreshGitHubStatus = useGitHubRefresh(projectId, connection, selection);
   useGitHubLoadEffect(projectId, refreshGitHubStatus, connection.setGitHubError);
+  useAuthenticatedGitHubRefresh(connection.githubSession.authenticated, refreshGitHubStatus);
+  useGitHubRepoHydration(connection, selection);
   useWindowFocusRefresh(refreshGitHubStatus);
   const actions = useGitHubActions(projectId, connection, selection, refreshGitHubStatus);
   const selectedRepoDefaultBranch = useMemo(() => connection.githubRepos.find((repo) => repo.full_name === selection.selectedRepo)?.default_branch || "", [connection.githubRepos, selection.selectedRepo]);

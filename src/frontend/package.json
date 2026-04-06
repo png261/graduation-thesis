@@ -20,7 +20,6 @@
     "@assistant-ui/react": "0.12.5",
     "@assistant-ui/react-ai-sdk": "1.3.0",
     "@assistant-ui/react-ui": "0.2.1",
-    "@clerk/clerk-react": "^5.61.3",
     "@fontsource/ibm-plex-sans": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@monaco-editor/react": "^4.7.0",

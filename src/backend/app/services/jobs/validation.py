@@ -6,11 +6,34 @@ from app.services.jobs.errors import JobValidationError
 from app.services.jobs.types import JOB_KINDS
 
 
+def _normalize_chat_attachment(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise JobValidationError("messages.attachments entries must be objects")
+    name = payload.get("name")
+    content = payload.get("content")
+    content_type = payload.get("content_type", payload.get("contentType"))
+    size_bytes = payload.get("size_bytes", payload.get("sizeBytes"))
+    if not isinstance(name, str) or not name.strip():
+        raise JobValidationError("messages.attachments.name must be a string")
+    if not isinstance(content, str):
+        raise JobValidationError("messages.attachments.content must be a string")
+    if not isinstance(content_type, str):
+        raise JobValidationError("messages.attachments.content_type must be a string")
+    if size_bytes is not None and (not isinstance(size_bytes, int) or size_bytes < 0):
+        raise JobValidationError("messages.attachments.size_bytes must be a non-negative integer")
+    return {
+        "name": name,
+        "content": content,
+        "content_type": content_type,
+        **({"size_bytes": size_bytes} if size_bytes is not None else {}),
+    }
+
+
 def _parse_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
     messages = payload.get("messages", [])
     if not isinstance(messages, list) or len(messages) < 1:
         raise JobValidationError("messages must be a non-empty list")
-    normalized_messages: list[dict[str, str]] = []
+    normalized_messages: list[dict[str, Any]] = []
     for row in messages:
         if not isinstance(row, dict):
             raise JobValidationError("messages entries must be objects")
@@ -20,7 +43,13 @@ def _parse_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raise JobValidationError("messages.role must be one of: user, assistant, system")
         if not isinstance(content, str):
             raise JobValidationError("messages.content must be a string")
-        normalized_messages.append({"role": role, "content": content})
+        normalized = {"role": role, "content": content}
+        attachments = row.get("attachments")
+        if attachments is not None:
+            if not isinstance(attachments, list):
+                raise JobValidationError("messages.attachments must be a list")
+            normalized["attachments"] = [_normalize_chat_attachment(item) for item in attachments]
+        normalized_messages.append(normalized)
     thread_id = payload.get("thread_id")
     if thread_id is not None and not isinstance(thread_id, str):
         raise JobValidationError("thread_id must be a string")

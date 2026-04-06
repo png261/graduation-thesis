@@ -5,9 +5,14 @@ import type {
 } from "@assistant-ui/react";
 
 import { cancelProjectJob, persistThread } from "../../api/projects";
-import { apiRequest } from "../../api/client";
+import { apiJson, apiRequest } from "../../api/client";
 import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { readSseJson } from "../../lib/sse";
+import {
+  dispatchAttachmentError,
+  serializeChatAttachments,
+  type ChatAttachmentPayload,
+} from "./documentAttachmentAdapter";
 import {
   parseBlueprintInputsSummaryEvent,
   parseBlueprintProvenanceEvent,
@@ -63,6 +68,12 @@ type InferRunResult<T> = T extends Promise<infer R>
 type ChatRunResult = InferRunResult<ReturnType<ChatModelAdapter["run"]>>;
 
 type HandlerResult = { output?: ChatRunResult; done?: boolean; completion?: ChatRunResult };
+
+type ChatPayloadMessage = {
+  role: string;
+  content: string;
+  attachments?: ChatAttachmentPayload[];
+};
 
 function normalizeChangedPath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -142,14 +153,35 @@ function persistNewThreadIfNeeded(deps: AdapterDeps, backendThreadId: string) {
   persistThread(deps.getProjectId(), backendThreadId, "").catch(() => {});
 }
 
+function textParts(parts: readonly { type: string; text?: string }[]) {
+  return parts
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text ?? "")
+    .join("");
+}
+
+function messagePayload(message: AdapterRunInput["messages"][number]): ChatPayloadMessage {
+  const payload: ChatPayloadMessage = {
+    role: message.role,
+    content: textParts(message.content),
+  };
+  if (message.role !== "user" || !message.attachments?.length) return payload;
+  let attachments: ChatAttachmentPayload[];
+  try {
+    attachments = serializeChatAttachments(message.attachments);
+  } catch (error) {
+    dispatchAttachmentError(error instanceof Error ? error.message : "Unable to attach file");
+    throw error;
+  }
+  if (attachments.length > 0) payload.attachments = attachments;
+  return payload;
+}
+
 function buildPayload(input: AdapterRunInput, deps: AdapterDeps, backendThreadId: string) {
   return {
     ...(deps.authenticated ? { project_id: deps.getProjectId() } : {}),
     ...(deps.authenticated ? { thread_id: backendThreadId } : {}),
-    messages: input.messages.map((message) => ({
-      role: message.role,
-      content: message.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
-    })),
+    messages: input.messages.map(messagePayload),
   };
 }
 
@@ -160,7 +192,10 @@ async function openChatStream(payload: unknown, signal: AbortSignal | undefined)
     body: JSON.stringify(payload),
     signal,
   });
-  if (!response.ok || !response.body) throw new Error(`API error (${response.status})`);
+  if (!response.ok) {
+    await apiJson<unknown>(response);
+  }
+  if (!response.body) throw new Error(`API error (${response.status})`);
   return response;
 }
 

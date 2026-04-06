@@ -27,10 +27,21 @@ class Settings(BaseSettings):
         default="postgresql://postgres:postgres@localhost:5432/deepagents",
         alias="DATABASE_URL",
     )
-    clerk_secret_key: str | None = Field(default=None, alias="CLERK_SECRET_KEY")
-    clerk_jwt_key: str | None = Field(default=None, alias="CLERK_JWT_KEY")
-    clerk_authorized_parties: str = Field(default="", alias="CLERK_AUTHORIZED_PARTIES")
-    clerk_audience: str = Field(default="", alias="CLERK_AUDIENCE")
+    cognito_region: str | None = Field(default=None, alias="COGNITO_REGION")
+    cognito_user_pool_id: str | None = Field(default=None, alias="COGNITO_USER_POOL_ID")
+    cognito_client_id: str | None = Field(default=None, alias="COGNITO_CLIENT_ID")
+    cognito_issuer: str | None = Field(default=None, alias="COGNITO_ISSUER")
+    github_client_id: str | None = Field(default=None, alias="GITHUB_CLIENT_ID")
+    github_client_secret: str | None = Field(default=None, alias="GITHUB_CLIENT_SECRET")
+    github_redirect_uri: str | None = Field(default=None, alias="GITHUB_REDIRECT_URI")
+    github_oauth_authorize_url: str = Field(
+        default="https://github.com/login/oauth/authorize",
+        alias="GITHUB_OAUTH_AUTHORIZE_URL",
+    )
+    github_oauth_token_url: str = Field(
+        default="https://github.com/login/oauth/access_token",
+        alias="GITHUB_OAUTH_TOKEN_URL",
+    )
     infracost_api_key: str | None = Field(default=None, alias="INFRACOST_API_KEY")
     file_url_signing_secret: str = Field(default="dev-file-url-secret", alias="FILE_URL_SIGNING_SECRET")
     file_url_ttl_seconds: int = Field(default=300, alias="FILE_URL_TTL_SECONDS")
@@ -85,18 +96,8 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
-    def clerk_authorized_parties_list(self) -> List[str]:
-        return [value.strip() for value in self.clerk_authorized_parties.split(",") if value.strip()]
-
-    def clerk_audience_list(self) -> List[str]:
-        return [value.strip() for value in self.clerk_audience.split(",") if value.strip()]
-
     def state_alert_notify_severity_list(self) -> List[str]:
-        return [
-            value.strip().lower()
-            for value in self.state_alert_notify_severity.split(",")
-            if value.strip()
-        ]
+        return [value.strip().lower() for value in self.state_alert_notify_severity.split(",") if value.strip()]
 
 
 @lru_cache
