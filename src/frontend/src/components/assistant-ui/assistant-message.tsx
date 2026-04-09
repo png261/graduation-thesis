@@ -2,29 +2,31 @@
 import type { PropsWithChildren } from "react";
 
 import {
-  ASSISTANT_MESSAGE_BLUEPRINT_GROUP,
   ASSISTANT_MESSAGE_PLAN_GROUP,
   ASSISTANT_MESSAGE_REASONING_GROUP,
-  ASSISTANT_MESSAGE_TOOL_GROUP,
   groupAssistantMessageParts,
 } from "./assistant-message-groups";
-import { BlueprintInputSummaryCard } from "./blueprint-input-summary-card";
-import { BlueprintProvenanceCard } from "./blueprint-provenance-card";
-import { BlueprintSuggestionCard } from "./blueprint-suggestion-card";
+import type { EvidenceBundlePayload } from "./evidence-bundle";
+import { EvidenceBundleCard, EvidenceBundleToolCard } from "./evidence-bundle-card";
 import { FilePreview } from "./file-preview";
 import { ReasoningBlock, ReasoningGroup } from "./reasoning";
 import { ToolCallCard } from "./tool-call-card";
-import { ToolGroup } from "./tool-group";
 import { UpdatePlanCard } from "./update-plan-card";
+import { safeParseWriteTodosPlan } from "../tool-ui/plan/schema";
+
+function HiddenWriteTodosFallback(props: Parameters<typeof ToolCallCard>[0]) {
+  const plan =
+    safeParseWriteTodosPlan(props.result, props.toolCallId ?? "write-todos-result") ??
+    safeParseWriteTodosPlan(props.args, props.toolCallId ?? "write-todos-args");
+  if (plan) return null;
+  return <ToolCallCard {...props} />;
+}
 
 function AssistantPartGroup({
   children,
   groupKey,
   indices,
 }: PropsWithChildren<{ groupKey: string | undefined; indices: number[] }>) {
-  if (groupKey === ASSISTANT_MESSAGE_TOOL_GROUP) {
-    return <ToolGroup count={indices.length}>{children}</ToolGroup>;
-  }
   if (groupKey === ASSISTANT_MESSAGE_REASONING_GROUP) {
     const startIndex = indices[0] ?? 0;
     const endIndex = indices[indices.length - 1] ?? startIndex;
@@ -33,9 +35,6 @@ function AssistantPartGroup({
         {children}
       </ReasoningGroup>
     );
-  }
-  if (groupKey === ASSISTANT_MESSAGE_BLUEPRINT_GROUP) {
-    return <div className="space-y-3">{children}</div>;
   }
   if (groupKey === ASSISTANT_MESSAGE_PLAN_GROUP) {
     return <div className="space-y-3">{children}</div>;
@@ -50,20 +49,22 @@ export function AssistantMessage() {
         <MessagePrimitive.Unstable_PartsGrouped
           groupingFunction={groupAssistantMessageParts}
           components={{
+            Text: EvidenceBundleCard,
             Reasoning: ReasoningBlock,
             File: FilePreview,
             Group: AssistantPartGroup,
             tools: {
               by_name: {
-                blueprint_inputs: BlueprintInputSummaryCard,
-                blueprint_provenance: BlueprintProvenanceCard,
+                evidence_bundle: ({ result }) => {
+                  const bundle = result as EvidenceBundlePayload | null;
+                  return bundle ? <EvidenceBundleToolCard bundle={bundle} /> : null;
+                },
                 generate_report: ToolCallCard,
                 get_current_time: ToolCallCard,
-                suggest_blueprints: BlueprintSuggestionCard,
                 update_plan: UpdatePlanCard,
                 write_todos: () => null,
               },
-              Fallback: ToolCallCard,
+              Fallback: HiddenWriteTodosFallback,
             },
           }}
         />

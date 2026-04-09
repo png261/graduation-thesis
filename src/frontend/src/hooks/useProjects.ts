@@ -14,6 +14,10 @@ function formatLoadError(error: unknown): string {
     if (lower.includes("cancelled") || lower.includes("aborted")) {
       return "Project request was interrupted. Please retry.";
     }
+    if (lower.includes("cannot reach backend api")) return error.message;
+    if (lower.includes("failed to fetch") || lower.includes("networkerror")) {
+      return "Cannot reach backend API. Start the backend or check VITE_API_URL, then retry.";
+    }
     return error.message;
   }
   return "Failed to load projects";
@@ -32,12 +36,6 @@ function resolveCurrentProjectId(params: {
   const storedExists = stored && params.loaded.some((project) => project.id === stored);
   const keepCurrent = !!params.activeCurrentId && params.loaded.some((project) => project.id === params.activeCurrentId);
   return storedExists ? stored! : keepCurrent ? params.activeCurrentId : params.loaded[0].id;
-}
-
-function setGuestProjectState(setProjects: (value: Project[]) => void, setCurrentProjectIdState: (value: string) => void, setLoading: (value: boolean) => void) {
-  setProjects([]);
-  setCurrentProjectIdState("");
-  setLoading(false);
 }
 
 async function runProjectsLoad(args: {
@@ -77,7 +75,6 @@ function useProjectsLoadEffect(args: {
     const loadSeq = ++loadSeqRef.current;
     const isInvalid = () => cancelled || loadSeq !== loadSeqRef.current;
     if (!authenticated) {
-      setGuestProjectState(setProjects, setCurrentProjectIdState, setLoading);
       setLoadError(null);
       return cancel;
     }

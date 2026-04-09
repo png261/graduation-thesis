@@ -13,17 +13,17 @@ from app.schemas.chat import ChatRequest
 from app.services.agent.runtime.factory import clear_agent_cache
 from app.services.ansible import deploy as ansible_deploy
 from app.services.ansible.runtime.ssm_readiness import wait_for_ssm_readiness
-from app.services.blueprints import service as blueprint_service
+from app.services.ansible.runtime.summary import default_post_deploy_checks
 from app.services.chat import service as chat_service
 from app.services.jobs import redis_bus as jobs_redis_bus
 from app.services.jobs import service as jobs_service
+from app.services.model.factory import close_agent_store
 from app.services.opentofu import deploy as opentofu_deploy
 from app.services.opentofu.runtime import review_gate
 from app.services.opentofu.runtime import target_contract as target_contract_service
 from app.services.project_execution import policy as execution_policy
 from app.services.project_execution.contracts import ProjectExecutionRequest
 from app.services.state_backends import service as state_backends_service
-from app.services.telegram import notifications as telegram_notifications
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,10 @@ async def _teardown_runtime() -> None:
         await jobs_redis_bus.close_redis()
     except Exception:
         logger.exception("worker redis teardown failed")
+    try:
+        await close_agent_store()
+    except Exception:
+        logger.exception("worker agent store teardown failed")
     try:
         await db.close_db()
     except Exception:
@@ -218,7 +222,7 @@ async def _generation_readiness_gate(job: dict[str, Any], settings) -> dict[str,
     missing_generation_assets: list[str] = []
     if not bool(generation_gate["terraform_ready"]):
         missing_generation_assets.append("terraform")
-    if not bool(generation_gate["ansible_ready"]):
+    if bool(generation_gate["ansible_required"]) and not bool(generation_gate["ansible_ready"]):
         missing_generation_assets.append("ansible")
     return _gate_error_event(
         str(generation_error["code"]),
@@ -554,18 +558,7 @@ async def _post_deploy_checks_for_project(project_id: str) -> dict[str, Any] | N
     project = await _load_project(project_id)
     if project is None:
         return None
-    selection = blueprint_service.get_active_blueprint_selection(project, "configuration")
-    if not isinstance(selection, dict):
-        return None
-    blueprint_id = selection.get("blueprint_id")
-    if not isinstance(blueprint_id, str) or not blueprint_id:
-        return None
-    try:
-        definition = blueprint_service.get_blueprint_definition("configuration", blueprint_id)
-    except ValueError:
-        return None
-    checks = definition.get("post_deploy_checks")
-    return checks if isinstance(checks, dict) else None
+    return default_post_deploy_checks()
 
 
 def _skipped_post_deploy_result(skipped_hosts: list[dict[str, Any]], message: str) -> dict[str, Any]:
@@ -659,26 +652,6 @@ async def _run_post_deploy_stage(
     return result
 
 
-def _pipeline_message(project: Project, result: dict[str, Any]) -> str:
-    status = str(result.get("status") or "failed")
-    apply_status = str(result.get("apply", {}).get("status") or "failed")
-    ansible_status = str(result.get("ansible", {}).get("status") or "failed")
-    post_deploy_status = str(result.get("post_deploy", {}).get("status") or "skipped")
-    return (
-        f"[{project.name} | {project.id}] Pipeline {'succeeded' if status == 'ok' else 'failed'}\n"
-        f"OpenTofu: {apply_status}\n"
-        f"Ansible: {ansible_status}\n"
-        f"Post-deploy: {post_deploy_status}"
-    )
-
-
-async def _notify_pipeline(job: dict[str, Any], result: dict[str, Any]) -> None:
-    project = await _load_project(job["project_id"])
-    if project is None:
-        return
-    await telegram_notifications.notify_project(project, get_settings(), _pipeline_message(project, result))
-
-
 async def _run_pipeline_job(job_id: str) -> None:
     job = await _start_job(job_id)
     if job is None:
@@ -717,14 +690,14 @@ async def _run_pipeline_job(job_id: str) -> None:
                 "post_deploy": None,
             },
         )
-        await _notify_pipeline(job, {"status": "failed", "apply": None, "ansible": None, "post_deploy": None})
         return
     ansible_status = await ansible_deploy.get_ansible_status(job["project_id"], settings)
+    configuration_required = bool(ansible_status.get("configurationRequired", True))
     apply_modules = (
         list(selected_modules) if selected_modules else [str(module) for module in ansible_status.get("modules", [])]
     )
     ansible_modules = [str(module) for module in ansible_status.get("targetModules", [])]
-    if (
+    if configuration_required and (
         not ansible_status.get("generationReady")
         or bool(_pipeline_missing_requirements(ansible_status))
         or any(module not in apply_modules for module in ansible_modules)
@@ -751,7 +724,6 @@ async def _run_pipeline_job(job_id: str) -> None:
             result=failed_result,
             error={"message": message},
         )
-        await _notify_pipeline(job, failed_result)
         return
     apply_status = "failed"
     apply_results: list[dict[str, Any]] = []
@@ -787,7 +759,74 @@ async def _run_pipeline_job(job_id: str) -> None:
         await jobs_service.mark_job_terminal(
             job_id=job_id, status="failed", result=failed_result, error={"message": "pipeline apply stage failed"}
         )
-        await _notify_pipeline(job, failed_result)
+        return
+    if not configuration_required or not ansible_modules:
+        ssm_readiness = {
+            "status": "skipped",
+            "blocking": False,
+            "scope_mode": "full",
+            "selected_modules": [],
+            "checked_at": None,
+            "timeout_seconds": 0,
+            "target_count": 0,
+            "ready_target_count": 0,
+            "pending_target_count": 0,
+            "failed_target_count": 0,
+            "blocker_code": None,
+            "blocker_message": "No configuration targets require Ansible.",
+            "targets": [],
+            "failed_targets": [],
+        }
+        post_deploy_result = _skipped_post_deploy_result([], "No configuration targets require post-deploy checks.")
+        ansible_result = {
+            "status": "skipped",
+            "results": [],
+            "attempts": 0,
+            **_ansible_provenance({}, selected_modules=[]),
+        }
+        await _emit(job_id, {"type": "ssm_readiness.done", "stage": "ssm_readiness", **ssm_readiness})
+        await _emit(
+            job_id,
+            {
+                "type": "config.done",
+                "stage": "ansible",
+                "status": "ok",
+                "results": [],
+                "attempts": 0,
+                "selected_modules": [],
+                "target_count": 0,
+                "target_ids": [],
+                "message": "Skipped because no configuration targets were generated.",
+                "skipped": True,
+            },
+        )
+        await _emit(
+            job_id,
+            {
+                "type": "post_deploy.done",
+                "stage": "post_deploy",
+                "status": post_deploy_result["status"],
+                "summary": post_deploy_result["summary"],
+                "hosts": post_deploy_result["hosts"],
+                "skipped_hosts": post_deploy_result["skipped_hosts"],
+                "collected_at": post_deploy_result["collected_at"],
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        final_result = {
+            "status": "ok",
+            "apply": {"status": apply_status, "results": apply_results},
+            "ssm_readiness": ssm_readiness,
+            "ansible": ansible_result,
+            "post_deploy": post_deploy_result,
+        }
+        await _emit(job_id, {"type": "pipeline.done", "status": "ok"})
+        await jobs_service.mark_job_terminal(
+            job_id=job_id,
+            status="succeeded",
+            result=final_result,
+            error=None,
+        )
         return
     readiness_started = False
 
@@ -846,7 +885,6 @@ async def _run_pipeline_job(job_id: str) -> None:
             result=failed_result,
             error={"message": message},
         )
-        await _notify_pipeline(job, failed_result)
         return
     ansible_status = "failed"
     ansible_results: list[dict[str, Any]] = []
@@ -906,7 +944,6 @@ async def _run_pipeline_job(job_id: str) -> None:
             }
         ),
     )
-    await _notify_pipeline(job, final_result)
 
 
 async def _run_destroy_job(job_id: str) -> None:
@@ -957,59 +994,6 @@ async def _run_destroy_job(job_id: str) -> None:
     )
 
 
-def _chat_message(
-    project: Project,
-    *,
-    status: str,
-    job_id: str,
-    thread_id: str | None,
-) -> str:
-    state = "completed" if status == "succeeded" else "failed"
-    lines = [f"[{project.name} | {project.id}] Chat {state}"]
-    if thread_id:
-        lines.append(f"Thread: {thread_id}")
-    lines.append(f"Job: {job_id}")
-    return "\n".join(lines)
-
-
-async def _notify_chat(
-    job: dict[str, Any],
-    *,
-    status: str,
-    job_id: str,
-    thread_id: str | None,
-) -> None:
-    project = await _load_project(job["project_id"])
-    if project is None:
-        return
-    await telegram_notifications.notify_project(
-        project,
-        get_settings(),
-        _chat_message(project, status=status, job_id=job_id, thread_id=thread_id),
-    )
-
-
-async def _notify_chat_if_needed(
-    *,
-    job_id: str,
-    job: dict[str, Any],
-    status: str,
-    thread_id: str | None,
-) -> None:
-    if status not in {"succeeded", "failed"}:
-        return
-    await asyncio.sleep(0.5)
-    refreshed = await _job_or_none(job_id)
-    options = (refreshed or {}).get("params", {}).get("options", {})
-    if not isinstance(options, dict):
-        return
-    if not bool(options.get("notify_telegram")):
-        return
-    if bool(options.get("delivery_ack")):
-        return
-    await _notify_chat(job, status=status, job_id=job_id, thread_id=thread_id)
-
-
 def _chat_request_from_job(job: dict[str, Any]) -> ChatRequest:
     params = job.get("params") if isinstance(job.get("params"), dict) else {}
     raw_payload = {
@@ -1051,12 +1035,6 @@ async def _run_chat_job(job_id: str) -> None:
             result={"status": "failed", "project_id": payload.project_id, "thread_id": payload.thread_id},
             error={"message": str(exc)},
         )
-        await _notify_chat_if_needed(
-            job_id=job_id,
-            job=job,
-            status="failed",
-            thread_id=payload.thread_id,
-        )
         return
     if await _should_cancel(job_id):
         await jobs_service.mark_job_terminal(
@@ -1077,12 +1055,6 @@ async def _run_chat_job(job_id: str) -> None:
         status="succeeded",
         result=result,
         error=None,
-    )
-    await _notify_chat_if_needed(
-        job_id=job_id,
-        job=job,
-        status="succeeded",
-        thread_id=payload.thread_id,
     )
 
 

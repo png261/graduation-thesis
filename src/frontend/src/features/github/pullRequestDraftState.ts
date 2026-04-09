@@ -37,11 +37,8 @@ export function applyPullRequestDefaults(
 export function buildPullRequestSuggestionCopy(
   source: ProjectPullRequestDefaults["source"],
 ): string {
-  if (source === "blueprint_run") {
-    return "Suggested title/body come from the latest active blueprint run and remain editable.";
-  }
   if (source === "fallback") {
     return "Suggested title/body come from the latest available project context and remain editable.";
   }
-  return "Suggested title/body come from the latest blueprint generation history and remain editable.";
+  return "Suggested title/body come from the latest generation history and remain editable.";
 }

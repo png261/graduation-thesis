@@ -26,10 +26,6 @@ case "$service_name" in
     service_dir="workflow"
     service_package="workflow_service"
     ;;
-  blueprint)
-    service_dir="blueprint"
-    service_package="blueprint_service"
-    ;;
   provisioning)
     service_dir="provisioning"
     service_package="provisioning_service"

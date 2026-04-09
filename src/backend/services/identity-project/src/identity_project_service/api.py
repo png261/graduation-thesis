@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-
 from .backend import (
     _DEFAULT_AGENT_MD,
     invalidate_agent,
@@ -44,10 +42,6 @@ def write_text(project_id: str, path: str, content: str) -> str:
 
 def read_text(project_id: str, path: str) -> str:
     return project_files.read_text(project_id, path)
-
-
-def iter_skill_files(project_id: str) -> Iterator[tuple[str, str]]:
-    return project_files.iter_skill_files(project_id)
 
 
 def delete_file(project_id: str, path: str) -> str:

@@ -6,17 +6,7 @@ from .credential_profiles import (
     resolve_profile_credentials,
     update_credential_profile,
 )
-from .gitlab_auth import (
-    build_authorize_url,
-    clear_user_token,
-    exchange_code,
-    fetch_gitlab_user,
-    get_user_access_token,
-    get_user_session,
-    list_repositories,
-    parse_oauth_state,
-    save_user_token,
-)
+
 from .service import (
     browse_cloud_buckets,
     browse_cloud_objects,
@@ -26,7 +16,6 @@ from .service import (
     get_sync_runs,
     import_cloud_backend,
     import_from_github_repo,
-    import_from_gitlab_repo,
     list_drift_alerts,
     list_policy_alerts,
     list_state_backends,
@@ -46,7 +35,6 @@ __all__ = [
     "delete_backend",
     "delete_credential_profile",
     "exchange_code",
-    "fetch_gitlab_user",
     "generate_fix_all_plan",
     "generate_fix_plan",
     "get_sync_runs",
@@ -54,7 +42,6 @@ __all__ = [
     "get_user_session",
     "import_cloud_backend",
     "import_from_github_repo",
-    "import_from_gitlab_repo",
     "list_credential_profiles",
     "list_drift_alerts",
     "list_policy_alerts",

@@ -36,7 +36,6 @@ function usePanelUiState(authenticated: boolean) {
     });
   }, []);
   return {
-    isGuest: !authenticated,
     expandedFolders,
     setExpandedFolders,
     selectedPaths,
@@ -260,16 +259,14 @@ function stateBackendsOverviewSection(stateBackends: ReturnType<typeof useStateB
     setStateShowSensitive: stateBackends.setShowSensitive,
     stateConnectOpen: stateBackends.connectOpen,
     setStateConnectOpen: stateBackends.setConnectOpen,
-    stateConnectSource: stateBackends.connectSource,
-    setStateConnectSource: stateBackends.setConnectSource,
     stateConnectBusy: stateBackends.connectBusy,
     stateConnectError: stateBackends.connectError,
-    stateProfiles: stateBackends.profiles,
-    stateProfilesLoading: stateBackends.profilesLoading,
     stateCloudProvider: stateBackends.cloudProvider,
     setStateCloudProvider: stateBackends.setCloudProvider,
-    stateCloudProfileId: stateBackends.cloudProfileId,
-    setStateCloudProfileId: stateBackends.setCloudProfileId,
+    stateCloudAccessKeyId: stateBackends.cloudAccessKeyId,
+    setStateCloudAccessKeyId: stateBackends.setCloudAccessKeyId,
+    stateCloudSecretAccessKey: stateBackends.cloudSecretAccessKey,
+    setStateCloudSecretAccessKey: stateBackends.setCloudSecretAccessKey,
     stateCloudName: stateBackends.cloudName,
     setStateCloudName: stateBackends.setCloudName,
     stateCloudBucket: stateBackends.cloudBucket,
@@ -284,48 +281,11 @@ function stateBackendsOverviewSection(stateBackends: ReturnType<typeof useStateB
   };
 }
 
-function stateBackendsGithubSection(stateBackends: ReturnType<typeof useStateBackendsWorkspace>) {
-  return {
-    stateGithubSession: stateBackends.githubSession,
-    stateGithubRepos: stateBackends.githubRepos,
-    stateGithubRepo: stateBackends.githubRepo,
-    setStateGithubRepo: stateBackends.setGithubRepo,
-    stateGithubBranch: stateBackends.githubBranch,
-    setStateGithubBranch: stateBackends.setGithubBranch,
-    stateGithubProfileId: stateBackends.githubProfileId,
-    setStateGithubProfileId: stateBackends.setGithubProfileId,
-    stateGithubCandidates: stateBackends.githubCandidates,
-    stateGithubSelectedCandidates: stateBackends.githubSelectedCandidates,
-    setStateGithubSelectedCandidates: stateBackends.setGithubSelectedCandidates,
-  };
-}
-
-function stateBackendsGitlabSection(stateBackends: ReturnType<typeof useStateBackendsWorkspace>) {
-  return {
-    stateGitlabSession: stateBackends.gitlabSession,
-    stateGitlabRepos: stateBackends.gitlabRepos,
-    stateGitlabRepo: stateBackends.gitlabRepo,
-    setStateGitlabRepo: stateBackends.setGitlabRepo,
-    stateGitlabBranch: stateBackends.gitlabBranch,
-    setStateGitlabBranch: stateBackends.setGitlabBranch,
-    stateGitlabProfileId: stateBackends.gitlabProfileId,
-    setStateGitlabProfileId: stateBackends.setGitlabProfileId,
-    stateGitlabCandidates: stateBackends.gitlabCandidates,
-    stateGitlabSelectedCandidates: stateBackends.gitlabSelectedCandidates,
-    setStateGitlabSelectedCandidates: stateBackends.setGitlabSelectedCandidates,
-  };
-}
-
 function stateBackendsActionSection(stateBackends: ReturnType<typeof useStateBackendsWorkspace>) {
   return {
     refreshStateBackends: stateBackends.loadBackends,
     refreshStateDetails: stateBackends.loadDetails,
     runStateCloudImport: stateBackends.runCloudImport,
-    scanStateGithubRepo: stateBackends.scanGithubRepo,
-    importStateGithubRepo: stateBackends.importGithubRepo,
-    connectStateGitlabOAuth: stateBackends.openGitlabOAuth,
-    scanStateGitlabRepo: stateBackends.scanGitlabRepo,
-    importStateGitlabRepo: stateBackends.importGitlabRepo,
     syncSelectedStateBackend: stateBackends.syncSelectedBackend,
     removeSelectedStateBackend: stateBackends.removeSelectedBackend,
     saveStateBackendSettings: stateBackends.saveSettings,
@@ -338,8 +298,6 @@ function stateBackendsActionSection(stateBackends: ReturnType<typeof useStateBac
 function stateBackendsSection(stateBackends: ReturnType<typeof useStateBackendsWorkspace>) {
   return {
     ...stateBackendsOverviewSection(stateBackends),
-    ...stateBackendsGithubSection(stateBackends),
-    ...stateBackendsGitlabSection(stateBackends),
     ...stateBackendsActionSection(stateBackends),
   };
 }
@@ -378,7 +336,6 @@ function buildFilesystemPanelResult(params: {
 function basePanelSection(authenticated: boolean, panel: ReturnType<typeof usePanelUiState>) {
   return {
     authenticated,
-    isGuest: panel.isGuest,
     workspaceTab: panel.workspaceTab,
     setWorkspaceTab: panel.setWorkspaceTab,
     expandedFolders: panel.expandedFolders,

@@ -6,7 +6,7 @@
 export function ReasoningBlock({ text }: ReasoningMessagePartProps) {
   if (!text) return null;
   return (
-    <div className="rounded-lg border border-[var(--da-border)] bg-[var(--da-bg)] p-3 text-xs text-blue-100/85">
+    <div className="rounded-lg border border-[var(--da-border)] bg-[var(--da-bg)] p-3 text-xs text-[color-mix(in_srgb,var(--da-text)_82%,transparent)]">
       {text}
     </div>
   );

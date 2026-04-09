@@ -13,7 +13,7 @@ import {
   type PullRequestDraftState,
 } from "../github/pullRequestDraftState";
 
-const GENERATION_SUGGESTION_COPY = "Suggested title/body come from the latest blueprint generation history and remain editable.";
+const GENERATION_SUGGESTION_COPY = "Suggested title/body come from the latest generation history and remain editable.";
 
 interface PullRequestModalProps {
   projectId: string;
@@ -50,7 +50,6 @@ export function buildPullRequestFormDefaults(
     working_branch: "",
     repo_full_name: "",
     source: "fallback",
-    blueprint_run_id: null,
     terraform_generation_id: null,
     ansible_generation_id: null,
   });
@@ -178,7 +177,7 @@ function PullRequestFields({
 function PullRequestError({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+    <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
       <AlertTitle>Error</AlertTitle>
       <AlertDescription>{error}</AlertDescription>
     </Alert>

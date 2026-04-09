@@ -1,4 +1,5 @@
 """Code-backed Terraform and Ansible template contracts."""
+
 from __future__ import annotations
 
 import re
@@ -64,9 +65,7 @@ def provider_credential_vars(provider: str | None) -> tuple[str, ...]:
 
 def build_template_contract_markdown() -> str:
     terraform_files = ", ".join(f"`{name}`" for name in TERRAFORM_REQUIRED_FILES)
-    ansible_files = ", ".join(
-        f"`{item.replace('{module}', '<module>')}`" for item in ANSIBLE_ROLE_REQUIRED_FILES
-    )
+    ansible_files = ", ".join(f"`{item.replace('{module}', '<module>')}`" for item in ANSIBLE_ROLE_REQUIRED_FILES)
     return "\n".join(
         (
             "## Template Contract",
@@ -75,10 +74,10 @@ def build_template_contract_markdown() -> str:
             f"- Every module must declare output `{ANSIBLE_HOSTS_OUTPUT_NAME}` (use `[]` when no hosts).",
             f"- Every module must declare output `{CONFIGURATION_TARGETS_OUTPUT_NAME}` (use `[]` when no runtime targets exist).",
             f"- The stack must declare output `{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}`.",
-            f"- Ansible entrypoint required: `{ANSIBLE_PLAYBOOK_PATH}`.",
-            f"- Ansible role required files per module: {ansible_files}",
-            "- Module-to-role mapping is 1:1 (`modules/<module>` -> `roles/<module>`).",
-            "- Update `playbooks/site.yml` so it includes each generated module role.",
+            f"- Ansible entrypoint required only when configuration targets exist: `{ANSIBLE_PLAYBOOK_PATH}`.",
+            f"- Ansible role required files per configured module: {ansible_files}",
+            "- Module-to-role mapping is 1:1 only for modules that require configuration (`modules/<module>` -> `roles/<module>`).",
+            "- If no modules require configuration, skip playbooks/roles and validate with `require_ansible=false`.",
         )
     )
 
@@ -133,7 +132,7 @@ def _missing_output_contract(project_root: Path, module: str) -> str | None:
         return f"modules/{module}/outputs.tf missing readable content"
     if _ANSIBLE_OUTPUT_ANCHOR_RE.search(content):
         return None
-    return f"modules/{module}/outputs.tf missing output \"{ANSIBLE_HOSTS_OUTPUT_NAME}\""
+    return f'modules/{module}/outputs.tf missing output "{ANSIBLE_HOSTS_OUTPUT_NAME}"'
 
 
 def _missing_target_contract_output(project_root: Path, module: str) -> str | None:
@@ -143,7 +142,7 @@ def _missing_target_contract_output(project_root: Path, module: str) -> str | No
         return f"modules/{module}/outputs.tf missing readable content"
     if _CONFIGURATION_TARGETS_OUTPUT_ANCHOR_RE.search(content):
         return None
-    return f"modules/{module}/outputs.tf missing output \"{CONFIGURATION_TARGETS_OUTPUT_NAME}\""
+    return f'modules/{module}/outputs.tf missing output "{CONFIGURATION_TARGETS_OUTPUT_NAME}"'
 
 
 def _missing_canonical_target_contract(project_root: Path) -> str | None:
@@ -153,7 +152,7 @@ def _missing_canonical_target_contract(project_root: Path) -> str | None:
         return "stacks/main/outputs.tf missing readable content"
     if _CANONICAL_TARGET_OUTPUT_ANCHOR_RE.search(content):
         return None
-    return f"stacks/main/outputs.tf missing output \"{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}\""
+    return f'stacks/main/outputs.tf missing output "{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}"'
 
 
 def _expected_role_paths(module: str) -> list[str]:
@@ -274,9 +273,8 @@ def validate_iac_structure(
             "terraform_files": list(TERRAFORM_REQUIRED_FILES),
             "optional_terraform_files": list(TERRAFORM_OPTIONAL_FILES),
             "ansible_playbook": ANSIBLE_PLAYBOOK_PATH,
-            "ansible_role_files": [
-                item.replace("{module}", "<module>") for item in ANSIBLE_ROLE_REQUIRED_FILES
-            ],
+            "ansible_role_files": [item.replace("{module}", "<module>") for item in ANSIBLE_ROLE_REQUIRED_FILES],
+            "ansible_required_when": "configuration targets or explicit post-provision configuration are needed",
             "required_output": ANSIBLE_HOSTS_OUTPUT_NAME,
             "module_target_output": CONFIGURATION_TARGETS_OUTPUT_NAME,
             "canonical_target_output": CANONICAL_TARGET_CONTRACT_OUTPUT_NAME,

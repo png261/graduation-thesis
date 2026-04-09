@@ -11,9 +11,7 @@ _GENERATION_READINESS_MESSAGE = "Generate Terraform and Ansible artifacts before
 _PLAN_REVIEW_MESSAGE = "Review the latest plan in this session before continuing."
 _DESTROY_REVIEW_MESSAGE = "Run and review a destroy plan in this session before continuing."
 _DRIFT_REFRESH_MESSAGE = "Refresh drift on the primary state backend before continuing."
-_DRIFT_OVERRIDE_MESSAGE = (
-    "Refresh drift on the primary state backend before continuing, or explicitly allow partial apply for the selected scope."
-)
+_DRIFT_OVERRIDE_MESSAGE = "Refresh drift on the primary state backend before continuing, or explicitly allow partial apply for the selected scope."
 _PARTIAL_SCOPE_MESSAGE = "Acknowledge the advanced partial-scope warning before continuing."
 _DESTROY_CONFIRMATION_MESSAGE = "Type the project name and destroy before starting destroy."
 
@@ -50,10 +48,12 @@ def build_generation_gate(
     terraform_generated = terraform_generation_ready(opentofu_status)
     target_ready = target_contract_ready(target_contract)
     target_stale = bool(target_contract.get("stale"))
-    ansible_ready = bool(ansible_status.get("generationReady"))
+    ansible_required = bool(ansible_status.get("configurationRequired", True))
+    ansible_ready = (not ansible_required) or bool(ansible_status.get("generationReady"))
     return {
         "terraform_generated": terraform_generated,
         "terraform_ready": terraform_generated and target_ready,
+        "ansible_required": ansible_required,
         "ansible_ready": ansible_ready,
         "target_contract_ready": target_ready,
         "target_contract_stale": target_stale,
@@ -166,18 +166,26 @@ def build_checklist(
             "Saved AWS credentials",
             not credential_gate["blocking"],
             "credentials_missing",
-            "Saved AWS credentials are ready."
-            if not credential_gate["blocking"]
-            else f"Missing saved AWS credentials: {', '.join(credential_gate['missing_fields'])}",
+            (
+                "Saved AWS credentials are ready."
+                if not credential_gate["blocking"]
+                else f"Missing saved AWS credentials: {', '.join(credential_gate['missing_fields'])}"
+            ),
         ),
         generated_terraform_checklist_item(generation_gate, target_contract),
         checklist_item(
             "Generated Ansible",
             bool(generation_gate["ansible_ready"]),
-            "ansible_generation_missing",
-            "Generated Ansible is ready."
-            if generation_gate["ansible_ready"]
-            else "Generated Ansible is not ready for deploy.",
+            "ansible_not_required" if not generation_gate["ansible_required"] else "ansible_generation_missing",
+            (
+                "Generated Ansible is not required for this deploy scope."
+                if not generation_gate["ansible_required"]
+                else (
+                    "Generated Ansible is ready."
+                    if generation_gate["ansible_ready"]
+                    else "Generated Ansible is not ready for deploy."
+                )
+            ),
         ),
         checklist_item(
             "Reviewed plan",
@@ -321,7 +329,11 @@ def resolve_drift_gate_error(
 
     status = str(drift_refresh.get("status") or "")
     source = str(drift_refresh.get("source") or "")
-    if scope_mode == "partial" and status == "drift_detected" and not request.option_enabled("confirm_partial_drift_override"):
+    if (
+        scope_mode == "partial"
+        and status == "drift_detected"
+        and not request.option_enabled("confirm_partial_drift_override")
+    ):
         return gate_error("drift_detected", _DRIFT_OVERRIDE_MESSAGE, drift_status=status)
 
     if source == "primary_backend" and status in {"in_sync", "ready"} and not bool(drift_refresh.get("blocking")):
@@ -343,11 +355,7 @@ def resolve_destroy_confirmation_error(
         return gate_error("partial_scope_confirmation_required", _PARTIAL_SCOPE_MESSAGE)
 
     confirmation = request.confirmation
-    if (
-        confirmation is None
-        or confirmation.project_name != project_name
-        or confirmation.keyword != "destroy"
-    ):
+    if confirmation is None or confirmation.project_name != project_name or confirmation.keyword != "destroy":
         return gate_error("destroy_confirmation_required", _DESTROY_CONFIRMATION_MESSAGE)
     if scope_mode == "partial" and tuple(request.selected_modules) != confirmation.selected_modules:
         return gate_error("destroy_confirmation_required", _DESTROY_CONFIRMATION_MESSAGE)
@@ -372,7 +380,9 @@ def pipeline_preflight_message(status: Mapping[str, Any], apply_modules: list[st
     if missing:
         if blocker_code and blocker_code in missing:
             failed_targets = ssm_readiness.get("failed_targets")
-            target_rows = failed_targets if isinstance(failed_targets, list) and failed_targets else ssm_readiness.get("targets")
+            target_rows = (
+                failed_targets if isinstance(failed_targets, list) and failed_targets else ssm_readiness.get("targets")
+            )
             target_ids = [
                 str(item.get("execution_id") or "")
                 for item in target_rows

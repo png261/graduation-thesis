@@ -148,14 +148,14 @@ function ImportRepoDialogBody(props: ImportRepoDialogProps) {
       <ImportRepoLoadingState loading={props.loading} />
       {!props.loading && !props.session.authenticated ? <ImportRepoAuthPrompt onLogin={props.onLogin} /> : null}
       {!props.loading && props.session.authenticated ? <ImportRepoForm connected={props.connected} session={props.session} repos={props.repos} repoName={props.repoName} baseBranch={props.baseBranch} onRepoNameChange={props.onRepoNameChange} onBaseBranchChange={props.onBaseBranchChange} /> : null}
-      {props.pendingConfirmationMessage ? <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-100">
+      {props.pendingConfirmationMessage ? <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-700">
         <AlertTitle>Replace workspace files?</AlertTitle>
         <AlertDescription className="space-y-2">
           <p>{props.pendingConfirmationMessage}</p>
-          <p>Only AGENTS.md, .agents/skills/, .claude/skills/, .opentofu-runtime/, and .git are preserved automatically.</p>
+          <p>Only AGENTS.md, .opentofu-runtime/, and .git are preserved automatically.</p>
         </AlertDescription>
       </Alert> : null}
-      {props.error ? <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+      {props.error ? <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
         <AlertTitle>Import failed</AlertTitle>
         <AlertDescription>{props.error}</AlertDescription>
       </Alert> : null}

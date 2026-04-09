@@ -61,13 +61,18 @@ function ProjectPickerMenu({
   onProjectChange,
   onCreateProject,
   onRenameProject,
-}: Pick<WorkspaceHeaderProps, "projects" | "currentProjectId" | "onProjectChange" | "onCreateProject" | "onRenameProject">) {
+}: Pick<
+  WorkspaceHeaderProps,
+  "projects" | "currentProjectId" | "onProjectChange" | "onCreateProject" | "onRenameProject"
+>) {
   return (
     <DropdownMenuContent align="start" className="w-80">
       <DropdownMenuLabel>Projects</DropdownMenuLabel>
       <DropdownMenuSeparator />
       <DropdownMenuRadioGroup value={currentProjectId} onValueChange={onProjectChange}>
-        {projects.map((project) => <ProjectMenuItem key={project.id} project={project} />)}
+        {projects.map((project) => (
+          <ProjectMenuItem key={project.id} project={project} />
+        ))}
       </DropdownMenuRadioGroup>
       <DropdownMenuSeparator />
       <DropdownMenuItem onSelect={onCreateProject}>Create Project</DropdownMenuItem>
@@ -79,7 +84,7 @@ function ProjectPickerMenu({
 function ProjectPickerTrigger({ projectName }: { projectName: string }) {
   return (
     <DropdownMenuTrigger asChild>
-      <Button variant="ghost" className="h-9 min-w-[280px] justify-between px-2 text-base font-semibold">
+      <Button variant="ghost" className="h-10 min-w-[300px] justify-between px-3 text-lg font-semibold">
         <span className="truncate">{projectName}</span>
         <ChevronDown className="h-4 w-4 text-[var(--da-muted)]" />
       </Button>
@@ -94,7 +99,10 @@ function ProjectPicker({
   onProjectChange,
   onCreateProject,
   onRenameProject,
-}: Pick<WorkspaceHeaderProps, "projects" | "currentProject" | "currentProjectId" | "onProjectChange" | "onCreateProject" | "onRenameProject">) {
+}: Pick<
+  WorkspaceHeaderProps,
+  "projects" | "currentProject" | "currentProjectId" | "onProjectChange" | "onCreateProject" | "onRenameProject"
+>) {
   return (
     <DropdownMenu>
       <ProjectPickerTrigger projectName={currentProject?.name || "Select project"} />
@@ -126,11 +134,18 @@ function HeaderExportCodeMenu({
   onDownloadZip,
   onOpenCreateRepo,
   onOpenPullRequest,
-}: Pick<WorkspaceHeaderProps, "readOnly" | "githubStatus" | "onDownloadZip" | "onOpenCreateRepo" | "onOpenPullRequest">) {
+}: Pick<
+  WorkspaceHeaderProps,
+  "readOnly" | "githubStatus" | "onDownloadZip" | "onOpenCreateRepo" | "onOpenPullRequest"
+>) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className="h-9 gap-1.5 border-white/20 bg-black/20 hover:bg-black/35">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 gap-1.5 border-[var(--da-border)] bg-[var(--da-elevated)] text-[var(--da-text)] hover:bg-[color-mix(in_srgb,var(--da-accent)_8%,var(--da-elevated))]"
+        >
           Export Code
           <ChevronDown className="h-4 w-4" />
         </Button>
@@ -138,9 +153,35 @@ function HeaderExportCodeMenu({
       <DropdownMenuContent align="end" className="w-80">
         <DropdownMenuLabel>Export Code</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <HeaderMenuItem icon={<Download className="mt-0.5 h-4 w-4" />} title="Download as Zip" description="Get the latest code version" disabled={readOnly} onSelect={onDownloadZip} />
-        <HeaderMenuItem icon={<Github className="mt-0.5 h-4 w-4" />} title="Create GitHub Repository" description={githubStatus?.connected ? "Project is already connected to a repository" : "Export to a new repository and connect automatically"} disabled={readOnly || Boolean(githubStatus?.connected)} onSelect={onOpenCreateRepo} />
-        <HeaderMenuItem icon={<GitPullRequest className="mt-0.5 h-4 w-4" />} title="Create Pull Request" description={githubStatus?.connected ? "Commit local changes and open a pull request" : "Connect this project to GitHub first"} disabled={readOnly || !githubStatus?.connected} onSelect={onOpenPullRequest} />
+        <HeaderMenuItem
+          icon={<Download className="mt-0.5 h-4 w-4" />}
+          title="Download as Zip"
+          description="Get the latest code version"
+          disabled={readOnly}
+          onSelect={onDownloadZip}
+        />
+        <HeaderMenuItem
+          icon={<Github className="mt-0.5 h-4 w-4" />}
+          title="Create GitHub Repository"
+          description={
+            githubStatus?.connected
+              ? "Project is already connected to a repository"
+              : "Export to a new repository and connect automatically"
+          }
+          disabled={readOnly || Boolean(githubStatus?.connected)}
+          onSelect={onOpenCreateRepo}
+        />
+        <HeaderMenuItem
+          icon={<GitPullRequest className="mt-0.5 h-4 w-4" />}
+          title="Create Pull Request"
+          description={
+            githubStatus?.connected
+              ? "Commit local changes and open a pull request"
+              : "Connect this project to GitHub first"
+          }
+          disabled={readOnly || !githubStatus?.connected}
+          onSelect={onOpenPullRequest}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -170,9 +211,27 @@ function HeaderWorkflowMenu({
       <DropdownMenuContent align="end" className="w-72">
         <DropdownMenuLabel>Run Workflow</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <HeaderMenuItem icon={<Play className="mt-0.5 h-4 w-4" />} title="Run Plan" description="init + plan" disabled={disabled} onSelect={() => onRunWorkflow("plan")} />
-        <HeaderMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Apply" description="init + apply" disabled={disabled} onSelect={() => onRunWorkflow("apply")} />
-        <HeaderMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Pipeline" description="apply + ansible + telegram report" disabled={disabled} onSelect={() => onRunWorkflow("pipeline")} />
+        <HeaderMenuItem
+          icon={<Play className="mt-0.5 h-4 w-4" />}
+          title="Run Plan"
+          description="init + plan"
+          disabled={disabled}
+          onSelect={() => onRunWorkflow("plan")}
+        />
+        <HeaderMenuItem
+          icon={<Zap className="mt-0.5 h-4 w-4" />}
+          title="Run Apply"
+          description="init + apply"
+          disabled={disabled}
+          onSelect={() => onRunWorkflow("apply")}
+        />
+        <HeaderMenuItem
+          icon={<Zap className="mt-0.5 h-4 w-4" />}
+          title="Run Pipeline"
+          description="apply + ansible + post-deploy checks"
+          disabled={disabled}
+          onSelect={() => onRunWorkflow("pipeline")}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -180,7 +239,7 @@ function HeaderWorkflowMenu({
 
 export function WorkspaceHeader(props: WorkspaceHeaderProps) {
   return (
-    <header className="border-b border-white/10 bg-[#0b0d12] px-4 py-2.5">
+    <header className="border-b border-[var(--da-border)] bg-[var(--da-panel)] px-5 py-3">
       <div className="flex items-center justify-between gap-3">
         <ProjectPicker
           projects={props.projects}
@@ -198,7 +257,11 @@ export function WorkspaceHeader(props: WorkspaceHeaderProps) {
             onOpenCreateRepo={props.onOpenCreateRepo}
             onOpenPullRequest={props.onOpenPullRequest}
           />
-          <HeaderWorkflowMenu readOnly={props.readOnly} workflowBusy={props.workflowBusy} onRunWorkflow={props.onRunWorkflow} />
+          <HeaderWorkflowMenu
+            readOnly={props.readOnly}
+            workflowBusy={props.workflowBusy}
+            onRunWorkflow={props.onRunWorkflow}
+          />
         </div>
       </div>
     </header>

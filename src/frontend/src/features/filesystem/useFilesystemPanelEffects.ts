@@ -224,12 +224,6 @@ function useProjectResetEffects(
   }, [projectId, setWorkspaceTab]);
 }
 
-function useGuestWorkspaceGuard(authenticated: boolean, setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void) {
-  useEffect(() => {
-    if (!authenticated) setWorkspaceTab("code");
-  }, [authenticated, setWorkspaceTab]);
-}
-
 function useLazyWorkspaceLoaders(args: {
   authenticated: boolean;
   workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
@@ -269,7 +263,6 @@ export function useFilesystemPanelEffects(args: UseFilesystemPanelEffectsArgs) {
   });
   useInitialFilesystemLoad(args.fetchFiles, args.pushLog);
   useProjectResetEffects(args.projectId, args.resetWorkflow, args.setWorkspaceTab);
-  useGuestWorkspaceGuard(args.authenticated, args.setWorkspaceTab);
   useLazyWorkspaceLoaders({
     authenticated: args.authenticated,
     workspaceTab: args.workspaceTab,

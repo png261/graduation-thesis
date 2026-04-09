@@ -60,7 +60,13 @@ const TREE_ID = "filesystem-tree";
 
 function toExplorerItem(node: TreeNode): ExplorerTreeItem {
   if (node.type === "file") return { id: node.path, path: node.path, name: node.name, type: "file" };
-  return { id: node.path, path: node.path, name: node.name, type: "folder", children: node.children.map(toExplorerItem) };
+  return {
+    id: node.path,
+    path: node.path,
+    name: node.name,
+    type: "folder",
+    children: node.children.map(toExplorerItem),
+  };
 }
 
 function toPathIndices(indices: TreeItemIndex[]): string[] {
@@ -164,7 +170,7 @@ function resolveDropDestination(
 
 function FolderIcon() {
   return (
-    <svg className="h-3.5 w-3.5 shrink-0 text-amber-500/80" viewBox="0 0 16 16" fill="currentColor">
+    <svg className="h-3.5 w-3.5 shrink-0 text-amber-600/80" viewBox="0 0 16 16" fill="currentColor">
       <path d="M1.5 3A1.5 1.5 0 0 0 0 4.5v8A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H7.621a1.5 1.5 0 0 1-1.06-.44L5.5 3H1.5z" />
     </svg>
   );
@@ -189,9 +195,7 @@ function moveItemFromPrompt(
   void onMovePaths(sourcePaths, nextDestination.trim());
 }
 
-function makeRenderItem(
-  props: ExplorerTreeListProps,
-): ({
+function makeRenderItem(props: ExplorerTreeListProps): ({
   item,
   depth,
   children,
@@ -222,7 +226,7 @@ function makeRenderItem(
     const interactiveElement = (
       <div
         {...interactiveProps}
-        className={`flex w-full items-center gap-1 rounded px-1 py-0.5 text-xs ${rowClassName(context.isSelected)}`}
+        className={`flex w-full items-center gap-1.5 rounded px-2 py-0.5 text-[13px] leading-5 ${rowClassName(context.isSelected)}`}
         onContextMenu={(event) => {
           interactiveProps?.onContextMenu?.(event);
           if (!context.isSelected) context.selectItem();
@@ -230,31 +234,64 @@ function makeRenderItem(
       >
         <span className="w-4 shrink-0">{arrow}</span>
         {isFolder ? <FolderIcon /> : <FileTypeIcon path={data.path} />}
-        {context.isRenaming ? <div className="min-w-0 flex-1">{title}</div> : <span className="min-w-0 flex-1 truncate">{title}</span>}
+        {context.isRenaming ? (
+          <div className="min-w-0 flex-1">{title}</div>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+        )}
       </div>
     );
     const createParentPath = isFolder ? data.path : parentDir(data.path);
-    const interactiveWithMenu = context.isRenaming || isPendingCreationItem ? interactiveElement : (
-      <ContextMenu>
-        <ContextMenuTrigger asChild>{interactiveElement}</ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuLabel>{data.path}</ContextMenuLabel>
-          {!isFolder ? <ContextMenuItem onSelect={() => props.onOpenFile(data.path)}>Open<ContextMenuShortcut>Enter</ContextMenuShortcut></ContextMenuItem> : null}
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => context.startRenamingItem()}>Rename<ContextMenuShortcut>F2</ContextMenuShortcut></ContextMenuItem>
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => props.onRequestCreate("file", createParentPath)}>New file here</ContextMenuItem>
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => props.onRequestCreate("folder", createParentPath)}>New folder here</ContextMenuItem>
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => moveItemFromPrompt(data.path, props.selectedPaths, props.onMovePaths)}>Move</ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem disabled={props.readOnly} className="text-red-300 focus:text-red-200" onSelect={() => props.onDelete(data.path, isFolder)}>
-            Delete
-            <ContextMenuShortcut>Del</ContextMenuShortcut>
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-    );
+    const interactiveWithMenu =
+      context.isRenaming || isPendingCreationItem ? (
+        interactiveElement
+      ) : (
+        <ContextMenu>
+          <ContextMenuTrigger asChild>{interactiveElement}</ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuLabel>{data.path}</ContextMenuLabel>
+            {!isFolder ? (
+              <ContextMenuItem onSelect={() => props.onOpenFile(data.path)}>
+                Open<ContextMenuShortcut>Enter</ContextMenuShortcut>
+              </ContextMenuItem>
+            ) : null}
+            <ContextMenuItem disabled={props.readOnly} onSelect={() => context.startRenamingItem()}>
+              Rename<ContextMenuShortcut>F2</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuItem disabled={props.readOnly} onSelect={() => props.onRequestCreate("file", createParentPath)}>
+              New file here
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={props.readOnly}
+              onSelect={() => props.onRequestCreate("folder", createParentPath)}
+            >
+              New folder here
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={props.readOnly}
+              onSelect={() => moveItemFromPrompt(data.path, props.selectedPaths, props.onMovePaths)}
+            >
+              Move
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={props.readOnly}
+              className="text-red-600 focus:text-red-700"
+              onSelect={() => props.onDelete(data.path, isFolder)}
+            >
+              Delete
+              <ContextMenuShortcut>Del</ContextMenuShortcut>
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      );
     return (
       <li {...(context.itemContainerWithChildrenProps as any)} className="list-none">
-        <div {...(context.itemContainerWithoutChildrenProps as any)} style={{ paddingLeft: depth * 16 + 4 }} className="mx-1">
+        <div
+          {...(context.itemContainerWithoutChildrenProps as any)}
+          style={{ paddingLeft: depth * 16 + 4 }}
+          className="mx-1"
+        >
           {interactiveWithMenu}
         </div>
         {children}
@@ -270,7 +307,11 @@ function buildExpandedItemIds(args: {
   pendingCreation: PendingCreation | null;
 }) {
   const expanded = args.filterQuery.trim() ? collectFolderPaths(args.explorerTree) : Array.from(args.expandedFolders);
-  if (args.pendingCreation?.parentPath && args.pendingCreation.parentPath !== "/" && !expanded.includes(args.pendingCreation.parentPath)) {
+  if (
+    args.pendingCreation?.parentPath &&
+    args.pendingCreation.parentPath !== "/" &&
+    !expanded.includes(args.pendingCreation.parentPath)
+  ) {
     expanded.push(args.pendingCreation.parentPath);
   }
   return expanded;
@@ -322,20 +363,21 @@ function usePendingRenameStart(args: {
 }
 
 function useDropHandler(args: {
-  readOnly: boolean;
   items: Record<TreeItemIndex, TreeItem<ExplorerTreeItem>>;
   selectedPaths: Set<string>;
   onMovePaths: (sourcePaths: string[], destinationDir: string) => Promise<void> | void;
 }) {
-  return useCallback((draggedItems: TreeItem<ExplorerTreeItem>[], target: DraggingPosition) => {
-    if (args.readOnly) return;
-    const destinationDir = resolveDropDestination(target, args.items);
-    if (!destinationDir) return;
-    const dragIds = draggedItems.map((item) => String(item.index));
-    const sourcePaths = resolveMoveSourcePaths(dragIds, args.selectedPaths);
-    if (sourcePaths.length < 1) return;
-    void args.onMovePaths(sourcePaths, destinationDir);
-  }, [args]);
+  return useCallback(
+    (draggedItems: TreeItem<ExplorerTreeItem>[], target: DraggingPosition) => {
+      const destinationDir = resolveDropDestination(target, args.items);
+      if (!destinationDir) return;
+      const dragIds = draggedItems.map((item) => String(item.index));
+      const sourcePaths = resolveMoveSourcePaths(dragIds, args.selectedPaths);
+      if (sourcePaths.length < 1) return;
+      void args.onMovePaths(sourcePaths, destinationDir);
+    },
+    [args],
+  );
 }
 
 function toggleExpandedItem(args: {
@@ -376,29 +418,43 @@ function handleRenameItem(args: {
 export function ExplorerTreeList(props: ExplorerTreeListProps) {
   const explorerTree = useMemo(() => props.tree.map(toExplorerItem), [props.tree]);
   const baseItems = useMemo(() => buildTreeItems(explorerTree), [explorerTree]);
-  const items = useMemo(() => withPendingCreation(baseItems, props.pendingCreation), [baseItems, props.pendingCreation]);
+  const items = useMemo(
+    () => withPendingCreation(baseItems, props.pendingCreation),
+    [baseItems, props.pendingCreation],
+  );
   const treeRef = useRef<TreeRef<ExplorerTreeItem> | null>(null);
   const availableItemIds = useMemo(() => new Set(Object.keys(items).map((id) => String(id))), [items]);
-  const expandedItemIds = useMemo(() => buildExpandedItemIds({
-    explorerTree,
-    expandedFolders: props.expandedFolders,
-    filterQuery: props.filterQuery,
-    pendingCreation: props.pendingCreation,
-  }), [explorerTree, props.expandedFolders, props.filterQuery, props.pendingCreation]);
-  const selectedItemIds = useMemo(() => buildSelectedItemIds({
-    availableItemIds,
-    selectedPath: props.selectedPath,
-    selectedPaths: props.selectedPaths,
-  }), [availableItemIds, props.selectedPath, props.selectedPaths]);
-  const viewState = useMemo(() => buildViewState({
-    pendingCreation: props.pendingCreation,
-    selectedItemIds,
-    expandedItemIds,
-    selectedPath: props.selectedPath,
-  }), [expandedItemIds, props.pendingCreation, props.selectedPath, selectedItemIds]);
+  const expandedItemIds = useMemo(
+    () =>
+      buildExpandedItemIds({
+        explorerTree,
+        expandedFolders: props.expandedFolders,
+        filterQuery: props.filterQuery,
+        pendingCreation: props.pendingCreation,
+      }),
+    [explorerTree, props.expandedFolders, props.filterQuery, props.pendingCreation],
+  );
+  const selectedItemIds = useMemo(
+    () =>
+      buildSelectedItemIds({
+        availableItemIds,
+        selectedPath: props.selectedPath,
+        selectedPaths: props.selectedPaths,
+      }),
+    [availableItemIds, props.selectedPath, props.selectedPaths],
+  );
+  const viewState = useMemo(
+    () =>
+      buildViewState({
+        pendingCreation: props.pendingCreation,
+        selectedItemIds,
+        expandedItemIds,
+        selectedPath: props.selectedPath,
+      }),
+    [expandedItemIds, props.pendingCreation, props.selectedPath, selectedItemIds],
+  );
   usePendingRenameStart({ treeRef, items, pendingCreation: props.pendingCreation });
   const handleDrop = useDropHandler({
-    readOnly: props.readOnly,
     items,
     selectedPaths: props.selectedPaths,
     onMovePaths: props.onMovePaths,
@@ -412,30 +468,46 @@ export function ExplorerTreeList(props: ExplorerTreeListProps) {
         items={items}
         getItemTitle={(item) => item.data.name}
         viewState={viewState}
-        canDragAndDrop={!props.readOnly}
-        canDropOnFolder={!props.readOnly}
+        canDragAndDrop={true}
+        canDropOnFolder={true}
         canDropOnNonFolder={false}
         canReorderItems={false}
-        canRename={!props.readOnly}
+        canRename={true}
         canSearch
         canSearchByStartingTyping
         defaultInteractionMode={InteractionMode.ClickArrowToExpand}
         renderDepthOffset={16}
         renderItem={renderItem}
         onSelectItems={(indices) => props.onSelectionChange(toPathIndices(indices))}
-        onExpandItem={(item) => toggleExpandedItem({ item, expandedFolders: props.expandedFolders, toggleFolder: props.toggleFolder, expanded: false })}
-        onCollapseItem={(item) => toggleExpandedItem({ item, expandedFolders: props.expandedFolders, toggleFolder: props.toggleFolder, expanded: true })}
+        onExpandItem={(item) =>
+          toggleExpandedItem({
+            item,
+            expandedFolders: props.expandedFolders,
+            toggleFolder: props.toggleFolder,
+            expanded: false,
+          })
+        }
+        onCollapseItem={(item) =>
+          toggleExpandedItem({
+            item,
+            expandedFolders: props.expandedFolders,
+            toggleFolder: props.toggleFolder,
+            expanded: true,
+          })
+        }
         onPrimaryAction={(item) => {
           if (item.data.type === "file") props.onOpenFile(item.data.path);
         }}
-        onRenameItem={(item, nextName) => handleRenameItem({
-          item,
-          nextName,
-          pendingCreation: props.pendingCreation,
-          onCreateAtPath: props.onCreateAtPath,
-          setPendingCreation: props.setPendingCreation,
-          onRenamePath: props.onRenamePath,
-        })}
+        onRenameItem={(item, nextName) =>
+          handleRenameItem({
+            item,
+            nextName,
+            pendingCreation: props.pendingCreation,
+            onCreateAtPath: props.onCreateAtPath,
+            setPendingCreation: props.setPendingCreation,
+            onRenamePath: props.onRenamePath,
+          })
+        }
         onAbortRenamingItem={(item) => {
           if (props.pendingCreation && String(item.index) === props.pendingCreation.id) props.setPendingCreation(null);
         }}

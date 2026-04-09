@@ -53,7 +53,7 @@ SERVICE_BOUNDARIES: tuple[ServiceBoundary, ...] = (
             "app.services.chat",
             "app.services.agent.runtime",
         ),
-        sync_contracts=("gateway.chat", "identity-project.project-context", "blueprint.runtime-context"),
+        sync_contracts=("gateway.chat", "identity-project.project-context"),
         async_contracts=("workflow.run-chat", "conversation.stream-event"),
     ),
     ServiceBoundary(
@@ -74,23 +74,6 @@ SERVICE_BOUNDARIES: tuple[ServiceBoundary, ...] = (
             "conversation-agent.run-command",
             "workflow.progress-event",
         ),
-    ),
-    ServiceBoundary(
-        name="blueprint",
-        owned_data=(
-            "project_blueprint_runs",
-            "project_terraform_generations",
-            "project_ansible_generations",
-            "artifact_provenance",
-        ),
-        current_references=(
-            "app.blueprint_main",
-            "app.blueprint_routes",
-            "app.services.blueprint",
-            "app.services.blueprints",
-        ),
-        sync_contracts=("conversation-agent.blueprint-context", "gateway.preview-reads"),
-        async_contracts=("artifact.ready",),
     ),
     ServiceBoundary(
         name="provisioning",

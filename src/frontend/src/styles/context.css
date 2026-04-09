@@ -13,7 +13,7 @@
 
 .context-display-label {
   color: var(--da-muted);
-  font-size: 0.75rem;
+  font-size: 0.82rem;
   white-space: nowrap;
 }
 
@@ -24,7 +24,7 @@
   height: 0.5rem;
   overflow: hidden;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--da-border) 70%, #0b0f14);
+  background: color-mix(in srgb, var(--da-border) 80%, #eef3f9);
 }
 
 .context-display-fill {
@@ -39,7 +39,7 @@
 .context-display-value,
 .context-display-empty {
   color: color-mix(in srgb, var(--da-text) 90%, var(--da-muted));
-  font-size: 0.76rem;
+  font-size: 0.84rem;
   white-space: nowrap;
 }
 

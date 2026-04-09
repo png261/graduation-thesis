@@ -4,55 +4,14 @@ import type {
   PolicyCheckScanError,
   PolicyCheckSummary,
 } from "../../contexts/FilesystemContext";
-import type {
-  BlueprintKind,
-  ProjectBlueprintCatalogItem,
-  ProjectBlueprintInputSummary,
-  ProjectBlueprintStep,
-} from "../../api/projects/types";
 
-export type UsageEventPayload = {
-  promptTokens: number;
-  completionTokens: number;
-  modelId: string | null;
-  modelContextWindow: number | null;
-};
-
-export interface BlueprintSuggestionsEventPayload {
-  kind: BlueprintKind;
-  suggestions: ProjectBlueprintCatalogItem[];
-}
-
-export interface BlueprintInputsSummaryEventPayload {
-  kind: BlueprintKind;
-  blueprintId: string;
-  blueprintName: string;
-  inputs: ProjectBlueprintInputSummary[];
-}
-
-export interface BlueprintProvenanceEventPayload {
-  kind: BlueprintKind;
-  source: "selection" | "run";
-  runId: string | null;
-  createdAt: string | null;
-  inputs: Record<string, string>;
-  blueprint: ProjectBlueprintCatalogItem;
-}
-
-export function parseUsageEvent(event: unknown): UsageEventPayload | null {
-  if (!event || typeof event !== "object") return null;
-  const raw = event as Record<string, unknown>;
-  const promptTokens = typeof raw.promptTokens === "number" ? raw.promptTokens : null;
-  const completionTokens = typeof raw.completionTokens === "number" ? raw.completionTokens : null;
-  if (promptTokens === null || completionTokens === null) return null;
-
-  return {
-    promptTokens,
-    completionTokens,
-    modelId: typeof raw.modelId === "string" ? raw.modelId : null,
-    modelContextWindow:
-      typeof raw.modelContextWindow === "number" ? raw.modelContextWindow : null,
-  };
+export interface EvidenceBundleEventPayload {
+  schemaVersion: number;
+  changedFiles: string[];
+  validationsRun: string[];
+  passFailEvidence: string[];
+  unresolvedRisks: string[];
+  completionRationale: string[];
 }
 
 function readChangedPaths(event: Record<string, unknown>): string[] {
@@ -66,25 +25,6 @@ export function parsePolicyCheckStartEvent(event: Record<string, unknown>): Poli
     type: "policy.check.start",
     changedPaths: readChangedPaths(event),
   };
-}
-
-function mapPolicyIssue(raw: unknown): PolicyCheckIssue | null {
-  if (!raw || typeof raw !== "object") return null;
-  const issue = raw as Record<string, unknown>;
-  const source = issue.source === "secret" ? "secret" : "misconfig";
-  const severity = readString(issue.severity, "UNKNOWN");
-  const message = readIssueMessage(issue);
-  return {
-    source,
-    severity,
-    message,
-    title: readOptionalString(issue.title),
-    ruleId: readOptionalString(issue.rule_id) ?? readOptionalString(issue.ruleId),
-    path: readOptionalString(issue.path),
-    line: readOptionalNumber(issue.line),
-    endLine: readOptionalNumber(issue.end_line) ?? readOptionalNumber(issue.endLine),
-    referenceUrl: readOptionalString(issue.reference_url) ?? readOptionalString(issue.referenceUrl),
-  } satisfies PolicyCheckIssue;
 }
 
 function readString(value: unknown, fallback: string): string {
@@ -104,6 +44,25 @@ function readIssueMessage(issue: Record<string, unknown>): string {
   if (message) return message;
   const title = readOptionalString(issue.title);
   return title || "Security issue found";
+}
+
+function mapPolicyIssue(raw: unknown): PolicyCheckIssue | null {
+  if (!raw || typeof raw !== "object") return null;
+  const issue = raw as Record<string, unknown>;
+  const source = issue.source === "secret" ? "secret" : "misconfig";
+  const severity = readString(issue.severity, "UNKNOWN");
+  const message = readIssueMessage(issue);
+  return {
+    source,
+    severity,
+    message,
+    title: readOptionalString(issue.title),
+    ruleId: readOptionalString(issue.rule_id) ?? readOptionalString(issue.ruleId),
+    path: readOptionalString(issue.path),
+    line: readOptionalNumber(issue.line),
+    endLine: readOptionalNumber(issue.end_line) ?? readOptionalNumber(issue.endLine),
+    referenceUrl: readOptionalString(issue.reference_url) ?? readOptionalString(issue.referenceUrl),
+  } satisfies PolicyCheckIssue;
 }
 
 function parsePolicySummary(event: Record<string, unknown>, issues: PolicyCheckIssue[]): PolicyCheckSummary {
@@ -143,96 +102,19 @@ export function parsePolicyCheckResultEvent(event: Record<string, unknown>): Pol
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item: unknown): item is string => typeof item === "string")
+    : [];
 }
 
-function readBlueprintKind(value: unknown): BlueprintKind {
-  return value === "configuration" ? "configuration" : "provisioning";
-}
-
-function readBlueprintInput(raw: unknown): ProjectBlueprintInputSummary {
-  const item = asRecord(raw);
+export function parseEvidenceBundleEvent(event: Record<string, unknown>): EvidenceBundleEventPayload {
   return {
-    key: readString(item.key, ""),
-    label: readString(item.label, ""),
-    description: readOptionalString(item.description),
-    required: Boolean(item.required),
-    riskClass: (readOptionalString(item.riskClass) ?? "safe") as ProjectBlueprintInputSummary["riskClass"],
-    defaultValue: readOptionalString(item.defaultValue) ?? null,
-    resolved: Boolean(item.resolved),
-    value: readOptionalString(item.value) ?? null,
-  };
-}
-
-function readBlueprintStep(raw: unknown): ProjectBlueprintStep {
-  const step = asRecord(raw);
-  return {
-    id: readString(step.id, ""),
-    type: (readOptionalString(step.type) ?? "action") as ProjectBlueprintStep["type"],
-    title: readString(step.title, ""),
-    description: readString(step.description, ""),
-    requiredInputs: Array.isArray(step.requiredInputs)
-      ? step.requiredInputs.filter((item: unknown): item is string => typeof item === "string")
-      : [],
-    expectedResult: readString(step.expectedResult, ""),
-  };
-}
-
-function readBlueprintPayload(raw: unknown): ProjectBlueprintCatalogItem {
-  const payload = asRecord(raw);
-  return {
-    id: readString(payload.id, ""),
-    kind: readBlueprintKind(payload.kind),
-    name: readString(payload.name, ""),
-    summary: readString(payload.summary, ""),
-    resourcesOrActions: Array.isArray(payload.resourcesOrActions)
-      ? payload.resourcesOrActions.filter((item: unknown): item is string => typeof item === "string")
-      : [],
-    requiredInputs: Array.isArray(payload.requiredInputs)
-      ? payload.requiredInputs.map(readBlueprintInput)
-      : [],
-    steps: Array.isArray(payload.steps) ? payload.steps.map(readBlueprintStep) : [],
-  };
-}
-
-function readStringMap(raw: unknown): Record<string, string> {
-  const value = asRecord(raw);
-  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string");
-  return Object.fromEntries(entries);
-}
-
-export function parseBlueprintSuggestionsEvent(
-  event: Record<string, unknown>,
-): BlueprintSuggestionsEventPayload {
-  return {
-    kind: readBlueprintKind(event.kind),
-    suggestions: Array.isArray(event.suggestions) ? event.suggestions.map(readBlueprintPayload) : [],
-  };
-}
-
-export function parseBlueprintInputsSummaryEvent(
-  event: Record<string, unknown>,
-): BlueprintInputsSummaryEventPayload {
-  return {
-    kind: readBlueprintKind(event.kind),
-    blueprintId: readString(event.blueprintId, ""),
-    blueprintName: readString(event.blueprintName, ""),
-    inputs: Array.isArray(event.inputs) ? event.inputs.map(readBlueprintInput) : [],
-  };
-}
-
-export function parseBlueprintProvenanceEvent(
-  event: Record<string, unknown>,
-): BlueprintProvenanceEventPayload {
-  return {
-    kind: readBlueprintKind(event.kind),
-    source: event.source === "run" ? "run" : "selection",
-    runId: readOptionalString(event.runId) ?? null,
-    createdAt: readOptionalString(event.createdAt) ?? null,
-    inputs: readStringMap(event.inputs),
-    blueprint: readBlueprintPayload(event.blueprint),
+    schemaVersion: typeof event.schemaVersion === "number" ? event.schemaVersion : 1,
+    changedFiles: readStringList(event.changedFiles),
+    validationsRun: readStringList(event.validationsRun),
+    passFailEvidence: readStringList(event.passFailEvidence),
+    unresolvedRisks: readStringList(event.unresolvedRisks),
+    completionRationale: readStringList(event.completionRationale),
   };
 }

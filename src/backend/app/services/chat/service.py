@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -8,78 +8,27 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
-from app import db
 from app.core.config import Settings
-from app.models import Project
 from app.schemas.chat import ChatAttachment, ChatMessage, ChatRequest, ChatRole
 from app.services.agent import get_agent
-from app.services.blueprints import service as blueprint_service
+from app.services.agent.runtime.context import DeepAgentContext, build_infra_cost_context, build_runtime_context
 from app.services.model.factory import create_chat_model
+from app.services.opentofu import deploy as opentofu_deploy
 from app.services.policy import checks as policy_checks
 
+from .evidence_bundle import extract_evidence_bundle_event
 from .streaming_helpers import (
     extract_messages_from_obj,
     extract_text_events,
     normalize_tool_calls,
     parse_tool_result,
 )
-from .usage import (
-    context_window_fallback,
-    extract_usage_from_message,
-    max_input_tokens_from_profile,
-    normalize_model_id,
-    text_from_content,
-    to_int,
-)
 
 CancelChecker = Callable[[], Awaitable[bool]]
+logger = logging.getLogger(__name__)
 
-_REQUEST_HINTS = ("can you", "could you", "please", "help me", "i need", "i want", "let's", "lets")
-_BLUEPRINT_SUGGESTION_ACTIONS = ("show", "suggest", "recommend", "list")
-_BLUEPRINT_REFERENCE_TERMS = ("blueprint", "template")
-_CONFIGURATION_HOST_ACTIONS = ("install", "configure")
-_CONFIGURATION_HOST_TARGETS = ("host", "server", "vm", "instance", "machine", "node")
-_CONFIGURATION_SOFTWARE_ACTIONS = ("install", "configure", "set up", "setup")
-_CONFIGURATION_SOFTWARE_TARGETS = ("openclaw", "package", "agent", "daemon")
-_CONFIGURATION_GENERATE_ACTIONS = ("create", "build", "generate")
-_CONFIGURATION_GENERATE_TARGETS = ("ansible", "playbook", "role", "inventory")
-_PROVISIONING_ACTIONS = (
-    "provision",
-    "create",
-    "build",
-    "generate",
-    "deploy",
-    "spin up",
-    "scaffold",
-    "bootstrap",
-    "set up",
-    "setup",
-)
-_PROVISIONING_TARGETS = (
-    "terraform",
-    "opentofu",
-    "infrastructure",
-    "infra",
-    "iac",
-    "aws",
-    "gcp",
-    "azure",
-    "ec2",
-    "vpc",
-    "subnet",
-    "rds",
-    "eks",
-    "cluster",
-    "kubernetes",
-    "load balancer",
-    "lb",
-    "vm",
-    "instance",
-    "server",
-    "database",
-    "network",
-)
 _DOCUMENT_ATTACHMENT_EXTENSIONS = frozenset(
     {
         ".txt",
@@ -108,6 +57,15 @@ _EXPLICIT_BINARY_CONTENT_TYPES = frozenset(
     }
 )
 _IMAGE_TOKEN_BUDGET = 1024
+_TRANSPORT_FAILURE_TERMS = (
+    "no route to host",
+    "network is unreachable",
+    "connection refused",
+    "dial tcp",
+    "connect:",
+    "timeout",
+    "timed out",
+)
 
 
 def _bad_chat_request(message: str) -> None:
@@ -267,265 +225,106 @@ def _apply_token_budget(
     return kept, {"originalTokens": original_tokens, "usedTokens": running}
 
 
-def _resolve_model_info(settings: Settings) -> tuple[str | None, int | None]:
-    configured_model_id = normalize_model_id(settings.llm_model)
-    resolved_model_id = configured_model_id
-    context_window: int | None = None
-
-    try:
-        model = create_chat_model(settings)
-    except Exception:
-        model = None
-
-    if model is not None:
-        for attr in ("model_name", "model", "model_id"):
-            value = getattr(model, attr, None)
-            normalized = normalize_model_id(value if isinstance(value, str) else None)
-            if normalized:
-                resolved_model_id = normalized
-                break
-
-        for attr in ("profile", "model_profile"):
-            context_window = max_input_tokens_from_profile(getattr(model, attr, None))
-            if context_window is not None:
-                break
-
-        if context_window is None:
-            context_window = to_int(getattr(model, "max_input_tokens", None))
-
-    if context_window is None and resolved_model_id:
-        context_window = context_window_fallback(resolved_model_id)
-    if context_window is None and configured_model_id:
-        context_window = context_window_fallback(configured_model_id)
-
-    return (resolved_model_id, context_window)
+def _text_from_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return ""
 
 
-def _make_config(payload: ChatRequest) -> dict:
-    thread_id = payload.thread_id or str(uuid.uuid4())
+def _resolved_thread_id(payload: ChatRequest) -> str:
+    return payload.thread_id or str(uuid.uuid4())
+
+
+def _make_config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
+
+
+async def _load_runtime_cost_context(project_id: str, settings: Settings):
+    try:
+        payload = await opentofu_deploy.get_costs(
+            project_id=project_id,
+            settings=settings,
+            module_scope="all",
+            refresh=False,
+        )
+    except Exception:
+        logger.warning("failed to load runtime cost context project_id=%s", project_id, exc_info=True)
+        return None
+    return build_infra_cost_context(payload) if isinstance(payload, dict) else None
+
+
+async def _make_agent_run_payload(payload: ChatRequest, settings: Settings) -> tuple[dict, DeepAgentContext]:
+    thread_id = _resolved_thread_id(payload)
+    infra_cost = await _load_runtime_cost_context(_project_id(payload), settings)
+    return _make_config(thread_id), build_runtime_context(payload, thread_id=thread_id, infra_cost=infra_cost)
 
 
 def _project_id(payload: ChatRequest) -> str:
     return payload.project_id or "default"
 
 
-def _latest_user_message_text(payload: ChatRequest) -> str:
-    for message in reversed(payload.messages):
-        if message.role.value == "user" and message.content.strip():
-            return message.content.strip()
-    return ""
-
-
-def _normalize_request_text(request_text: str) -> str:
-    return re.sub(r"\s+", " ", request_text.lower()).strip()
-
-
-def _contains_term(text: str, term: str) -> bool:
-    return re.search(rf"\b{re.escape(term)}\b", text) is not None
-
-
-def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
-    return any(_contains_term(text, term) for term in terms)
-
-
-def _starts_with_term(text: str, terms: tuple[str, ...]) -> bool:
-    return any(text == term or text.startswith(f"{term} ") for term in terms)
-
-
-def _is_request_like(text: str, actions: tuple[str, ...]) -> bool:
-    return _starts_with_term(text, actions) or _contains_any_term(text, _REQUEST_HINTS)
-
-
-def _matches_action_request(text: str, actions: tuple[str, ...], targets: tuple[str, ...]) -> bool:
-    return _is_request_like(text, actions) and _contains_any_term(text, actions) and _contains_any_term(text, targets)
-
-
-def _matches_blueprint_reference_request(text: str, targets: tuple[str, ...]) -> bool:
-    return (
-        _is_request_like(text, _BLUEPRINT_SUGGESTION_ACTIONS)
-        and _contains_any_term(text, _BLUEPRINT_REFERENCE_TERMS)
-        and _contains_any_term(text, targets)
-    )
-
-
-def _blueprint_kind_for_request(request_text: str) -> str | None:
-    lowered = _normalize_request_text(request_text)
-    if not lowered:
-        return None
-    if _matches_action_request(lowered, _CONFIGURATION_HOST_ACTIONS, _CONFIGURATION_HOST_TARGETS):
-        return "configuration"
-    if _matches_action_request(lowered, _CONFIGURATION_SOFTWARE_ACTIONS, _CONFIGURATION_SOFTWARE_TARGETS):
-        return "configuration"
-    if _matches_action_request(lowered, _CONFIGURATION_GENERATE_ACTIONS, _CONFIGURATION_GENERATE_TARGETS):
-        return "configuration"
-    if _matches_blueprint_reference_request(
-        lowered,
-        _CONFIGURATION_SOFTWARE_TARGETS + _CONFIGURATION_GENERATE_TARGETS,
-    ):
-        return "configuration"
-    if _matches_action_request(lowered, _PROVISIONING_ACTIONS, _PROVISIONING_TARGETS):
-        return "provisioning"
-    if _matches_blueprint_reference_request(lowered, _PROVISIONING_TARGETS):
-        return "provisioning"
-    return None
-
-
-def _blueprint_input_payload(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "key": item["key"],
-        "label": item["label"],
-        "required": bool(item.get("required", False)),
-        "riskClass": item.get("risk_class", "safe"),
-        "defaultValue": item.get("default_value"),
-        "resolved": bool(item.get("resolved", False)),
-        "value": item.get("value"),
-    }
-
-
-def _blueprint_step_payload(step: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": step["id"],
-        "type": step["type"],
-        "title": step["title"],
-        "description": step["description"],
-        "requiredInputs": list(step.get("required_inputs", [])),
-        "expectedResult": step["expected_result"],
-    }
-
-
-def _blueprint_payload(definition: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": definition["id"],
-        "kind": definition["kind"],
-        "name": definition["name"],
-        "summary": definition["summary"],
-        "resourcesOrActions": list(definition.get("resources_or_actions", [])),
-        "requiredInputs": [_blueprint_input_payload(item) for item in definition.get("required_inputs", [])],
-        "steps": [_blueprint_step_payload(step) for step in definition.get("steps", [])],
-    }
-
-
-def _selection_has_unresolved_required_inputs(selection: dict[str, Any]) -> bool:
-    for item in selection.get("required_inputs", []):
-        if item.get("required") and not item.get("resolved"):
-            return True
-    return False
-
-
-def _blueprint_suggestions_event(request_text: str, kind: str) -> dict[str, Any]:
-    suggestions = blueprint_service.rank_blueprints_for_request(request_text, kind, limit=3)
-    return {
-        "type": "blueprint.suggestions",
-        "kind": kind,
-        "suggestions": [_blueprint_payload(item) for item in suggestions],
-    }
-
-
-def _selection_provenance_event(kind: str, selection: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "blueprint.provenance",
-        "kind": kind,
-        "source": "selection",
-        "runId": selection.get("latest_run_id"),
-        "createdAt": selection.get("latest_run_created_at"),
-        "inputs": dict(selection.get("inputs", {})),
-        "blueprint": _blueprint_payload(
-            {
-                "id": selection["blueprint_id"],
-                "kind": selection["kind"],
-                "name": selection["blueprint_name"],
-                "summary": selection["summary"],
-                "resources_or_actions": selection.get("resources_or_actions", []),
-                "required_inputs": selection.get("required_inputs", []),
-                "steps": selection.get("steps", []),
-            }
-        ),
-    }
-
-
-def _run_provenance_event(kind: str, run: Any) -> dict[str, Any]:
-    snapshot = run.snapshot_json if isinstance(run.snapshot_json, dict) else {}
-    return {
-        "type": "blueprint.provenance",
-        "kind": kind,
-        "source": "run",
-        "runId": run.id,
-        "createdAt": run.created_at.isoformat() if run.created_at else None,
-        "inputs": dict(run.inputs_json or {}),
-        "blueprint": _blueprint_payload(snapshot),
-    }
-
-
-def _blueprint_inputs_summary_event(kind: str, selection: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "blueprint.inputs.summary",
-        "kind": kind,
-        "blueprintId": selection["blueprint_id"],
-        "blueprintName": selection["blueprint_name"],
-        "inputs": [_blueprint_input_payload(item) for item in selection.get("required_inputs", [])],
-    }
-
-
-async def _load_blueprint_preflight(
-    payload: ChatRequest,
-    request_text: str,
-) -> tuple[list[dict[str, Any]], bool]:
-    project_id = payload.project_id
-    if not project_id:
-        return ([], True)
-    kind = _blueprint_kind_for_request(request_text)
-    if kind is None:
-        return ([], True)
-    async with db.get_session() as session:
-        project = await session.get(Project, project_id)
-        if project is None:
-            return ([], True)
-        active = blueprint_service.get_active_blueprints(project).get(kind)
-        if active is None:
-            return ([_blueprint_suggestions_event(request_text, kind)], False)
-        run_id = active.get("latest_run_id")
-        if run_id:
-            run = await blueprint_service.get_blueprint_run(session, project_id, run_id)
-            if run is not None:
-                events = [_run_provenance_event(kind, run)]
-            else:
-                events = [_selection_provenance_event(kind, active)]
-        else:
-            events = [_selection_provenance_event(kind, active)]
-    if _selection_has_unresolved_required_inputs(active):
-        events.append(_blueprint_inputs_summary_event(kind, active))
-        return (events, False)
-    return (events, True)
-
-
 def _tool_start_event(tool_call: dict[str, Any]) -> dict[str, Any]:
-    return {
+    event = {
         "type": "tool.start",
         "toolCallId": tool_call["toolCallId"],
         "toolName": tool_call["toolName"],
         "args": tool_call["args"],
         "argsText": tool_call["argsText"],
     }
+    if tool_call.get("schemaVersion") is not None:
+        event["schemaVersion"] = tool_call["schemaVersion"]
+    if tool_call.get("sourceTool"):
+        event["sourceTool"] = tool_call["sourceTool"]
+    return event
 
 
-def _update_usage_from_ai_message(message: AIMessage, usage_state: dict[str, tuple[int, int] | None]) -> None:
-    extracted_usage = extract_usage_from_message(message)
-    if extracted_usage is not None:
-        usage_state["tokens"] = extracted_usage
+def _has_meaningful_tool_name(name: Any) -> bool:
+    return isinstance(name, str) and bool(name.strip()) and name != "tool"
+
+
+def _has_meaningful_tool_args(args: Any) -> bool:
+    return isinstance(args, dict) and len(args) > 0
+
+
+def _has_meaningful_args_text(args_text: Any) -> bool:
+    return isinstance(args_text, str) and args_text.strip() not in {"", "{}", "null"}
+
+
+def _merge_tool_call(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = {**existing, **incoming}
+    merged["toolName"] = (
+        incoming["toolName"]
+        if _has_meaningful_tool_name(incoming.get("toolName"))
+        else existing.get("toolName") or incoming.get("toolName") or "tool"
+    )
+    merged["args"] = (
+        incoming["args"]
+        if _has_meaningful_tool_args(incoming.get("args"))
+        else existing.get("args") or incoming.get("args") or {}
+    )
+    merged["argsText"] = (
+        incoming["argsText"]
+        if _has_meaningful_args_text(incoming.get("argsText"))
+        else existing.get("argsText") or incoming.get("argsText") or "{}"
+    )
+    return merged
 
 
 def _ai_message_events(
     message: AIMessage,
     seen_tool_calls: set[str],
     tool_call_map: dict[str, dict[str, Any]],
-    usage_state: dict[str, tuple[int, int] | None],
     state: dict[str, Any],
     *,
     max_tool_calls: int,
     correlation_id: str,
 ) -> list[dict[str, Any]]:
-    _update_usage_from_ai_message(message, usage_state)
     events: list[dict[str, Any]] = []
     for tool_call in normalize_tool_calls(message):
         if state["tool_call_count"] >= max_tool_calls:
@@ -542,6 +341,11 @@ def _ai_message_events(
             break
         tool_call_id = tool_call["toolCallId"]
         if tool_call_id in seen_tool_calls:
+            previous = tool_call_map.get(tool_call_id, {})
+            merged = _merge_tool_call(previous, tool_call)
+            tool_call_map[tool_call_id] = merged
+            if merged != previous:
+                events.append(_tool_start_event(merged))
             continue
         seen_tool_calls.add(tool_call_id)
         tool_call_map[tool_call_id] = tool_call
@@ -567,7 +371,7 @@ def _tool_result_event(
     tool_result: dict[str, Any], tool_name: str, tool_args: dict[str, Any], tool_args_text: str
 ) -> dict[str, Any]:
     artifact = tool_result["result"].get("artifact") if isinstance(tool_result["result"], dict) else None
-    return {
+    event = {
         "type": "tool.result",
         "toolCallId": tool_result["toolCallId"],
         "toolName": tool_name,
@@ -577,6 +381,17 @@ def _tool_result_event(
         "isError": tool_result["isError"],
         "artifact": artifact,
     }
+    if tool_result.get("schemaVersion") is not None:
+        event["schemaVersion"] = tool_result["schemaVersion"]
+    if tool_result.get("sourceTool"):
+        event["sourceTool"] = tool_result["sourceTool"]
+    if tool_result.get("severity"):
+        event["severity"] = tool_result["severity"]
+    if tool_result.get("fixClass"):
+        event["fixClass"] = tool_result["fixClass"]
+    if tool_result.get("diagnostic"):
+        event["diagnostic"] = tool_result["diagnostic"]
+    return event
 
 
 def _file_event_from_artifact(artifact: Any) -> dict[str, Any] | None:
@@ -606,24 +421,6 @@ def _tool_message_events(
     result_event = _tool_result_event(tool_result, tool_name, tool_args, tool_args_text)
     artifact_event = _file_event_from_artifact(result_event["artifact"])
     return [result_event] + ([artifact_event] if artifact_event else [])
-
-
-def _usage_event(
-    usage_tokens: tuple[int, int] | None,
-    *,
-    model_id: str | None,
-    model_context_window: int | None,
-) -> dict[str, Any]:
-    prompt_tokens, completion_tokens = usage_tokens or (0, 0)
-    estimated_cost = round((prompt_tokens * 0.00000015) + (completion_tokens * 0.0000006), 8)
-    return {
-        "type": "usage",
-        "promptTokens": prompt_tokens,
-        "completionTokens": completion_tokens,
-        "modelId": model_id,
-        "modelContextWindow": model_context_window,
-        "estimatedCostUsd": estimated_cost,
-    }
 
 
 async def _policy_result_event(project_id: str) -> dict[str, Any]:
@@ -714,11 +511,72 @@ def _new_stream_state(*, correlation_id: str) -> dict[str, Any]:
         "tool_call_map": {},
         "changed_paths": set(),
         "buffers": {"text": "", "reasoning": ""},
-        "usage_state": {"tokens": None},
         "interrupted": False,
         "tool_call_count": 0,
         "correlation_id": correlation_id,
     }
+
+
+def _provider_error_text(exc: APIStatusError) -> str | None:
+    body = exc.body
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            raw_message = error.get("message")
+            if isinstance(raw_message, str) and raw_message.strip():
+                return raw_message.strip()
+    message = str(exc).strip()
+    return message or None
+
+
+def _looks_like_transport_failure(message: str | None) -> bool:
+    if not message:
+        return False
+    lowered = message.lower()
+    return any(term in lowered for term in _TRANSPORT_FAILURE_TERMS)
+
+
+def _provider_error_payload(exc: Exception) -> tuple[int, dict[str, Any]] | None:
+    if isinstance(exc, APITimeoutError):
+        return 504, {
+            "code": "provider_timeout",
+            "message": "The language model timed out. Please retry.",
+            "details": {"retryable": True},
+        }
+    if isinstance(exc, APIConnectionError):
+        return 503, {
+            "code": "provider_unavailable",
+            "message": "The language model provider is temporarily unreachable. Please retry.",
+            "details": {"retryable": True},
+        }
+    if not isinstance(exc, APIStatusError):
+        return None
+    raw_message = _provider_error_text(exc)
+    retryable = (
+        exc.status_code in {408, 409, 429} or exc.status_code >= 500 or _looks_like_transport_failure(raw_message)
+    )
+    code, status_code, message = "provider_request_failed", 502, raw_message or "The language model request failed."
+    if exc.status_code == 429:
+        code, status_code, message = "provider_rate_limited", 429, "The language model is rate limited. Please retry."
+    elif retryable:
+        code, status_code, message = (
+            "provider_unavailable",
+            503,
+            "The language model provider is temporarily unavailable. Please retry.",
+        )
+    details: dict[str, Any] = {"retryable": retryable, "providerStatusCode": exc.status_code}
+    if raw_message and message != raw_message:
+        details["providerMessage"] = raw_message
+    return status_code, {"code": code, "message": message, "details": details}
+
+
+def _raise_provider_http_error(exc: Exception) -> None:
+    payload = _provider_error_payload(exc)
+    if payload is None:
+        raise exc
+    status_code, detail = payload
+    logger.warning("chat model request failed", exc_info=exc)
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 async def _stream_agent_events(
@@ -726,11 +584,17 @@ async def _stream_agent_events(
     *,
     messages: list[dict[str, Any]],
     config: dict[str, Any],
+    context: DeepAgentContext,
     cancel_checker: CancelChecker | None,
     state: dict[str, Any],
     max_tool_calls: int,
 ) -> AsyncIterator[dict[str, Any]]:
-    async for chunk in agent.astream({"messages": messages}, config, stream_mode=["messages", "updates"]):
+    async for chunk in agent.astream(
+        {"messages": messages},
+        config,
+        context=context,
+        stream_mode=["messages", "updates"],
+    ):
         if state["interrupted"]:
             break
         if cancel_checker is not None and await cancel_checker():
@@ -742,7 +606,6 @@ async def _stream_agent_events(
                     message,
                     state["seen_tool_calls"],
                     state["tool_call_map"],
-                    state["usage_state"],
                     state,
                     max_tool_calls=max(1, max_tool_calls),
                     correlation_id=str(state["correlation_id"]),
@@ -769,8 +632,6 @@ async def stream_response_events(
 ) -> AsyncIterator[dict[str, Any]]:
     ensure_settings(settings)
     ensure_payload(payload)
-    request_text = _latest_user_message_text(payload)
-    preflight_events, can_continue = await _load_blueprint_preflight(payload, request_text)
     correlation_id = str(uuid.uuid4())
     messages, compaction = _apply_token_budget(
         _to_langchain_messages(payload),
@@ -783,29 +644,38 @@ async def stream_response_events(
             "incidentKey": "chat-token-budget",
             **compaction,
         }
-    for event in preflight_events:
-        yield event
-    if not can_continue:
-        return
     agent = await get_agent(settings, _project_id(payload))
-    config = _make_config(payload)
+    config, runtime_context = await _make_agent_run_payload(payload, settings)
     state = _new_stream_state(correlation_id=correlation_id)
-    model_id, model_context_window = _resolve_model_info(settings)
 
-    async for event in _stream_agent_events(
-        agent,
-        messages=messages,
-        config=config,
-        cancel_checker=cancel_checker,
-        state=state,
-        max_tool_calls=max(1, int(settings.agent_max_tool_calls or 25)),
-    ):
-        yield event
+    try:
+        async for event in _stream_agent_events(
+            agent,
+            messages=messages,
+            config=config,
+            context=runtime_context,
+            cancel_checker=cancel_checker,
+            state=state,
+            max_tool_calls=max(1, int(settings.agent_max_tool_calls or 25)),
+        ):
+            yield event
+    except Exception as exc:
+        payload = _provider_error_payload(exc)
+        if payload is None:
+            raise
+        _, error_event = payload
+        logger.warning("chat stream failed", exc_info=exc)
+        yield {"type": "error", **error_event}
+        return
 
     if state["interrupted"]:
         return
     if cancel_checker is not None and await cancel_checker():
         return
+
+    evidence_bundle_event = extract_evidence_bundle_event(state["buffers"]["text"])
+    if evidence_bundle_event is not None:
+        yield evidence_bundle_event
 
     async for event in _emit_policy_events(
         _project_id(payload),
@@ -818,34 +688,22 @@ async def stream_response_events(
     if cancel_checker is not None and await cancel_checker():
         return
 
-    yield _usage_event(state["usage_state"]["tokens"], model_id=model_id, model_context_window=model_context_window)
-
 
 async def generate_response(payload: ChatRequest, settings: Settings) -> str:
     ensure_settings(settings)
     ensure_payload(payload)
     agent = await get_agent(settings, _project_id(payload))
     messages, _ = _apply_token_budget(_to_langchain_messages(payload), int(settings.incident_token_budget or 16000))
-    config = _make_config(payload)
-
-    result = await run_in_threadpool(agent.invoke, {"messages": messages}, config)
+    config, runtime_context = await _make_agent_run_payload(payload, settings)
+    try:
+        result = await run_in_threadpool(agent.invoke, {"messages": messages}, config, context=runtime_context)
+    except Exception as exc:
+        _raise_provider_http_error(exc)
 
     if isinstance(result, dict) and result.get("messages"):
         last = result["messages"][-1]
-        return text_from_content(getattr(last, "content", ""))
+        return _text_from_content(getattr(last, "content", ""))
 
-    return str(result)
-
-
-async def generate_basic_response(payload: ChatRequest, settings: Settings) -> str:
-    """Guest-mode chat without tools or project persistence."""
-    ensure_settings(settings)
-    ensure_payload(payload)
-    model = create_chat_model(settings)
-    messages, _ = _apply_token_budget(_to_langchain_messages(payload), int(settings.incident_token_budget or 16000))
-    result = await run_in_threadpool(model.invoke, messages)
-    if isinstance(result, BaseMessage):
-        return text_from_content(getattr(result, "content", ""))
     return str(result)
 
 

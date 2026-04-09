@@ -40,7 +40,6 @@ Replace placeholder values before deploying:
 2. identity-project
 3. workflow
 4. conversation
-5. blueprint
-6. provisioning
-7. configuration-incident
-8. scm
+5. provisioning
+6. configuration-incident
+7. scm

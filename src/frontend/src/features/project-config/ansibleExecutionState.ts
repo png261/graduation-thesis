@@ -42,6 +42,9 @@ function pipelineMissingRequirements(status: AnsibleStatus) {
 
 function configurationBlockedReason(status: AnsibleStatus | null) {
   if (!status) return "Configuration readiness is unavailable.";
+  if (!status.configurationRequired) {
+    return null;
+  }
   if (status.generationStale) {
     return "Ansible generation is stale. Regenerate after the latest Terraform generation.";
   }
@@ -62,6 +65,9 @@ function configurationBlockedReason(status: AnsibleStatus | null) {
 
 function configurationReadinessCopy(status: AnsibleStatus | null) {
   if (!status) return "Configuration readiness unavailable.";
+  if (!status.configurationRequired) {
+    return "No configuration targets were generated. Ansible is not required for this run.";
+  }
   if (status.can_run && status.generationReady && status.ssm_ready && !status.ssm_readiness?.blocking) {
     return "Configuration ready. All scoped targets are SSM-ready.";
   }
@@ -76,6 +82,9 @@ function configurationReadinessCopy(status: AnsibleStatus | null) {
 
 function configurationStageSummary(status: AnsibleStatus | null) {
   if (!status) return "Configuration status unavailable.";
+  if (!status.configurationRequired) {
+    return "No generated configuration targets require Ansible.";
+  }
   if (status.latestGeneration) {
     const skipped = status.skippedModules.length > 0 ? ` Excluding ${joinList(status.skippedModules)}.` : "";
     return `Configuration scope: ${joinList(status.targetModules)}.${skipped}`;
@@ -88,16 +97,21 @@ export function getAnsibleExecutionState(
   ansibleStatus: AnsibleStatus | null,
 ): AnsibleExecutionState {
   const canRunConfiguration = Boolean(
-    ansibleStatus?.can_run &&
+    ansibleStatus?.configurationRequired &&
+      ansibleStatus?.can_run &&
       ansibleStatus.generationReady &&
       ansibleStatus.ssm_ready &&
       !ansibleStatus.ssm_readiness?.blocking,
   );
   const baseBlockedReason = configurationBlockedReason(ansibleStatus);
   const pipelineBlocked = ansibleStatus
-    ? ansibleStatus.generationStale ||
-      !ansibleStatus.latestGeneration ||
-      pipelineMissingRequirements(ansibleStatus).length > 0
+    ? (
+      ansibleStatus.configurationRequired
+        ? ansibleStatus.generationStale ||
+          !ansibleStatus.latestGeneration ||
+          pipelineMissingRequirements(ansibleStatus).length > 0
+        : false
+    )
     : true;
   if (!opentofuStatus.opentofu_available) {
     return {

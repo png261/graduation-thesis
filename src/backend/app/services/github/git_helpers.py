@@ -119,25 +119,12 @@ def restore_entries_without_overwrite(project_root: Path, tmp_dir: str, moved: l
         restore_entry_tree_without_overwrite(src, dst)
 
 
-def _nested_entries_match(directory: Path, allowed_names: set[str]) -> bool:
-    if not directory.is_dir():
-        return False
-    for child in directory.iterdir():
-        if child.name not in allowed_names:
-            return False
-    return True
-
-
 def workspace_has_non_system_entries(project_root: Path) -> bool:
     if not project_root.exists():
         return False
     for entry in project_root.iterdir():
         name = entry.name
         if name in {".git", "AGENTS.md", ".opentofu-runtime"}:
-            continue
-        if name == ".agents" and _nested_entries_match(entry, {"skills"}):
-            continue
-        if name == ".claude" and _nested_entries_match(entry, {"skills"}):
             continue
         return True
     return False
@@ -146,8 +133,6 @@ def workspace_has_non_system_entries(project_root: Path) -> bool:
 def restore_repo_managed_entries(project_root: Path, tmp_dir: str) -> None:
     entries = [
         ("AGENTS.md", "AGENTS.md"),
-        (".agents/skills", ".agents/skills"),
-        (".claude/skills", ".claude/skills"),
         (".opentofu-runtime", ".opentofu-runtime"),
     ]
     for relative_src, relative_dst in entries:
@@ -160,8 +145,6 @@ def restore_repo_managed_entries(project_root: Path, tmp_dir: str) -> None:
 
 GITIGNORE_LINES = [
     "AGENTS.md",
-    ".agents/skills/",
-    ".claude/skills/",
     ".opentofu-runtime/",
 ]
 

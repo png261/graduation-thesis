@@ -9,72 +9,6 @@ type GeneratedProjectJobStatus = NonNullable<
 >;
 
 export type CloudProvider = "aws" | "gcloud";
-export type BlueprintKind = "provisioning" | "configuration";
-export type BlueprintStepType = "resource" | "action" | "validation";
-export type BlueprintRiskClass = "safe" | "cost" | "network" | "data" | "destroy";
-
-export interface ProjectBlueprintInputSummary {
-  key: string;
-  label: string;
-  description?: string;
-  required: boolean;
-  riskClass: BlueprintRiskClass;
-  defaultValue?: string | null;
-  resolved: boolean;
-  value?: string | null;
-}
-
-export interface ProjectBlueprintStep {
-  id: string;
-  type: BlueprintStepType;
-  title: string;
-  description: string;
-  requiredInputs: string[];
-  expectedResult: string;
-}
-
-export interface ProjectBlueprintCatalogItem {
-  id: string;
-  kind: BlueprintKind;
-  name: string;
-  summary: string;
-  resourcesOrActions: string[];
-  requiredInputs: ProjectBlueprintInputSummary[];
-  steps: ProjectBlueprintStep[];
-}
-
-export interface ProjectActiveBlueprintSelection {
-  kind: BlueprintKind;
-  blueprintId: string;
-  blueprintVersion: string;
-  blueprintName: string;
-  summary: string;
-  resourcesOrActions: string[];
-  requiredInputs: ProjectBlueprintInputSummary[];
-  steps: ProjectBlueprintStep[];
-  inputs: Record<string, string>;
-  selectedAt?: string | null;
-  latestRunId?: string | null;
-  latestRunCreatedAt?: string | null;
-}
-
-export interface ProjectActiveBlueprints {
-  provisioning: ProjectActiveBlueprintSelection | null;
-  configuration: ProjectActiveBlueprintSelection | null;
-}
-
-export interface ProjectBlueprintRunSnapshot {
-  id: string;
-  projectId: string;
-  threadId: string;
-  kind: BlueprintKind;
-  blueprintId: string;
-  blueprintVersion: string;
-  blueprintName: string;
-  inputs: Record<string, string>;
-  snapshot: ProjectBlueprintCatalogItem & { version: string };
-  createdAt?: string | null;
-}
 
 export interface ProjectTerraformValidation {
   status: "pass" | "fail";
@@ -168,9 +102,6 @@ export interface ProjectTerraformGenerationCompare {
 
 export interface ProjectTerraformGenerationSummary {
   headline: string;
-  blueprintId: string;
-  blueprintName: string;
-  blueprintRunId: string;
   inputs: Record<string, string>;
   stackPath: string;
   moduleCount: number;
@@ -185,7 +116,6 @@ export interface ProjectTerraformGenerationSummary {
 export interface ProjectTerraformGenerationRecord {
   id: string;
   projectId: string;
-  blueprintRunId: string;
   stackPath: string;
   moduleNames: string[];
   generatedPaths: Record<string, string>;
@@ -200,7 +130,6 @@ export interface ProjectTerraformGenerationRecord {
 
 export interface ProjectTerraformGenerationPreview {
   status: "ok";
-  blueprintRunId: string;
   stackPath: string;
   moduleNames: string[];
   generatedFiles: string[];
@@ -237,9 +166,6 @@ export interface ProjectAnsibleGenerationCompare {
 
 export interface ProjectAnsibleGenerationSummary {
   headline: string;
-  blueprintId: string;
-  blueprintName: string;
-  blueprintRunId: string;
   inputs: Record<string, string>;
   playbookPath: string;
   roleCount: number;
@@ -257,7 +183,6 @@ export interface ProjectAnsibleGenerationSummary {
 export interface ProjectAnsibleGenerationRecord {
   id: string;
   projectId: string;
-  blueprintRunId: string;
   playbookPath: string;
   targetModules: string[];
   skippedModules: string[];
@@ -271,7 +196,6 @@ export interface ProjectAnsibleGenerationRecord {
 
 export interface ProjectAnsibleGenerationPreview {
   status: "ok";
-  blueprintRunId: string;
   playbookPath: string;
   targetModules: string[];
   skippedModules: string[];
@@ -298,7 +222,6 @@ export interface Project {
   name: string;
   provider: CloudProvider | null;
   createdAt: string;
-  activeBlueprints?: ProjectActiveBlueprints;
 }
 
 export type ProjectJobKind =
@@ -435,11 +358,6 @@ export interface PathMove {
   to: string;
 }
 
-export interface Skill {
-  name: string;
-  description: string;
-  content: string;
-}
 
 export interface CredentialsData {
   provider: string | null;
@@ -509,6 +427,7 @@ export interface AnsibleStatus {
   output_errors: string[];
   generationReady: boolean;
   generationStale: boolean;
+  configurationRequired: boolean;
   targetModules: string[];
   skippedModules: string[];
   ssm_ready: boolean;
@@ -695,24 +614,8 @@ export interface PullRequestResult {
   working_branch: string;
 }
 
-export interface ProjectTelegramStatus {
-  connected: boolean;
-  chat_id: string | null;
-  topic_id: string | null;
-  topic_title: string | null;
-  requires_reconnect: boolean;
-  connected_at: string | null;
-  pending: boolean;
-  pending_expires_at: string | null;
-  warning?: string;
-}
-
-export interface ProjectTelegramConnectResult extends ProjectTelegramStatus {
-  connect_url: string;
-}
-
 export type StateBackendProvider = "aws" | "gcs";
-export type StateBackendSource = "cloud" | "github" | "gitlab";
+export type StateBackendSource = "cloud" | "github";
 
 export interface CredentialProfile {
   id: string;
@@ -814,22 +717,6 @@ export interface StateSyncRun {
 export interface StateBackendSettings {
   backend: StateBackend;
   sync_runs: StateSyncRun[];
-}
-
-export interface GitLabSession {
-  authenticated: boolean;
-  login?: string;
-  provider_user_id?: string;
-  expires_at?: string | null;
-}
-
-export interface GitLabRepo {
-  id: number;
-  name: string;
-  full_name: string;
-  private: boolean;
-  default_branch: string;
-  owner_login?: string | null;
 }
 
 export interface StateBackendImportCandidate {

@@ -47,9 +47,6 @@ Copy `.env.example` to `.env` and set required values:
 - `ANSIBLE_PLAYBOOK_PATH` (optional, default `playbooks/site.yml`)
 - `ANSIBLE_SSH_COMMON_ARGS` (optional)
 - `ANSIBLE_HOST_KEY_CHECKING` (optional, default `True`)
-- `TELEGRAM_BOT_TOKEN` (required for Telegram project connection)
-- `TELEGRAM_WEBHOOK_URL` (public URL for `POST /api/telegram/webhook`)
-- `TELEGRAM_WEBHOOK_SECRET` (must match Telegram webhook secret header)
 - `REDIS_URL` (Redis cache + jobs events/result backend)
 - `CELERY_BROKER_URL` (RabbitMQ broker URL)
 - `CELERY_RESULT_BACKEND` (Celery result backend, Redis recommended)
@@ -63,8 +60,6 @@ Copy `.env.example` to `.env` and set required values:
 - `STATE_ENCRYPTION_KEY` (required for encrypting credential profiles and Git provider OAuth tokens)
 - `STATE_SYNC_SCAN_INTERVAL_MINUTES` (optional scheduler interval for background state sync)
 - `STATE_SYNC_MAX_BACKENDS_PER_TICK` (optional scheduler batch size)
-- `STATE_ALERT_NOTIFY_SEVERITY` (comma-separated severities to notify via Telegram)
-- `GITLAB_CLIENT_ID` / `GITLAB_CLIENT_SECRET` / `GITLAB_REDIRECT_URI` (required for GitLab OAuth import)
 - `FLOWER_PORT` (optional Flower UI port in compose, default `5555`)
 
 ## Install

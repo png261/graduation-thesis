@@ -1,6 +1,10 @@
 type AssistantMessagePartLike = {
   type?: string;
   toolName?: string;
+  result?: unknown;
+  interrupt?: {
+    type?: string;
+  };
 };
 
 type AssistantMessageGroup = {
@@ -8,17 +12,25 @@ type AssistantMessageGroup = {
   indices: number[];
 };
 
-export const ASSISTANT_MESSAGE_TOOL_GROUP = "tool-group";
 export const ASSISTANT_MESSAGE_REASONING_GROUP = "reasoning-group";
-export const ASSISTANT_MESSAGE_BLUEPRINT_GROUP = "blueprint-group";
 export const ASSISTANT_MESSAGE_PLAN_GROUP = "plan-group";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function requiresDirectUserChoice(part: AssistantMessagePartLike) {
+  if (part.interrupt?.type === "human") return true;
+  if (!isRecord(part.result)) return false;
+  return part.result.status === "confirmation_required";
+}
 
 function resolveGroupKey(part: AssistantMessagePartLike) {
   if (part.type === "reasoning") return ASSISTANT_MESSAGE_REASONING_GROUP;
   if (part.type !== "tool-call") return undefined;
-  if (part.toolName === "write_todos") return undefined;
+  if (part.toolName === "write_todos" || requiresDirectUserChoice(part)) return undefined;
   if (part.toolName === "update_plan") return ASSISTANT_MESSAGE_PLAN_GROUP;
-  return part.toolName === "suggest_blueprints" ? ASSISTANT_MESSAGE_BLUEPRINT_GROUP : ASSISTANT_MESSAGE_TOOL_GROUP;
+  return undefined;
 }
 
 function pushGroup(groups: AssistantMessageGroup[], groupKey: string | undefined, indices: number[]) {

@@ -107,7 +107,7 @@ function WorkflowMenu({
         <DropdownMenuSeparator />
         <ToolbarMenuItem icon={<Play className="mt-0.5 h-4 w-4" />} title="Run Plan" description="init + plan" disabled={disabled} onSelect={() => onRunWorkflow("plan")} />
         <ToolbarMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Apply" description="init + apply" disabled={disabled} onSelect={() => onRunWorkflow("apply")} />
-        <ToolbarMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Pipeline" description="apply + ansible + telegram report" disabled={disabled} onSelect={() => onRunWorkflow("pipeline")} />
+        <ToolbarMenuItem icon={<Zap className="mt-0.5 h-4 w-4" />} title="Run Pipeline" description="apply + ansible + post-deploy checks" disabled={disabled} onSelect={() => onRunWorkflow("pipeline")} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

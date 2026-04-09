@@ -1,4 +1,4 @@
-export type PlanTodoStatus = "pending" | "in-progress" | "completed" | "cancelled";
+export type PlanTodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 export interface SerializablePlanTodo {
   id: string;
@@ -12,6 +12,7 @@ export interface SerializablePlan {
   title: string;
   description?: string;
   todos: SerializablePlanTodo[];
+  maxVisibleTodos?: number;
 }
 
 type AgentPlanStep = {
@@ -29,8 +30,12 @@ function readOptionalString(value: unknown) {
 
 function readPlanStatus(value: unknown): PlanTodoStatus | null {
   if (value === "pending" || value === "completed" || value === "cancelled") return value;
-  if (value === "in-progress" || value === "in_progress") return "in-progress";
+  if (value === "in-progress" || value === "in_progress") return "in_progress";
   return null;
+}
+
+function readOptionalPositiveInteger(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function parseSerializableTodo(raw: unknown, index: number): SerializablePlanTodo | null {
@@ -62,6 +67,7 @@ export function safeParseSerializablePlan(raw: unknown): SerializablePlan | null
     title,
     description: readOptionalString(plan.description),
     todos,
+    maxVisibleTodos: readOptionalPositiveInteger(plan.maxVisibleTodos),
   };
 }
 
@@ -101,6 +107,7 @@ export function safeParseWriteTodosPlan(raw: unknown, fallbackId: string): Seria
     title: "Current Plan",
     description: "Live task progress",
     todos,
+    maxVisibleTodos: 4,
   };
 }
 
@@ -122,5 +129,6 @@ export function safeParseAgentPlan(raw: unknown, fallbackId: string): Serializab
     title: readOptionalString(plan.title) ?? "Current Plan",
     description: readOptionalString(plan.explanation) ?? readOptionalString(plan.description),
     todos,
+    maxVisibleTodos: readOptionalPositiveInteger(plan.maxVisibleTodos),
   };
 }

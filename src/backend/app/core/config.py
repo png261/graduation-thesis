@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _json_string_map(raw: str | None, env_name: str) -> dict[str, str]:
+    if not raw or not raw.strip():
+        return {}
+    value = json.loads(raw)
+    if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
+        raise ValueError(f"{env_name} must be a JSON object with string keys and values")
+    return value
 
 
 class Settings(BaseSettings):
@@ -15,18 +25,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    llm_base_url: str = Field(default="http://127.0.0.1:8317/v1", alias="LLM_BASE_URL")
-    llm_api_key: str = Field(default="developer", alias="LLM_API_KEY")
-    llm_model: str = Field(default="gpt-5.4", alias="LLM_MODEL")
-    cors_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173",
-        alias="CORS_ORIGINS",
-    )
+    llm_base_url: str = Field(alias="LLM_BASE_URL")
+    llm_api_key: str = Field(alias="LLM_API_KEY")
+    llm_model: str = Field(alias="LLM_MODEL")
+    cors_origins: str = Field(alias="CORS_ORIGINS")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    database_url: str = Field(
-        default="postgresql://postgres:postgres@localhost:5432/deepagents",
-        alias="DATABASE_URL",
-    )
+    database_url: str = Field(alias="DATABASE_URL")
     cognito_region: str | None = Field(default=None, alias="COGNITO_REGION")
     cognito_user_pool_id: str | None = Field(default=None, alias="COGNITO_USER_POOL_ID")
     cognito_client_id: str | None = Field(default=None, alias="COGNITO_CLIENT_ID")
@@ -34,14 +38,8 @@ class Settings(BaseSettings):
     github_client_id: str | None = Field(default=None, alias="GITHUB_CLIENT_ID")
     github_client_secret: str | None = Field(default=None, alias="GITHUB_CLIENT_SECRET")
     github_redirect_uri: str | None = Field(default=None, alias="GITHUB_REDIRECT_URI")
-    github_oauth_authorize_url: str = Field(
-        default="https://github.com/login/oauth/authorize",
-        alias="GITHUB_OAUTH_AUTHORIZE_URL",
-    )
-    github_oauth_token_url: str = Field(
-        default="https://github.com/login/oauth/access_token",
-        alias="GITHUB_OAUTH_TOKEN_URL",
-    )
+    github_oauth_authorize_url: str = Field(alias="GITHUB_OAUTH_AUTHORIZE_URL")
+    github_oauth_token_url: str = Field(alias="GITHUB_OAUTH_TOKEN_URL")
     infracost_api_key: str | None = Field(default=None, alias="INFRACOST_API_KEY")
     file_url_signing_secret: str = Field(default="dev-file-url-secret", alias="FILE_URL_SIGNING_SECRET")
     file_url_ttl_seconds: int = Field(default=300, alias="FILE_URL_TTL_SECONDS")
@@ -50,9 +48,6 @@ class Settings(BaseSettings):
     ansible_aws_ssm_bucket_name: str | None = Field(default=None, alias="ANSIBLE_AWS_SSM_BUCKET_NAME")
     ansible_ssh_common_args: str = Field(default="", alias="ANSIBLE_SSH_COMMON_ARGS")
     ansible_host_key_checking: bool = Field(default=True, alias="ANSIBLE_HOST_KEY_CHECKING")
-    telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
-    telegram_webhook_url: str | None = Field(default=None, alias="TELEGRAM_WEBHOOK_URL")
-    telegram_webhook_secret: str | None = Field(default=None, alias="TELEGRAM_WEBHOOK_SECRET")
     zip_import_max_bytes: int = Field(default=20 * 1024 * 1024, alias="ZIP_IMPORT_MAX_BYTES")
     zip_import_max_files: int = Field(default=2000, alias="ZIP_IMPORT_MAX_FILES")
     zip_import_max_uncompressed_bytes: int = Field(
@@ -70,34 +65,25 @@ class Settings(BaseSettings):
     opentofu_mcp_url: str = Field(default="https://mcp.opentofu.org/sse", alias="OPENTOFU_MCP_URL")
     incident_confidence_threshold: float = Field(default=0.7, alias="INCIDENT_CONFIDENCE_THRESHOLD")
     agent_max_tool_calls: int = Field(default=25, alias="AGENT_MAX_TOOL_CALLS")
+    agent_async_subagents_enabled: bool = Field(default=False, alias="AGENT_ASYNC_SUBAGENTS_ENABLED")
+    agent_async_subagents_url: str | None = Field(default=None, alias="AGENT_ASYNC_SUBAGENTS_URL")
+    agent_async_subagents_graph_ids: str = Field(default="", alias="AGENT_ASYNC_SUBAGENT_GRAPH_IDS")
+    agent_async_subagents_headers: str = Field(default="", alias="AGENT_ASYNC_SUBAGENT_HEADERS")
     alert_cooldown_seconds: int = Field(default=300, alias="ALERT_COOLDOWN_SECONDS")
     incident_memory_top_k: int = Field(default=5, alias="INCIDENT_MEMORY_TOP_K")
     incident_token_budget: int = Field(default=16000, alias="INCIDENT_TOKEN_BUDGET")
     state_encryption_key: str = Field(default="dev-state-encryption-key", alias="STATE_ENCRYPTION_KEY")
     state_sync_scan_interval_minutes: int = Field(default=60, alias="STATE_SYNC_SCAN_INTERVAL_MINUTES")
     state_sync_max_backends_per_tick: int = Field(default=25, alias="STATE_SYNC_MAX_BACKENDS_PER_TICK")
-    state_alert_notify_severity: str = Field(
-        default="critical,high",
-        alias="STATE_ALERT_NOTIFY_SEVERITY",
-    )
-    gitlab_client_id: str | None = Field(default=None, alias="GITLAB_CLIENT_ID")
-    gitlab_client_secret: str | None = Field(default=None, alias="GITLAB_CLIENT_SECRET")
-    gitlab_redirect_uri: str | None = Field(default=None, alias="GITLAB_REDIRECT_URI")
-    gitlab_oauth_authorize_url: str = Field(
-        default="https://gitlab.com/oauth/authorize",
-        alias="GITLAB_OAUTH_AUTHORIZE_URL",
-    )
-    gitlab_oauth_token_url: str = Field(
-        default="https://gitlab.com/oauth/token",
-        alias="GITLAB_OAUTH_TOKEN_URL",
-    )
-    gitlab_api_url: str = Field(default="https://gitlab.com/api/v4", alias="GITLAB_API_URL")
 
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
-    def state_alert_notify_severity_list(self) -> List[str]:
-        return [value.strip().lower() for value in self.state_alert_notify_severity.split(",") if value.strip()]
+    def async_subagent_graph_ids(self) -> dict[str, str]:
+        return _json_string_map(self.agent_async_subagents_graph_ids, "AGENT_ASYNC_SUBAGENT_GRAPH_IDS")
+
+    def async_subagent_headers(self) -> dict[str, str]:
+        return _json_string_map(self.agent_async_subagents_headers, "AGENT_ASYNC_SUBAGENT_HEADERS")
 
 
 @lru_cache

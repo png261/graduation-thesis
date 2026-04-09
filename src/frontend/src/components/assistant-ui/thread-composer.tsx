@@ -13,17 +13,20 @@ import {
 } from "@assistant-ui/react";
 import { ArrowUp, CircleX, FileImage, FileText, History, Paperclip, Plus, Square } from "lucide-react";
 
-import { CHAT_ATTACHMENT_ERROR_EVENT, readAttachmentErrorMessage } from "../../runtime/local-runtime/documentAttachmentAdapter";
+import {
+  CHAT_ATTACHMENT_ERROR_EVENT,
+  readAttachmentErrorMessage,
+} from "../../runtime/local-runtime/documentAttachmentAdapter";
 import { Plan } from "../tool-ui/plan";
 import { safeParseWriteTodosPlan } from "../tool-ui/plan/schema";
-import { ContextDisplay } from "./context-display";
 
 interface ThreadComposerProps {
   onOpenHistory: () => void;
 }
 
 function isWriteTodosPart(part: ThreadAssistantMessagePart): part is ToolCallMessagePart {
-  return part.type === "tool-call" && part.toolName === "write_todos";
+  if (part.type !== "tool-call") return false;
+  return parseWriteTodosPart(part) !== null;
 }
 
 function parseWriteTodosPart(part: ToolCallMessagePart) {
@@ -49,7 +52,12 @@ function findLatestWriteTodosPlan(messages: readonly ThreadMessage[]) {
 function ComposerSendButton() {
   return (
     <ComposerPrimitive.Send asChild>
-      <button type="submit" className="assistant-thread-action aui-composer-send" aria-label="Send message" title="Send">
+      <button
+        type="submit"
+        className="assistant-thread-action aui-composer-send"
+        aria-label="Send message"
+        title="Send"
+      >
         <ArrowUp className="h-4 w-4" aria-hidden />
       </button>
     </ComposerPrimitive.Send>
@@ -59,7 +67,12 @@ function ComposerSendButton() {
 function ComposerCancelButton() {
   return (
     <ComposerPrimitive.Cancel asChild>
-      <button type="button" className="assistant-thread-action aui-composer-cancel" aria-label="Cancel response" title="Cancel response">
+      <button
+        type="button"
+        className="assistant-thread-action aui-composer-cancel"
+        aria-label="Cancel response"
+        title="Cancel response"
+      >
         <Square className="h-4 w-4" aria-hidden />
       </button>
     </ComposerPrimitive.Cancel>
@@ -87,7 +100,12 @@ function ComposerAttachmentItem() {
         </div>
       </div>
       <AttachmentPrimitive.Remove asChild>
-        <button type="button" className="aui-attachment-remove" aria-label="Remove attachment" title="Remove attachment">
+        <button
+          type="button"
+          className="aui-attachment-remove"
+          aria-label="Remove attachment"
+          title="Remove attachment"
+        >
           <CircleX className="h-4 w-4" aria-hidden />
         </button>
       </AttachmentPrimitive.Remove>
@@ -110,7 +128,12 @@ function ComposerAddAttachmentButton() {
   if (!canAttach) return null;
   return (
     <ComposerPrimitive.AddAttachment asChild>
-      <button type="button" className="assistant-thread-action aui-composer-attach" aria-label="Attach file" title="Attach file">
+      <button
+        type="button"
+        className="assistant-thread-action aui-composer-attach"
+        aria-label="Attach file"
+        title="Attach file"
+      >
         <Paperclip className="h-4 w-4" aria-hidden />
       </button>
     </ComposerPrimitive.AddAttachment>
@@ -123,8 +146,12 @@ function ComposerInputArea() {
       <ComposerAttachments />
       <ComposerPrimitive.Input className="aui-composer-input" placeholder="Ask about this project..." autoFocus />
       <ComposerAddAttachmentButton />
-      <AuiIf condition={(state) => !state.thread.isRunning}><ComposerSendButton /></AuiIf>
-      <AuiIf condition={(state) => state.thread.isRunning}><ComposerCancelButton /></AuiIf>
+      <AuiIf condition={(state) => !state.thread.isRunning}>
+        <ComposerSendButton />
+      </AuiIf>
+      <AuiIf condition={(state) => state.thread.isRunning}>
+        <ComposerCancelButton />
+      </AuiIf>
     </ComposerPrimitive.Root>
   );
 }
@@ -147,18 +174,29 @@ function ComposerPlan() {
   }, [nextPlan, threadId]);
 
   if (!plan) return null;
-  return <Plan className="border-[var(--da-border)] bg-[var(--da-elevated)] shadow-none" {...plan} />;
+  return <Plan {...plan} collapsible maxVisibleTodos={plan.maxVisibleTodos ?? 4} className="max-w-none min-w-0" />;
 }
 
 function ComposerActionButtons({ onOpenHistory }: { onOpenHistory: () => void }) {
   return (
     <div className="assistant-composer-actions">
       <ThreadListPrimitive.New asChild>
-        <button type="button" className="assistant-thread-action" aria-label="Start new thread" title="Start new thread">
+        <button
+          type="button"
+          className="assistant-thread-action"
+          aria-label="Start new thread"
+          title="Start new thread"
+        >
           <Plus className="h-4 w-4" aria-hidden />
         </button>
       </ThreadListPrimitive.New>
-      <button type="button" className="assistant-thread-action" onClick={onOpenHistory} aria-label="Open thread history" title="Thread history">
+      <button
+        type="button"
+        className="assistant-thread-action"
+        onClick={onOpenHistory}
+        aria-label="Open thread history"
+        title="Thread history"
+      >
         <History className="h-4 w-4" aria-hidden />
       </button>
     </div>
@@ -169,7 +207,6 @@ function ComposerMeta({ onOpenHistory }: { onOpenHistory: () => void }) {
   return (
     <div className="assistant-composer-meta">
       <ComposerActionButtons onOpenHistory={onOpenHistory} />
-      <ContextDisplay className="assistant-composer-context" />
     </div>
   );
 }

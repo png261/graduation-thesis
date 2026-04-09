@@ -1,5 +1,4 @@
 export { ProviderBadge } from "./ProviderBadge";
-export { OpenTofuDeployModal } from "./OpenTofuDeployModal";
 export { PullRequestModal } from "./PullRequestModal";
 export { ProjectConfigTab } from "./ProjectConfigTab";
 export { useProjectConfigState } from "./useProjectConfigState";

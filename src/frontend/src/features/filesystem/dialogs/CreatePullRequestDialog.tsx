@@ -5,7 +5,7 @@ import { Input } from "../../../components/ui/input";
 import { Label } from "../../../components/ui/label";
 import { Textarea } from "../../../components/ui/textarea";
 
-const GENERATION_SUGGESTION_COPY = "Suggested title/body come from the latest blueprint generation history and remain editable.";
+const GENERATION_SUGGESTION_COPY = "Suggested title/body come from the latest generation history and remain editable.";
 
 interface CreatePullRequestDialogProps {
   open: boolean;
@@ -96,7 +96,7 @@ function PullRequestDescriptionField({
 function PullRequestError({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+    <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
       <AlertTitle>Create pull request failed</AlertTitle>
       <AlertDescription>{error}</AlertDescription>
     </Alert>

@@ -80,6 +80,16 @@ function isRetryableResponseStatus(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
 }
 
+function describeCandidateUrl(baseUrl: string, path: string): string {
+  return baseUrl ? joinBaseAndPath(baseUrl, path) : path;
+}
+
+function buildConnectionRefusedMessage(path: string, candidateBases: readonly string[]): string {
+  const attemptedUrls = candidateBases.map((baseUrl) => describeCandidateUrl(baseUrl, path)).join(", ");
+  const configuredTarget = API_URL || "http://localhost:8000";
+  return `Cannot reach backend API. Tried ${attemptedUrls}. Start the backend at ${configuredTarget} or update VITE_API_URL, then retry.`;
+}
+
 async function resolveAuthToken(): Promise<string | null> {
   if (!authTokenGetter) return null;
   try {
@@ -155,6 +165,9 @@ export async function apiRequest(path: string, init?: RequestInit): Promise<Resp
       }
 
       if (!isRetryableNetworkError(lastError) || index >= candidateBases.length - 1) {
+        if (isRetryableNetworkError(lastError)) {
+          throw new Error(buildConnectionRefusedMessage(path, candidateBases));
+        }
         throw lastError;
       }
     } finally {

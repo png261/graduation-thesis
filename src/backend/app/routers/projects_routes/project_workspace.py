@@ -1,4 +1,4 @@
-"""Project memory, skills, and project file endpoints."""
+"""Project memory and project file endpoints."""
 
 from __future__ import annotations
 
@@ -21,8 +21,6 @@ from app.models import Project
 from app.routers import auth_dependencies as auth_deps
 from app.services.agent import _DEFAULT_AGENT_MD, invalidate_agent
 from app.services.project import files as project_files
-
-from .common import parse_skill_frontmatter, safe_skill_name
 
 router = APIRouter()
 settings = get_settings()
@@ -168,54 +166,6 @@ async def update_memory(
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
     project_files.write_text(project.id, "/AGENT.md", body.content)
-    invalidate_agent(project.id)
-    return {"ok": True}
-
-
-@router.get("/{project_id}/skills")
-async def list_skills(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
-    skills = []
-    for skill_name, content in project_files.iter_skill_files(project.id):
-        description = parse_skill_frontmatter(content)
-        skills.append({"name": skill_name, "description": description, "content": content})
-    skills.sort(key=lambda skill: skill["name"])
-    return {"skills": skills}
-
-
-class SkillUpsert(BaseModel):
-    description: str = ""
-    content: str
-
-
-@router.put("/{project_id}/skills/{skill_name}")
-async def upsert_skill(
-    skill_name: str,
-    body: SkillUpsert,
-    project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    try:
-        name = safe_skill_name(skill_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    project_files.write_text(project.id, f"/skills/{name}/SKILL.md", body.content)
-    invalidate_agent(project.id)
-    return {"ok": True, "name": name}
-
-
-@router.delete("/{project_id}/skills/{skill_name}")
-async def delete_skill(
-    skill_name: str,
-    project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    try:
-        name = safe_skill_name(skill_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    key = f"/skills/{name}/SKILL.md"
-    try:
-        project_files.delete_file(project.id, key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Skill not found")
     invalidate_agent(project.id)
     return {"ok": True}
 

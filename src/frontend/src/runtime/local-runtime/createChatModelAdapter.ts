@@ -6,6 +6,7 @@ import type {
 
 import { cancelProjectJob, persistThread } from "../../api/projects";
 import { apiJson, apiRequest } from "../../api/client";
+import { parseEvidenceBundleText, type EvidenceBundlePayload } from "../../components/assistant-ui/evidence-bundle";
 import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { readSseJson } from "../../lib/sse";
 import {
@@ -14,13 +15,9 @@ import {
   type ChatAttachmentPayload,
 } from "./documentAttachmentAdapter";
 import {
-  parseBlueprintInputsSummaryEvent,
-  parseBlueprintProvenanceEvent,
-  parseBlueprintSuggestionsEvent,
+  parseEvidenceBundleEvent,
   parsePolicyCheckResultEvent,
   parsePolicyCheckStartEvent,
-  parseUsageEvent,
-  type UsageEventPayload,
 } from "./chatAdapterEvents";
 
 const MUTATING_TOOL_NAMES = new Set([
@@ -33,10 +30,7 @@ const MUTATING_TOOL_NAMES = new Set([
   "delete_path",
 ]);
 
-type SyntheticToolName =
-  | "suggest_blueprints"
-  | "blueprint_inputs"
-  | "blueprint_provenance";
+type SyntheticToolName = "evidence_bundle";
 
 interface AdapterDeps {
   getProjectId: () => string;
@@ -52,12 +46,19 @@ interface StreamState {
   toolCallIndex: Map<string, number>;
   textIndexByScope: Map<string, number>;
   reasoningIndexByScope: Map<string, number>;
-  usageEvent: UsageEventPayload | null;
   backendThreadId: string;
   jobId: string | null;
 }
 
 type StreamEvent = Record<string, unknown> & { type?: string };
+type ToolArtifactMetadata = {
+  schemaVersion?: number;
+  sourceTool?: string;
+  severity?: string;
+  fixClass?: string;
+  diagnostic?: Record<string, unknown>;
+};
+type StructuredToolCallMessagePart = ToolCallMessagePart & ToolArtifactMetadata;
 
 type AdapterRunInput = Parameters<ChatModelAdapter["run"]>[0];
 type InferRunResult<T> = T extends Promise<infer R>
@@ -113,6 +114,21 @@ function extractChangedPaths(result: unknown): string[] {
 function asJsonObject(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
+}
+
+function readStringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function readToolArtifactMetadata(event: StreamEvent): ToolArtifactMetadata {
+  const diagnostic = asJsonObject(event.diagnostic);
+  return {
+    schemaVersion: typeof event.schemaVersion === "number" ? event.schemaVersion : undefined,
+    sourceTool: readStringValue(event.sourceTool),
+    severity: readStringValue(event.severity),
+    fixClass: readStringValue(event.fixClass),
+    diagnostic: Object.keys(diagnostic).length > 0 ? diagnostic : undefined,
+  };
 }
 
 function scopeKey(parentId: string | undefined) {
@@ -205,7 +221,6 @@ function createInitialState(backendThreadId: string): StreamState {
     toolCallIndex: new Map<string, number>(),
     textIndexByScope: new Map<string, number>(),
     reasoningIndexByScope: new Map<string, number>(),
-    usageEvent: null,
     backendThreadId,
     jobId: null,
   };
@@ -257,25 +272,60 @@ function handleSource(state: StreamState, event: StreamEvent): HandlerResult {
   return { output: emitState(state) };
 }
 
-function buildToolCallPart(event: StreamEvent): ToolCallMessagePart {
+function buildToolCallPart(event: StreamEvent): StructuredToolCallMessagePart {
   return {
     type: "tool-call",
     toolCallId: String(event.toolCallId ?? ""),
     toolName: String(event.toolName ?? "tool"),
     args: asJsonObject(event.args) as ToolCallMessagePart["args"],
     argsText: (event.argsText as string | undefined) ?? JSON.stringify(event.args ?? {}, null, 2),
+    ...readToolArtifactMetadata(event),
+  };
+}
+
+function hasMeaningfulToolName(value: string | undefined) {
+  return Boolean(value && value.trim() && value !== "tool");
+}
+
+function hasMeaningfulArgs(value: unknown) {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function hasMeaningfulArgsText(value: string | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return trimmed !== "" && trimmed !== "{}" && trimmed !== "null";
+}
+
+function mergeToolCallPart(
+  existing: StructuredToolCallMessagePart,
+  updated: StructuredToolCallMessagePart,
+): StructuredToolCallMessagePart {
+  return {
+    ...existing,
+    ...updated,
+    toolName: hasMeaningfulToolName(updated.toolName) ? updated.toolName : existing.toolName ?? updated.toolName,
+    args: hasMeaningfulArgs(updated.args) ? updated.args : existing.args ?? updated.args,
+    argsText: hasMeaningfulArgsText(updated.argsText)
+      ? updated.argsText
+      : existing.argsText ?? updated.argsText,
   };
 }
 
 function handleToolStart(state: StreamState, event: StreamEvent): HandlerResult {
   const part = buildToolCallPart(event);
   if (!part.toolCallId) return {};
+  const existingIndex = state.toolCallIndex.get(part.toolCallId);
+  if (existingIndex !== undefined) {
+    const existing = state.parts[existingIndex] as StructuredToolCallMessagePart;
+    state.parts[existingIndex] = mergeToolCallPart(existing, part);
+    return { output: emitState(state) };
+  }
   state.toolCallIndex.set(part.toolCallId, state.parts.length);
   state.parts.push(part);
   return { output: emitState(state) };
 }
 
-function buildToolResultPart(event: StreamEvent): ToolCallMessagePart {
+function buildToolResultPart(event: StreamEvent): StructuredToolCallMessagePart {
   return {
     ...buildToolCallPart(event),
     result: event.result,
@@ -284,7 +334,7 @@ function buildToolResultPart(event: StreamEvent): ToolCallMessagePart {
   };
 }
 
-function upsertToolResult(state: StreamState, updated: ToolCallMessagePart) {
+function upsertToolResult(state: StreamState, updated: StructuredToolCallMessagePart) {
   const index = state.toolCallIndex.get(updated.toolCallId);
   if (index === undefined) {
     state.toolCallIndex.set(updated.toolCallId, state.parts.length);
@@ -292,31 +342,8 @@ function upsertToolResult(state: StreamState, updated: ToolCallMessagePart) {
     return;
   }
 
-  const existing = state.parts[index] as ToolCallMessagePart;
-  state.parts[index] = {
-    ...existing,
-    ...updated,
-    toolName: existing.toolName ?? updated.toolName,
-    args: existing.args ?? updated.args,
-    argsText: existing.argsText ?? updated.argsText,
-  };
-}
-
-function upsertToolCall(state: StreamState, updated: ToolCallMessagePart) {
-  const index = state.toolCallIndex.get(updated.toolCallId);
-  if (index === undefined) {
-    state.toolCallIndex.set(updated.toolCallId, state.parts.length);
-    state.parts.push(updated);
-    return;
-  }
-  const existing = state.parts[index] as ToolCallMessagePart;
-  state.parts[index] = {
-    ...existing,
-    ...updated,
-    toolName: existing.toolName ?? updated.toolName,
-    args: updated.args,
-    argsText: updated.argsText,
-  };
+  const existing = state.parts[index] as StructuredToolCallMessagePart;
+  state.parts[index] = mergeToolCallPart(existing, updated);
 }
 
 function notifyChangedPaths(deps: AdapterDeps, paths: string[]) {
@@ -358,11 +385,6 @@ function handlePolicyResult(deps: AdapterDeps, event: StreamEvent): HandlerResul
   return {};
 }
 
-function handleUsage(state: StreamState, event: StreamEvent): HandlerResult {
-  state.usageEvent = parseUsageEvent(event);
-  return {};
-}
-
 function handleChatJob(state: StreamState, event: StreamEvent): HandlerResult {
   state.jobId = typeof event.jobId === "string" ? event.jobId : null;
   return {};
@@ -391,94 +413,35 @@ function buildSyntheticToolResult(
   };
 }
 
-function buildSyntheticToolCallArgs(
-  state: StreamState,
-  deps: AdapterDeps,
-  event: StreamEvent,
-  extraArgs: Record<string, unknown> = {},
-) {
-  return {
-    projectId: deps.getProjectId(),
-    threadId: state.backendThreadId,
-    kind: typeof event.kind === "string" ? event.kind : undefined,
-    ...extraArgs,
-  };
-}
-
-function buildSyntheticHumanToolCall(
-  state: StreamState,
-  deps: AdapterDeps,
-  toolName: SyntheticToolName,
-  event: StreamEvent,
-  extraArgs: Record<string, unknown> = {},
-): ToolCallMessagePart {
-  const args = buildSyntheticToolCallArgs(state, deps, event, extraArgs);
-  return {
-    type: "tool-call",
-    toolCallId: `${toolName}:${String(event.kind ?? "default")}`,
-    toolName,
-    args: args as ToolCallMessagePart["args"],
-    argsText: JSON.stringify(args, null, 2),
-    interrupt: {
-      type: "human",
-      payload: { toolName, kind: typeof event.kind === "string" ? event.kind : undefined },
-    },
-  };
-}
-
-function handleBlueprintSuggestions(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
-  const parsed = parseBlueprintSuggestionsEvent(event);
-  const updated = buildSyntheticHumanToolCall(
-    state,
-    deps,
-    "suggest_blueprints",
-    event,
-    { suggestions: parsed.suggestions },
-  );
-  upsertToolCall(state, updated);
-  return { output: emitState(state) };
-}
-
-function handleBlueprintInputs(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
-  const updated = buildSyntheticToolResult(
-    state,
-    deps,
-    "blueprint_inputs",
-    event,
-    parseBlueprintInputsSummaryEvent(event),
-  );
-  upsertToolResult(state, updated);
-  return { output: emitState(state) };
-}
-
-function handleBlueprintProvenance(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
-  const updated = buildSyntheticToolResult(
-    state,
-    deps,
-    "blueprint_provenance",
-    event,
-    parseBlueprintProvenanceEvent(event),
-  );
-  upsertToolResult(state, updated);
-  return { output: emitState(state) };
-}
-
-function buildDoneMetadata(usageEvent: UsageEventPayload | null) {
-  if (!usageEvent) return undefined;
-  const custom = buildUsageCustomMetadata(usageEvent);
-  return {
-    steps: [{ usage: { promptTokens: usageEvent.promptTokens, completionTokens: usageEvent.completionTokens } }],
-    ...(Object.keys(custom).length > 0 ? { custom } : {}),
-  };
-}
-
-function buildUsageCustomMetadata(usageEvent: UsageEventPayload) {
-  const custom: Record<string, string | number> = {};
-  if (usageEvent.modelId) custom.modelId = usageEvent.modelId;
-  if (usageEvent.modelContextWindow !== null && usageEvent.modelContextWindow !== undefined) {
-    custom.modelContextWindow = usageEvent.modelContextWindow;
+function pruneEvidenceBundleTextParts(state: StreamState) {
+  const nextParts: ThreadAssistantMessagePart[] = [];
+  const nextToolCallIndex = new Map<string, number>();
+  for (const part of state.parts) {
+    if (part.type === "text" && typeof part.text === "string" && parseEvidenceBundleText(part.text)) {
+      continue;
+    }
+    nextParts.push(part);
+    if (part.type === "tool-call" && part.toolCallId) {
+      nextToolCallIndex.set(part.toolCallId, nextParts.length - 1);
+    }
   }
-  return custom;
+  state.parts = nextParts;
+  state.toolCallIndex = nextToolCallIndex;
+  state.textIndexByScope = new Map();
+}
+
+function handleEvidenceBundle(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
+  const bundle = parseEvidenceBundleEvent(event);
+  pruneEvidenceBundleTextParts(state);
+  const updated = buildSyntheticToolResult(
+    state,
+    deps,
+    "evidence_bundle",
+    event,
+    bundle as unknown as EvidenceBundlePayload,
+  );
+  upsertToolResult(state, updated);
+  return { output: emitState(state) };
 }
 
 function isPendingHumanToolCall(part: ThreadAssistantMessagePart) {
@@ -490,13 +453,11 @@ function buildCompletion(state: StreamState): ChatRunResult {
     return {
       content: [...state.parts],
       status: { type: "requires-action", reason: "tool-calls" },
-      metadata: buildDoneMetadata(state.usageEvent),
     };
   }
   return {
     content: [...state.parts],
     status: { type: "complete", reason: "stop" },
-    metadata: buildDoneMetadata(state.usageEvent),
   };
 }
 
@@ -514,12 +475,9 @@ function handleStreamEvent(state: StreamState, deps: AdapterDeps, event: StreamE
   if (type === "tool.start") return handleToolStart(state, event);
   if (type === "tool.result") return handleToolResult(state, deps, event);
   if (type === "file") return handleFile(state, event);
-  if (type === "blueprint.suggestions") return handleBlueprintSuggestions(state, deps, event);
-  if (type === "blueprint.inputs.summary") return handleBlueprintInputs(state, deps, event);
-  if (type === "blueprint.provenance") return handleBlueprintProvenance(state, deps, event);
+  if (type === "evidence.bundle") return handleEvidenceBundle(state, deps, event);
   if (type === "policy.check.start") return handlePolicyStart(deps, event);
   if (type === "policy.check.result") return handlePolicyResult(deps, event);
-  if (type === "usage") return handleUsage(state, event);
   if (type === "done") return handleDone(state);
   return {};
 }

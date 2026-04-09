@@ -22,16 +22,14 @@ from app.core.sse import normalize_sse_item, sse_json, sse_response
 from app.models import Project, Thread, User
 from app.routers import auth_dependencies as auth_deps
 from app.routers import github as github_router
-from app.routers import gitlab as gitlab_router
 from app.routers import projects as projects_router
 from app.routers import state as state_router
-from app.routers import telegram as telegram_router
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 from app.services.chat import service as chat_service
 from app.services.jobs import redis_bus as jobs_redis_bus
 from app.services.jobs import service as jobs_service
 from app.services.jobs.errors import JobsError
-from app.services.telegram import notifications as telegram_notifications
+from app.services.model.factory import close_agent_store
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -156,6 +154,7 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialised")
     yield
     await jobs_redis_bus.close_redis()
+    await close_agent_store()
     await db.close_db()
     logger.info("Database closed")
 
@@ -163,9 +162,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Deep Agents API", version="0.1.0", lifespan=lifespan)
 app.include_router(projects_router.router)
 app.include_router(github_router.router)
-app.include_router(gitlab_router.router)
 app.include_router(state_router.router)
-app.include_router(telegram_router.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -214,7 +211,6 @@ async def chat_stream(
                 "project_id": project.id,
                 "thread_id": resolved_thread_id,
                 "messages": [_chat_message_payload(msg) for msg in payload.messages],
-                "options": {"notify_telegram": True, "delivery_ack": False},
             },
         )
         enqueued_job_id = str(job["id"])
@@ -245,12 +241,6 @@ async def chat_stream(
             settings,
             cancel_checker=request.is_disconnected,
         ):
-            if event.get("type") == "policy.check.result" and inline_payload.project_id:
-                await telegram_notifications.notify_policy_check_by_project_id(
-                    inline_payload.project_id,
-                    settings,
-                    event,
-                )
             yield sse_json(event)
             if await request.is_disconnected():
                 break
@@ -279,14 +269,7 @@ async def chat_stream(
                 if event_type in {"job.queued", "job.running", "job.cancel_requested", "job.canceled"}:
                     continue
                 if event_type == "job.terminal":
-                    await jobs_service.merge_job_options(enqueued_job_id, {"delivery_ack": True})
                     break
-                if event.get("type") == "policy.check.result" and payload.project_id:
-                    await telegram_notifications.notify_policy_check_by_project_id(
-                        payload.project_id,
-                        settings,
-                        event,
-                    )
                 yield sse_json(event)
                 if await request.is_disconnected():
                     break

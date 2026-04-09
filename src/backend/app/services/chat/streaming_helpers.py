@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
 from langchain_core.messages import BaseMessage, ToolMessage
+
+ARTIFACT_SCHEMA_VERSION = 1
 
 
 def extract_messages_from_obj(obj: object) -> list[BaseMessage]:
@@ -106,6 +109,51 @@ def _normalize_tool_args(args: Any, args_text: Any) -> tuple[Any, str]:
     return args or {}, str(args_text or "")
 
 
+def _repair_scope_from_result(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    fix_class = result.get("fix_class")
+    if isinstance(fix_class, str) and fix_class:
+        return fix_class
+    if result.get("status") == "confirmation_required":
+        return "plan"
+    if isinstance(result.get("line"), int):
+        return "line"
+    symbol = result.get("symbol")
+    if isinstance(symbol, str) and symbol:
+        return "symbol"
+    file_path = result.get("file") or result.get("path")
+    if isinstance(file_path, str) and file_path:
+        return "file"
+    return None
+
+
+def _severity_from_result(result: Any, is_error: bool) -> str | None:
+    if not isinstance(result, dict):
+        return "high" if is_error else None
+    severity = result.get("severity")
+    if isinstance(severity, str) and severity:
+        return severity
+    if result.get("status") == "confirmation_required":
+        return "medium"
+    return "high" if is_error else None
+
+
+def _diagnostic_from_result(result: Any) -> dict[str, Any] | None:
+    if not isinstance(result, dict):
+        return None
+    diagnostic = {
+        "file": result.get("file") or result.get("path"),
+        "line": result.get("line"),
+        "symbol": result.get("symbol"),
+        "errorCode": result.get("error_code"),
+        "expected": result.get("expected"),
+        "actual": result.get("actual"),
+    }
+    filtered = {key: value for key, value in diagnostic.items() if value not in (None, "", [])}
+    return filtered or None
+
+
 def _normalize_single_tool_call(call: Any, index: int) -> dict[str, Any]:
     tool_call_id, name, args, args_text = (
         _tool_call_from_dict(call) if isinstance(call, dict) else _tool_call_from_obj(call)
@@ -116,6 +164,8 @@ def _normalize_single_tool_call(call: Any, index: int) -> dict[str, Any]:
         "toolName": name or "tool",
         "args": parsed_args,
         "argsText": parsed_text,
+        "schemaVersion": ARTIFACT_SCHEMA_VERSION,
+        "sourceTool": name or "tool",
     }
 
 
@@ -135,9 +185,29 @@ def parse_tool_result(message: ToolMessage) -> dict[str, Any]:
         try:
             result = json.loads(content)
         except json.JSONDecodeError:
-            result = content
+            try:
+                result = ast.literal_eval(content)
+            except (SyntaxError, ValueError):
+                result = content
+    elif isinstance(content, list) and len(content) == 1 and isinstance(content[0], dict):
+        item = content[0]
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            text = item["text"]
+            try:
+                result = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    result = ast.literal_eval(text)
+                except (SyntaxError, ValueError):
+                    result = text
+    is_error = bool(getattr(message, "status", None) == "error" or getattr(message, "is_error", False))
     return {
         "toolCallId": getattr(message, "tool_call_id", None) or "tool",
         "result": result,
-        "isError": False,
+        "isError": is_error,
+        "schemaVersion": ARTIFACT_SCHEMA_VERSION,
+        "sourceTool": result.get("source_tool") if isinstance(result, dict) else None,
+        "severity": _severity_from_result(result, is_error),
+        "fixClass": _repair_scope_from_result(result),
+        "diagnostic": _diagnostic_from_result(result),
     }

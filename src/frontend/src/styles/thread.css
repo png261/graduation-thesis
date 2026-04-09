@@ -7,7 +7,7 @@
 
 .thread-sidebar {
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--da-panel) 90%, #060a11) 0%, var(--da-panel) 100%);
+    linear-gradient(180deg, color-mix(in srgb, var(--da-panel) 92%, #eef4fb) 0%, var(--da-panel) 100%);
 }
 
 .thread-sidebar .aui-thread-list-root {

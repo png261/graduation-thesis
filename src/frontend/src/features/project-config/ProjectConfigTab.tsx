@@ -1,10 +1,9 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import { OpenTofuDeployModal } from "./OpenTofuDeployModal";
 import { PullRequestModal } from "./PullRequestModal";
-import { AgentSettingsSection, CredentialsSection, GeneralSettingsSection } from "./sections";
+import { CredentialsSection, GeneralSettingsSection } from "./sections";
 import { useProjectConfigState } from "./useProjectConfigState";
 
-type ConfigTab = "agent" | "credentials" | "general";
+type ConfigTab = "credentials" | "general";
 
 interface ProjectConfigTabProps {
   projectId: string;
@@ -18,22 +17,20 @@ interface ProjectConfigTabProps {
 function ProjectConfigHeader({ projectName }: { projectName: string }) {
   return (
     <div>
-      <p className="text-xs uppercase tracking-[0.2em] text-[var(--da-muted)]">Project Config</p>
-      <h2 className="text-lg font-semibold">{projectName}</h2>
+      <p className="text-sm font-medium text-[var(--da-muted)]">Project configuration</p>
+      <h2 className="text-2xl font-semibold tracking-tight text-[var(--da-text)]">{projectName}</h2>
     </div>
   );
 }
 
 function ProjectConfigTabs({
   state,
-  projectId,
   provider,
   projectName,
   projectCount,
   onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
-  projectId: string;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
@@ -44,7 +41,6 @@ function ProjectConfigTabs({
       <ProjectConfigTabsHeader />
       <ProjectConfigTabsContent
         state={state}
-        projectId={projectId}
         provider={provider}
         projectName={projectName}
         projectCount={projectCount}
@@ -56,8 +52,7 @@ function ProjectConfigTabs({
 
 function ProjectConfigTabsHeader() {
   return (
-    <TabsList className="grid h-auto w-full grid-cols-3 gap-1 p-1">
-      <TabsTrigger value="agent">Agent Settings</TabsTrigger>
+    <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1">
       <TabsTrigger value="credentials">Credentials</TabsTrigger>
       <TabsTrigger value="general">General Settings</TabsTrigger>
     </TabsList>
@@ -66,14 +61,12 @@ function ProjectConfigTabsHeader() {
 
 function ProjectConfigTabsContent({
   state,
-  projectId,
   provider,
   projectName,
   projectCount,
   onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
-  projectId: string;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
@@ -81,9 +74,6 @@ function ProjectConfigTabsContent({
 }) {
   return (
     <>
-      <TabsContent value="agent" forceMount className="data-[state=inactive]:hidden">
-        <AgentSettingsSection projectId={projectId} />
-      </TabsContent>
       <TabsContent value="credentials" forceMount className="data-[state=inactive]:hidden">
         <CredentialsSection state={state} provider={provider} />
       </TabsContent>
@@ -99,32 +89,18 @@ function ProjectConfigTabsContent({
   );
 }
 
-function DeployModalGate({
-  projectId,
-  projectName,
-  state,
-}: {
-  projectId: string;
-  projectName: string;
-  state: ReturnType<typeof useProjectConfigState>;
-}) {
-  if (!state.deployOpen || !state.deployStatus) return null;
-  return (
-    <OpenTofuDeployModal
-      projectId={projectId}
-      projectName={projectName}
-      status={state.deployStatus}
-      onClose={() => state.setDeployOpen(false)}
-    />
-  );
-}
-
 function onPullRequestCreated(state: ReturnType<typeof useProjectConfigState>, url: string) {
   state.setLastPullRequestUrl(url);
   state.setPullRequestModalOpen(false);
 }
 
-function PullRequestModalGate({ projectId, state }: { projectId: string; state: ReturnType<typeof useProjectConfigState> }) {
+function PullRequestModalGate({
+  projectId,
+  state,
+}: {
+  projectId: string;
+  state: ReturnType<typeof useProjectConfigState>;
+}) {
   if (!state.pullRequestModalOpen || !state.githubStatus?.connected) return null;
   return (
     <PullRequestModal
@@ -147,17 +123,15 @@ export function ProjectConfigTab({
 }: ProjectConfigTabProps) {
   const state = useProjectConfigState({ projectId, provider, onDeleteProject });
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <ProjectConfigHeader projectName={projectName} />
       <ProjectConfigTabs
         state={state}
-        projectId={projectId}
         provider={provider}
         projectName={projectName}
         projectCount={projectCount}
         onOpenRunDetails={onOpenRunDetails}
       />
-      <DeployModalGate projectId={projectId} projectName={projectName} state={state} />
       <PullRequestModalGate projectId={projectId} state={state} />
     </div>
   );

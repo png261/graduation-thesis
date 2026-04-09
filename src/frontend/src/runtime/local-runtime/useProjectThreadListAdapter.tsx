@@ -13,38 +13,10 @@ import {
   removeThreadHistoryFromStorage,
 } from "./threadHistory";
 
-const guestThreadStore = new Map<string, Thread[]>();
-
 interface AdapterContext {
   projectId: string;
   authenticated: boolean;
   userScope: string;
-  guestThreads: Thread[];
-  setGuestThreads: Dispatch<SetStateAction<Thread[]>>;
-}
-
-export function getGuestThreadsSnapshot(projectId: string): Array<{ id: string; title: string }> {
-  return readGuestThreads(projectId).map((thread) => ({ id: thread.id, title: thread.title }));
-}
-
-function readGuestThreads(projectId: string) {
-  return guestThreadStore.get(projectId) ?? [];
-}
-
-function writeGuestThreads(projectId: string, threads: Thread[]) {
-  guestThreadStore.set(projectId, threads);
-}
-
-function updateGuestThreads(
-  projectId: string,
-  setGuestThreads: Dispatch<SetStateAction<Thread[]>>,
-  update: (threads: Thread[]) => Thread[],
-) {
-  setGuestThreads((previous) => {
-    const next = update(previous);
-    writeGuestThreads(projectId, next);
-    return next;
-  });
 }
 
 function mapThreadSummary(thread: Thread) {
@@ -54,26 +26,6 @@ function mapThreadSummary(thread: Thread) {
     title: thread.title || undefined,
     externalId: undefined,
   };
-}
-
-function ensureGuestThread(threads: Thread[], threadId: string) {
-  if (threads.some((thread) => thread.id === threadId)) return threads;
-  return [...threads, { id: threadId, title: "", createdAt: new Date().toISOString() }];
-}
-
-function renameGuestThread(threads: Thread[], remoteId: string, title: string) {
-  return threads.map((thread) => (thread.id === remoteId ? { ...thread, title } : thread));
-}
-
-function removeGuestThread(threads: Thread[], remoteId: string) {
-  return threads.filter((thread) => thread.id !== remoteId);
-}
-
-function setGuestThreadTitle(threads: Thread[], remoteId: string, title: string) {
-  if (!threads.some((thread) => thread.id === remoteId)) {
-    return [...threads, { id: remoteId, title, createdAt: new Date().toISOString() }];
-  }
-  return renameGuestThread(threads, remoteId, title);
 }
 
 function createTitleStream(title: string) {
@@ -117,20 +69,9 @@ const ThreadPersistenceProvider: FC<PropsWithChildren<{ projectId: string; authe
   return <RuntimeAdapterProvider adapters={adapters}>{children}</RuntimeAdapterProvider>;
 };
 
-function useGuestThreads(projectId: string, authenticated: boolean) {
-  const [guestThreads, setGuestThreads] = useState<Thread[]>(() => readGuestThreads(projectId));
-
-  useEffect(() => {
-    if (authenticated) return;
-    setGuestThreads(readGuestThreads(projectId));
-  }, [authenticated, projectId]);
-
-  return { guestThreads, setGuestThreads };
-}
-
 function createListHandler(context: AdapterContext) {
   return async () => {
-    const threads = context.authenticated ? await fetchThreads(context.projectId) : context.guestThreads;
+    const threads = await fetchThreads(context.projectId);
     return { threads: threads.map(mapThreadSummary) };
   };
 }
@@ -141,8 +82,6 @@ function createInitializeHandler(context: AdapterContext) {
       await persistThread(context.projectId, threadId, "");
       return { remoteId: threadId, externalId: undefined };
     }
-    updateGuestThreads(context.projectId, context.setGuestThreads, (threads) => ensureGuestThread(threads, threadId));
-    return { remoteId: threadId, externalId: undefined };
   };
 }
 
@@ -150,7 +89,6 @@ function createRenameHandler(context: AdapterContext) {
   return async (remoteId: string, newTitle: string) => {
     const title = newTitle.trim();
     if (context.authenticated) return persistThread(context.projectId, remoteId, title);
-    updateGuestThreads(context.projectId, context.setGuestThreads, (threads) => renameGuestThread(threads, remoteId, title));
   };
 }
 
@@ -161,9 +99,6 @@ function createDeleteHandler(context: AdapterContext) {
       removeThreadHistoryFromStorage(context.projectId, remoteId, context.userScope);
       return;
     }
-
-    updateGuestThreads(context.projectId, context.setGuestThreads, (threads) => removeGuestThread(threads, remoteId));
-    removeThreadHistoryFromMemory(context.projectId, remoteId, context.userScope);
   };
 }
 
@@ -172,8 +107,6 @@ function persistGeneratedTitle(context: AdapterContext, remoteId: string, title:
     persistThread(context.projectId, remoteId, title).catch(() => {});
     return;
   }
-
-  updateGuestThreads(context.projectId, context.setGuestThreads, (threads) => setGuestThreadTitle(threads, remoteId, title));
 }
 
 function createGenerateTitleHandler(context: AdapterContext) {
@@ -186,7 +119,7 @@ function createGenerateTitleHandler(context: AdapterContext) {
 
 function createFetchHandler(context: AdapterContext) {
   return async (threadId: string) => {
-    const threads = context.authenticated ? await fetchThreads(context.projectId) : context.guestThreads;
+    const threads = await fetchThreads(context.projectId);
     const thread = threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found");
     return mapThreadSummary(thread);
@@ -226,10 +159,9 @@ interface AdapterOptions {
 
 export function useProjectThreadListAdapter(projectId: string, options: AdapterOptions): unstable_RemoteThreadListAdapter {
   const { authenticated, userScope } = options;
-  const { guestThreads, setGuestThreads } = useGuestThreads(projectId, authenticated);
 
   return useMemo(() => {
-    const context: AdapterContext = { authenticated, userScope, projectId, guestThreads, setGuestThreads };
+    const context: AdapterContext = { authenticated, userScope, projectId};
     return createThreadListAdapter(context);
-  }, [authenticated, guestThreads, projectId, setGuestThreads, userScope]);
+  }, [authenticated, projectId, userScope]);
 }

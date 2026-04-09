@@ -48,16 +48,6 @@ class WorkflowSettings:
 
 
 @dataclass(frozen=True)
-class BlueprintSettings:
-    database_url: str
-    file_url_signing_secret: str
-    file_url_ttl_seconds: int
-    zip_import_max_bytes: int
-    zip_import_max_files: int
-    zip_import_max_uncompressed_bytes: int
-
-
-@dataclass(frozen=True)
 class ProvisioningSettings:
     database_url: str
     redis_url: str
@@ -95,14 +85,9 @@ class ServiceSettingsBundle:
     identity_project: IdentityProjectSettings
     conversation_agent: ConversationAgentSettings
     workflow: WorkflowSettings
-    blueprint: BlueprintSettings
     provisioning: ProvisioningSettings
     configuration_incident: ConfigurationIncidentSettings
     scm_integration: ScmIntegrationSettings
-
-
-def _database_url(settings: Settings, override: str | None) -> str:
-    return settings.service_database_url("shared", override)
 
 
 def build_service_settings_bundle(settings: Settings) -> ServiceSettingsBundle:
@@ -140,14 +125,6 @@ def build_service_settings_bundle(settings: Settings) -> ServiceSettingsBundle:
             jobs_event_ttl_seconds=settings.jobs_event_ttl_seconds,
             jobs_event_tail_limit=settings.jobs_event_tail_limit,
             jobs_history_retention_days=settings.jobs_history_retention_days,
-        ),
-        blueprint=BlueprintSettings(
-            database_url=settings.service_database_url("blueprint", settings.blueprint_database_url),
-            file_url_signing_secret=settings.file_url_signing_secret,
-            file_url_ttl_seconds=settings.file_url_ttl_seconds,
-            zip_import_max_bytes=settings.zip_import_max_bytes,
-            zip_import_max_files=settings.zip_import_max_files,
-            zip_import_max_uncompressed_bytes=settings.zip_import_max_uncompressed_bytes,
         ),
         provisioning=ProvisioningSettings(
             database_url=settings.service_database_url("provisioning", settings.provisioning_database_url),

@@ -32,11 +32,11 @@ const KIND_OPTIONS: Array<{ label: string; value: ProjectJobKind | "" }> = [
 ];
 
 function statusTone(status: ProjectJobStatus) {
-  if (status === "succeeded") return "text-emerald-300";
-  if (status === "failed") return "text-red-300";
-  if (status === "running") return "text-blue-300";
-  if (status === "canceled") return "text-amber-300";
-  return "text-zinc-300";
+  if (status === "succeeded") return "text-emerald-600";
+  if (status === "failed") return "text-red-600";
+  if (status === "running") return "text-blue-600";
+  if (status === "canceled") return "text-amber-700";
+  return "text-[var(--da-muted)]";
 }
 
 export function JobsWorkspaceSidebarPanel(props: {
@@ -52,13 +52,13 @@ export function JobsWorkspaceSidebarPanel(props: {
   onRefresh: () => void;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col border-r border-[var(--da-border)] bg-[#0e121b]">
+    <div className="flex h-full min-h-0 flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
       <div className="space-y-2 border-b border-[var(--da-border)] p-3">
         <div className="grid grid-cols-2 gap-2">
           <select
             value={props.statusFilter}
             onChange={(event) => props.onStatusFilter(event.target.value as ProjectJobStatus | "")}
-            className="h-8 rounded border border-white/10 bg-black/20 px-2 text-xs"
+            className="h-8 rounded border border-[var(--da-border)] bg-[var(--da-panel)] px-2 text-xs text-[var(--da-text)]"
           >
             {STATUS_OPTIONS.map((option) => (
               <option key={option.label} value={option.value}>{option.label}</option>
@@ -67,7 +67,7 @@ export function JobsWorkspaceSidebarPanel(props: {
           <select
             value={props.kindFilter}
             onChange={(event) => props.onKindFilter(event.target.value as ProjectJobKind | "")}
-            className="h-8 rounded border border-white/10 bg-black/20 px-2 text-xs"
+            className="h-8 rounded border border-[var(--da-border)] bg-[var(--da-panel)] px-2 text-xs text-[var(--da-text)]"
           >
             {KIND_OPTIONS.map((option) => (
               <option key={option.label} value={option.value}>{option.label}</option>
@@ -80,19 +80,19 @@ export function JobsWorkspaceSidebarPanel(props: {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {props.loading ? <p className="px-2 py-3 text-xs text-[var(--da-muted)]">Loading jobs...</p> : null}
-        {props.error ? <p className="px-2 py-3 text-xs text-red-300">{props.error}</p> : null}
+        {props.error ? <p className="px-2 py-3 text-xs text-red-600">{props.error}</p> : null}
         {props.jobs.map((job) => (
           <button
             key={job.id}
             type="button"
             onClick={() => props.onSelectJob(job.id)}
-            className={`mb-1 w-full rounded border px-2 py-2 text-left ${props.selectedJobId === job.id ? "border-blue-400/50 bg-blue-500/10" : "border-white/10 bg-black/20 hover:bg-black/35"}`}
+            className={`mb-1 w-full rounded border px-2 py-2 text-left ${props.selectedJobId === job.id ? "border-blue-400/50 bg-blue-500/10" : "border-[var(--da-border)] bg-[var(--da-panel)] hover:bg-[var(--da-elevated)]"}`}
           >
             <div className="mb-0.5 flex items-center justify-between gap-2 text-xs uppercase tracking-[0.1em]">
-              <span className="text-zinc-300">{job.kind}</span>
+              <span className="text-[var(--da-muted)]">{job.kind}</span>
               <span className={statusTone(job.status)}>{job.status}</span>
             </div>
-            <div className="truncate font-mono text-[11px] text-zinc-200">{job.id}</div>
+            <div className="truncate font-mono text-[11px] text-[var(--da-text)]">{job.id}</div>
             <div className="mt-1 line-clamp-2 text-[11px] text-[var(--da-muted)]">{sidebarSummary(job)}</div>
           </button>
         ))}
@@ -167,13 +167,13 @@ function StageSection({
 }) {
   if (!state && events.length < 1) return null;
   return (
-    <div className="rounded border border-white/10 bg-black/20 p-3">
+    <div className="rounded border border-[var(--da-border)] bg-[var(--da-elevated)] p-3">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <p className="text-sm font-semibold text-white">{title}</p>
+        <p className="text-sm font-semibold text-[var(--da-text)]">{title}</p>
         <span className="text-xs uppercase text-[var(--da-muted)]">{stageStatusLabel(state?.status)}</span>
       </div>
       {state?.message ? <p className="mb-2 text-xs text-[var(--da-muted)]">{state.message}</p> : null}
-      <details open className="text-[11px] text-blue-100/85">
+      <details open className="text-[11px] text-[color-mix(in_srgb,var(--da-text)_82%,transparent)]">
         <summary className="cursor-pointer font-mono text-[11px] text-[var(--da-muted)]">Raw events</summary>
         <div className="mt-2 space-y-1 font-mono">
           {events.length < 1 ? <p className="text-[var(--da-muted)]">No raw events for this stage.</p> : null}
@@ -213,12 +213,12 @@ export function JobsWorkspaceMainPanel(props: {
       stageEvents.post_deploy.length,
   );
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#0a0f17]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--da-bg)]">
       <div className="space-y-2 border-b border-[var(--da-border)] p-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-white/90">{props.selectedSummary}</p>
-            <p className="font-mono text-[11px] text-white/60">{props.selectedJob.id}</p>
+            <p className="text-sm font-semibold text-[var(--da-text)]">{props.selectedSummary}</p>
+            <p className="font-mono text-[11px] text-[var(--da-muted)]">{props.selectedJob.id}</p>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={props.onCancel} disabled={!canCancel}>Cancel</Button>
@@ -228,7 +228,7 @@ export function JobsWorkspaceMainPanel(props: {
         <p className="text-xs text-[var(--da-muted)]">Created: {createdAt} {props.streaming ? "· streaming" : ""}</p>
         <p className="text-xs text-[var(--da-muted)]">Summary: {stageChain || resultSummary(props.selectedJob)}</p>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px] text-blue-100/85">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px] text-[color-mix(in_srgb,var(--da-text)_82%,transparent)]">
         {showStageView ? (
           <div className="space-y-3 font-sans text-sm">
             <StageSection title="Provisioning" state={stageSummary?.apply} events={stageEvents.apply} />

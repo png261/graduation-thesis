@@ -4,7 +4,6 @@ import { useCredentialsState } from "./useCredentialsState";
 import { useDeleteProjectState } from "./useDeleteProjectState";
 import { useDeployStatus } from "./useDeployStatus";
 import { useGitHubConfigState } from "./useGitHubConfigState";
-import { useTelegramConfigState } from "./useTelegramConfigState";
 
 export interface UseProjectConfigStateArgs {
   projectId: string;
@@ -17,18 +16,16 @@ export function useProjectConfigState({
   provider,
   onDeleteProject,
 }: UseProjectConfigStateArgs) {
-  const [configTab, setConfigTab] = useState<"agent" | "credentials" | "general">("credentials");
+  const [configTab, setConfigTab] = useState<"credentials" | "general">("credentials");
 
   const deploy = useDeployStatus(projectId);
   const github = useGitHubConfigState(projectId);
-  const telegram = useTelegramConfigState(projectId);
   const credentials = useCredentialsState(projectId, provider);
   const deletion = useDeleteProjectState(onDeleteProject);
 
   return {
     ...deploy,
     ...github,
-    ...telegram,
     ...credentials,
     ...deletion,
     configTab,

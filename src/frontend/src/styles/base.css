@@ -1,12 +1,12 @@
 :root {
-  --da-bg: #0b0f14;
-  --da-panel: #111827;
-  --da-elevated: #161d2b;
-  --da-border: #2a3345;
-  --da-text: #e5e7eb;
-  --da-muted: #94a3b8;
-  --da-accent: #3b82f6;
-  color-scheme: dark;
+  --da-bg: #f4f7fb;
+  --da-panel: #ffffff;
+  --da-elevated: #eef3f9;
+  --da-border: #d7dee8;
+  --da-text: #18212f;
+  --da-muted: #5e6b7e;
+  --da-accent: #2563eb;
+  color-scheme: light;
 }
 
 * {
@@ -17,11 +17,15 @@ body {
   margin: 0;
   min-height: 100vh;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
   color: var(--da-text);
   background:
-    radial-gradient(circle at 20% -10%, rgba(59, 130, 246, 0.12), transparent 42%),
-    radial-gradient(circle at 90% 15%, rgba(30, 41, 59, 0.5), transparent 48%),
-    linear-gradient(180deg, #0b0f14 0%, #090d12 100%);
+    radial-gradient(circle at 20% -10%, rgba(37, 99, 235, 0.1), transparent 42%),
+    radial-gradient(circle at 90% 15%, rgba(148, 163, 184, 0.22), transparent 48%),
+    linear-gradient(180deg, #f8fbff 0%, #edf3f9 100%);
 }
 
 #root {
@@ -42,7 +46,11 @@ a,
 input,
 textarea,
 select {
-  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
 }
 
 button:focus-visible,
@@ -61,7 +69,7 @@ select:focus-visible {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3a455d #111827;
+  scrollbar-color: #bcc7d6 #edf3f9;
 }
 
 *::-webkit-scrollbar {
@@ -70,13 +78,13 @@ select:focus-visible {
 }
 
 *::-webkit-scrollbar-track {
-  background: #101722;
+  background: #edf3f9;
 }
 
 *::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  border: 2px solid #101722;
-  background: #37445c;
+  border: 2px solid #edf3f9;
+  background: #bcc7d6;
 }
 
 @media (prefers-reduced-motion: reduce) {

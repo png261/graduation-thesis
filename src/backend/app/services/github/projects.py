@@ -1,4 +1,5 @@
 """Project-level GitHub connect/disconnect/pull-request workflows."""
+
 from __future__ import annotations
 
 import re
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Project
 from app.services.github import git as github_git
 from app.services.project import files as project_files
-
 
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -239,60 +239,29 @@ def _artifact_count(summary: dict[str, object], key: str) -> int | None:
     return None
 
 
-def _latest_active_blueprint_reference(project: Project) -> dict[str, str | None] | None:
-    raw = project.active_blueprints_json if isinstance(project.active_blueprints_json, dict) else {}
-    references: list[dict[str, str | None]] = []
-    for selection in raw.values():
-        if not isinstance(selection, dict):
-            continue
-        created_at = selection.get("latest_run_created_at") or selection.get("selected_at")
-        references.append(
-            {
-                "run_id": str(selection.get("latest_run_id") or "") or None,
-                "blueprint_name": str(selection.get("blueprint_name") or "") or None,
-                "created_at": str(created_at or "") or None,
-            }
-        )
-    references = [item for item in references if item.get("run_id") or item.get("blueprint_name")]
-    if not references:
-        return None
-    references.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return references[0]
-
-
 def _pull_request_title_for_source(
     *,
     ansible_generation,
     terraform_generation,
-    blueprint_reference: dict[str, str | None] | None,
 ) -> tuple[str, str]:
-    ansible_summary = _summary_payload(ansible_generation)
-    terraform_summary = _summary_payload(terraform_generation)
     if ansible_generation is not None:
-        blueprint_name = str(ansible_summary.get("blueprintName") or "infrastructure").strip()
-        return f"chore: update infra from {blueprint_name} ansible generation", "ansible_generation"
+        return "chore: update infra from ansible generation", "ansible_generation"
     if terraform_generation is not None:
-        blueprint_name = str(terraform_summary.get("blueprintName") or "infrastructure").strip()
-        return f"chore: update infra from {blueprint_name} terraform generation", "terraform_generation"
-    if blueprint_reference and blueprint_reference.get("blueprint_name"):
-        return f"chore: update infra from {blueprint_reference['blueprint_name']}", "blueprint_run"
+        return "chore: update infra from terraform generation", "terraform_generation"
     return "chore: update infrastructure", "fallback"
 
 
-def _append_blueprint_context(
+def _append_generation_context(
     lines: list[str],
     *,
     source: str,
-    blueprint_run_id: str | None,
     ansible_generation_id: str | None,
     terraform_generation_id: str | None,
 ) -> None:
-    lines.extend(["## Blueprint Context", ""])
+    lines.extend(["## Generation Context", ""])
     if source == "fallback":
-        lines.append("- No recent blueprint or generation history was found for this project.")
+        lines.append("- No recent generation history was found for this project.")
     else:
-        if blueprint_run_id:
-            lines.append(f"- Blueprint run id: `{blueprint_run_id}`")
         if terraform_generation_id:
             lines.append(f"- Terraform generation id: `{terraform_generation_id}`")
         if ansible_generation_id:
@@ -342,43 +311,19 @@ def _append_review_notes(
     )
 
 
-def _blueprint_run_id(
-    *,
-    terraform_generation,
-    ansible_generation,
-    blueprint_reference: dict[str, str | None] | None,
-) -> str | None:
-    ansible_run_id = str(_summary_payload(ansible_generation).get("blueprintRunId") or "").strip()
-    if ansible_run_id:
-        return ansible_run_id
-    terraform_run_id = str(_summary_payload(terraform_generation).get("blueprintRunId") or "").strip()
-    if terraform_run_id:
-        return terraform_run_id
-    if blueprint_reference:
-        return blueprint_reference.get("run_id")
-    return None
-
-
 async def build_project_pull_request_defaults(
     session: AsyncSession,
     project: Project,
 ) -> dict[str, object]:
-    from app.services.blueprints import service as blueprint_service
+    from app.services.generation_history import get_latest_ansible_generation, get_latest_terraform_generation
 
-    terraform_generation = await blueprint_service.get_latest_terraform_generation(session, project.id)
-    ansible_generation = await blueprint_service.get_latest_ansible_generation(session, project.id)
-    blueprint_reference = _latest_active_blueprint_reference(project)
+    terraform_generation = await get_latest_terraform_generation(session, project.id)
+    ansible_generation = await get_latest_ansible_generation(session, project.id)
     title, source = _pull_request_title_for_source(
         ansible_generation=ansible_generation,
         terraform_generation=terraform_generation,
-        blueprint_reference=blueprint_reference,
     )
     base_branch, working_branch = _connected_branches(project)
-    blueprint_run_id = _blueprint_run_id(
-        terraform_generation=terraform_generation,
-        ansible_generation=ansible_generation,
-        blueprint_reference=blueprint_reference,
-    )
     terraform_generation_id = getattr(terraform_generation, "id", None)
     ansible_generation_id = getattr(ansible_generation, "id", None)
     description_lines = [
@@ -388,10 +333,9 @@ async def build_project_pull_request_defaults(
         f"- Suggested source: `{source}`",
         "",
     ]
-    _append_blueprint_context(
+    _append_generation_context(
         description_lines,
         source=source,
-        blueprint_run_id=blueprint_run_id,
         ansible_generation_id=ansible_generation_id,
         terraform_generation_id=terraform_generation_id,
     )
@@ -412,7 +356,6 @@ async def build_project_pull_request_defaults(
         "working_branch": working_branch,
         "repo_full_name": project.github_repo_full_name,
         "source": source,
-        "blueprint_run_id": blueprint_run_id,
         "terraform_generation_id": terraform_generation_id,
         "ansible_generation_id": ansible_generation_id,
     }
@@ -457,7 +400,9 @@ def _resolve_target_base(project_root: Path, requested_base: str, working_branch
     if target_base == working_branch:
         target_base = github_git.resolve_base_branch(project_root=project_root, preferred_base=None)
     if target_base == working_branch:
-        raise GitHubProjectError("Base branch cannot be the same as working branch", status_code=400, code="invalid_base_branch")
+        raise GitHubProjectError(
+            "Base branch cannot be the same as working branch", status_code=400, code="invalid_base_branch"
+        )
     return target_base
 
 
@@ -479,7 +424,9 @@ def _push_changes(
     )
 
 
-async def _create_pull_request(project: Project, access_token: str, title: str, body: str, target_base: str) -> dict[str, object]:
+async def _create_pull_request(
+    project: Project, access_token: str, title: str, body: str, target_base: str
+) -> dict[str, object]:
     from app.services.github import auth as github_auth  # lazy import to avoid cycles
 
     return await github_auth.github_create_pull_request(

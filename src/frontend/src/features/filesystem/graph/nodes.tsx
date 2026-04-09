@@ -8,23 +8,23 @@ type GraphFlowNode = Node<GraphNodeData>;
 
 function EnvironmentResourceCard({ name, type }: { name: string; type: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-black/40 px-4 py-3">
-      <div className="flex items-center gap-2 text-xl font-semibold leading-none text-white/95">
+    <div className="rounded-xl border border-[var(--da-border)] bg-[var(--da-panel)] px-4 py-3">
+      <div className="flex items-center gap-2 text-xl font-semibold leading-none text-[var(--da-text)]">
         <Box className="h-5 w-5 text-blue-300" />
         {name}
       </div>
-      <div className="mt-1 text-sm leading-none text-white/55">{type || "resource"}</div>
+      <div className="mt-1 text-sm leading-none text-[var(--da-muted)]">{type || "resource"}</div>
     </div>
   );
 }
 
 function EnvironmentNodeHeader({ title, provider, region }: { title: string; provider?: string; region?: string }) {
   return (
-    <div className="flex items-center justify-between border-b border-white/10 bg-black/25 px-6 py-4">
-      <h4 className="text-2xl font-semibold leading-none text-white">{title}</h4>
+    <div className="flex items-center justify-between border-b border-[var(--da-border)] bg-[var(--da-elevated)] px-6 py-4">
+      <h4 className="text-2xl font-semibold leading-none text-[var(--da-text)]">{title}</h4>
       <div className="flex items-center gap-3">
-        {provider ? <span className="rounded-full border border-white/30 bg-white/15 px-3 py-1 text-xs font-semibold uppercase text-white/90">{provider}</span> : null}
-        {region ? <span className="text-sm font-medium text-white/70">{region}</span> : null}
+        {provider ? <span className="rounded-full border border-[var(--da-border)] bg-[var(--da-panel)] px-3 py-1 text-xs font-semibold uppercase text-[var(--da-text)]">{provider}</span> : null}
+        {region ? <span className="text-sm font-medium text-[var(--da-muted)]">{region}</span> : null}
       </div>
     </div>
   );
@@ -32,7 +32,7 @@ function EnvironmentNodeHeader({ title, provider, region }: { title: string; pro
 
 function EnvironmentResourceList({ resources }: { resources: Array<{ name: string; type: string }> }) {
   if (resources.length < 1) {
-    return <div className="rounded-xl border border-dashed border-white/15 px-4 py-6 text-sm text-white/55">No resources found.</div>;
+    return <div className="rounded-xl border border-dashed border-[var(--da-border)] px-4 py-6 text-sm text-[var(--da-muted)]">No resources found.</div>;
   }
   return (
     <div className="space-y-2">
@@ -46,7 +46,7 @@ function EnvironmentResourceList({ resources }: { resources: Array<{ name: strin
 function EnvironmentCardNode({ data, selected }: NodeProps<GraphFlowNode>) {
   const resources = data.resources ?? [];
   return (
-    <div className={cn("w-[420px] overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.12] to-white/[0.02] shadow-[0_24px_70px_-30px_rgba(0,0,0,0.85)]", selected && "border-blue-400/80 shadow-[0_0_0_1px_rgba(96,165,250,0.8)]")}>
+    <div className={cn("w-[420px] overflow-hidden rounded-3xl border border-[var(--da-border)] bg-gradient-to-br from-[var(--da-panel)] to-[var(--da-elevated)] shadow-[0_20px_50px_-30px_rgba(15,23,42,0.28)]", selected && "border-blue-400/80 shadow-[0_0_0_1px_rgba(96,165,250,0.6)]")}>
       <EnvironmentNodeHeader title={data.title} provider={data.provider} region={data.region} />
       <div className="px-6 py-5">
         <EnvironmentResourceList resources={resources} />
@@ -59,15 +59,15 @@ function ResourceCardNode({ data, selected }: NodeProps<GraphFlowNode>) {
   return (
     <div
       className={cn(
-        "w-[300px] rounded-2xl border border-white/12 bg-black/55 px-4 py-3 shadow-[0_12px_40px_-22px_rgba(0,0,0,0.8)]",
+        "w-[300px] rounded-2xl border border-[var(--da-border)] bg-[var(--da-panel)] px-4 py-3 shadow-[0_12px_32px_-22px_rgba(15,23,42,0.18)]",
         selected && "border-blue-400/80 shadow-[0_0_0_1px_rgba(96,165,250,0.75)]",
       )}
     >
-      <div className="flex items-center gap-2 text-xl font-semibold leading-none text-white/95">
+      <div className="flex items-center gap-2 text-xl font-semibold leading-none text-[var(--da-text)]">
         <Layers className="h-4 w-4 text-blue-300" />
         <span className="truncate">{data.title}</span>
       </div>
-      <p className="mt-1 text-sm leading-none text-white/55">{data.subtitle || "resource"}</p>
+      <p className="mt-1 text-sm leading-none text-[var(--da-muted)]">{data.subtitle || "resource"}</p>
     </div>
   );
 }
@@ -76,13 +76,13 @@ function CategoryNode({ data, selected }: NodeProps<GraphFlowNode>) {
   return (
     <div
       className={cn(
-        "w-[300px] rounded-2xl border border-white/12 bg-white/[0.05] px-4 py-3",
+        "w-[300px] rounded-2xl border border-[var(--da-border)] bg-[var(--da-panel)] px-4 py-3",
         selected && "border-blue-400/80",
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <h5 className="truncate text-lg font-semibold leading-none text-white">{data.title}</h5>
-        <span className="rounded-full border border-white/20 px-2 py-0.5 text-xs text-white/70">{data.count ?? 0}</span>
+        <h5 className="truncate text-lg font-semibold leading-none text-[var(--da-text)]">{data.title}</h5>
+        <span className="rounded-full border border-[var(--da-border)] px-2 py-0.5 text-xs text-[var(--da-muted)]">{data.count ?? 0}</span>
       </div>
     </div>
   );

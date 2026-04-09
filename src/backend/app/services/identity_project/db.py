@@ -9,7 +9,6 @@ from app.services.identity_project.models import Project, User
 _LEGACY_PROJECT_COLUMN_PATCHES = (
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS provider VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS credentials TEXT",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS active_blueprints_json JSON",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo_full_name VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repository_id VARCHAR",

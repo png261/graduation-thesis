@@ -55,7 +55,7 @@ function CostScopeButton({
   onClick: () => void;
 }) {
   return (
-    <button type="button" onClick={onClick} className={cn("flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left", active ? "border-white/70 bg-white/[0.08] text-white" : "border-white/10 bg-white/[0.03] text-white/80 hover:border-white/25")}>
+    <button type="button" onClick={onClick} className={cn("flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left", active ? "border-blue-300 bg-blue-50 text-[var(--da-text)]" : "border-[var(--da-border)] bg-[var(--da-panel)] text-[color-mix(in_srgb,var(--da-text)_82%,transparent)] hover:border-blue-200")}>
       <span className={label === "Total" ? "text-2xl font-semibold leading-none" : "text-xl font-semibold leading-none"}>{label}</span>
       <span className={label === "Total" ? "text-2xl font-semibold leading-none" : "text-xl font-medium leading-none"}>
         {label === "Total" ? `${formatMoney(amount, currency)}/mo` : formatMoney(amount, currency)}
@@ -74,12 +74,11 @@ export interface CostsWorkspaceSidebarPanelProps {
 export function CostsWorkspaceSidebarPanel({ data, scope, onScopeChange, className }: CostsWorkspaceSidebarPanelProps) {
   const view = useCostsWorkspaceViewModel(data);
   return (
-    <aside className={cn("h-full bg-gradient-to-b from-[#14171d] to-[#101319] p-4", className)}>
-      <h3 className="mb-5 text-3xl font-semibold leading-none text-white/90">Cost Summary</h3>
+    <aside className={cn("h-full bg-gradient-to-b from-[var(--da-elevated)] to-[var(--da-panel)] p-4", className)}>
       <div className="space-y-3">
-        {view.moduleOptions.length < 1 ? <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/60">No modules yet</div> : view.moduleOptions.map((moduleName) => <CostScopeButton key={moduleName} label={moduleName} active={scope === moduleName} amount={view.moduleCostMap.get(moduleName) ?? 0} currency={view.currency} onClick={() => onScopeChange(moduleName)} />)}
+        {view.moduleOptions.length < 1 ? <div className="rounded-lg border border-[var(--da-border)] bg-[var(--da-panel)] px-4 py-3 text-sm text-[var(--da-muted)]">No modules yet</div> : view.moduleOptions.map((moduleName) => <CostScopeButton key={moduleName} label={moduleName} active={scope === moduleName} amount={view.moduleCostMap.get(moduleName) ?? 0} currency={view.currency} onClick={() => onScopeChange(moduleName)} />)}
         <CostScopeButton label="Total" active={scope === "all"} amount={data?.total_monthly_cost ?? 0} currency={view.currency} onClick={() => onScopeChange("all")} />
-        <div className="flex items-start gap-2 text-sm leading-snug text-white/55">
+        <div className="flex items-start gap-2 text-sm leading-snug text-[var(--da-muted)]">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <p>Costs are calculated using your Terraform configuration.</p>
         </div>
@@ -90,8 +89,7 @@ export function CostsWorkspaceSidebarPanel({ data, scope, onScopeChange, classNa
 
 function CostsTopBar({ loading, onRefresh }: { loading: boolean; onRefresh: () => void }) {
   return (
-    <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-      <span className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-xs font-medium text-white/75">v0.0.1</span>
+    <div className="flex items-center justify-between border-b border-[var(--da-border)] px-4 py-3">
       <Button variant="outline" size="sm" className="gap-1.5" onClick={onRefresh} disabled={loading}>
         <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         Refresh
@@ -102,12 +100,12 @@ function CostsTopBar({ loading, onRefresh }: { loading: boolean; onRefresh: () =
 
 function CostsErrorBanner({ error }: { error: string }) {
   if (!error) return null;
-  return <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-200">{error}</div>;
+  return <div className="border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-700">{error}</div>;
 }
 
 function CostsTableHeader() {
   return (
-    <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] border-b border-white/10 px-4 py-3 text-xs font-medium uppercase tracking-[0.12em] text-white/60">
+    <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] border-b border-[var(--da-border)] px-4 py-3 text-xs font-medium uppercase tracking-[0.12em] text-[var(--da-muted)]">
       <span>Resource</span>
       <span>Quantity</span>
       <span>Units</span>
@@ -118,7 +116,7 @@ function CostsTableHeader() {
 
 function ResourceComponentRow({ component, currency }: { component: CostComponent; currency: string }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] text-xs text-white/70">
+    <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] text-xs text-[color-mix(in_srgb,var(--da-text)_72%,transparent)]">
       <span className="truncate pl-6">{component.name}</span>
       <span>{formatQuantity(component.monthly_quantity)}</span>
       <span>{component.unit || "-"}</span>
@@ -138,8 +136,8 @@ function ResourceDetails({
 }) {
   if (!expanded) return null;
   return (
-    <div className="border-t border-white/5 bg-white/[0.02] px-4 py-2">
-      {resource.components.length < 1 ? <p className="text-xs text-white/50">No cost components available.</p> : <div className="space-y-1.5">{resource.components.map((component) => <ResourceComponentRow key={component.id} component={component} currency={currency} />)}</div>}
+    <div className="border-t border-[var(--da-border)] bg-[var(--da-elevated)] px-4 py-2">
+      {resource.components.length < 1 ? <p className="text-xs text-[var(--da-muted)]">No cost components available.</p> : <div className="space-y-1.5">{resource.components.map((component) => <ResourceComponentRow key={component.id} component={component} currency={currency} />)}</div>}
     </div>
   );
 }
@@ -156,8 +154,8 @@ function ResourceRow({
   onToggle: () => void;
 }) {
   return (
-    <div className="border-t border-white/5">
-      <button type="button" onClick={onToggle} className="grid w-full grid-cols-[minmax(0,1.6fr)_160px_160px_180px] items-center px-4 py-2.5 text-left text-sm text-white/90 hover:bg-white/[0.03]">
+    <div className="border-t border-[var(--da-border)]">
+      <button type="button" onClick={onToggle} className="grid w-full grid-cols-[minmax(0,1.6fr)_160px_160px_180px] items-center px-4 py-2.5 text-left text-sm text-[var(--da-text)] hover:bg-[var(--da-elevated)]">
         <span className="flex items-center gap-2 truncate">{expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}<span className="truncate">{resource.resource_type}.{resource.resource_name}</span></span>
         <span>{formatQuantity(resource.quantity)}</span>
         <span>{resource.unit || "-"}</span>
@@ -184,8 +182,8 @@ function ModuleResourcesSection({
   onToggleResource: (resourceId: string) => void;
 }) {
   return (
-    <div className="border-b border-white/10">
-      <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] bg-white/[0.02] px-4 py-3 text-sm font-semibold text-white/90">
+    <div className="border-b border-[var(--da-border)]">
+      <div className="grid grid-cols-[minmax(0,1.6fr)_160px_160px_180px] bg-[var(--da-elevated)] px-4 py-3 text-sm font-semibold text-[var(--da-text)]">
         <span>{moduleName}</span><span /><span />
         <span className="text-right">{formatMoney(moduleCostMap.get(moduleName) ?? 0, currency)}</span>
       </div>
@@ -211,23 +209,23 @@ function CostsTableBody({
   expandedResourceIds: Set<string>;
   onToggleResource: (resourceId: string) => void;
 }) {
-  if (loading) return <div className="px-4 py-8 text-sm text-white/60">Calculating costs...</div>;
-  if (resourcesCount < 1) return <div className="px-4 py-8 text-sm text-white/60">No cost data yet.</div>;
+  if (loading) return <div className="px-4 py-8 text-sm text-[var(--da-muted)]">Calculating costs...</div>;
+  if (resourcesCount < 1) return <div className="px-4 py-8 text-sm text-[var(--da-muted)]">No cost data yet.</div>;
   return <div>{[...groupedResources.entries()].map(([moduleName, resources]) => <ModuleResourcesSection key={moduleName} moduleName={moduleName} resources={resources} currency={currency} moduleCostMap={moduleCostMap} expandedResourceIds={expandedResourceIds} onToggleResource={onToggleResource} />)}</div>;
 }
 
 function CostsFootnote() {
-  return <div className="border-t border-white/10 px-4 py-3 text-xs text-white/50">Not all Terraform resources are supported for cost analysis. Check Infracost docs for full support coverage.</div>;
+  return <div className="border-t border-[var(--da-border)] px-4 py-3 text-xs text-[var(--da-muted)]">Not all Terraform resources are supported for cost analysis. Check Infracost docs for full support coverage.</div>;
 }
 
 function CostsWarnings({ warnings }: { warnings: string[] }) {
   if (warnings.length < 1) return null;
-  return <div className="space-y-1 px-4 pb-4 text-xs text-amber-200/90">{warnings.map((warning, index) => <p key={`${index}-${warning.slice(0, 12)}`}>{warning}</p>)}</div>;
+  return <div className="space-y-1 px-4 pb-4 text-xs text-amber-700">{warnings.map((warning, index) => <p key={`${index}-${warning.slice(0, 12)}`}>{warning}</p>)}</div>;
 }
 
 function CostsModuleFooter({ moduleOptions }: { moduleOptions: string[] }) {
   if (moduleOptions.length < 1) return null;
-  return <div className="border-t border-white/10 px-4 py-2 text-xs text-white/40">Available modules: {moduleOptions.join(", ")}</div>;
+  return <div className="border-t border-[var(--da-border)] px-4 py-2 text-xs text-[var(--da-muted)]">Available modules: {moduleOptions.join(", ")}</div>;
 }
 
 function useCostsWorkspaceViewModel(data: OpenTofuCostResult | null) {
@@ -262,7 +260,7 @@ export function CostsWorkspaceMainPanel({
 }: CostsWorkspaceMainPanelProps) {
   const view = useCostsWorkspaceViewModel(data);
   return (
-    <section className={cn("min-w-0 flex-1 bg-[#07090d]", className)}>
+    <section className={cn("min-w-0 flex-1 bg-[var(--da-bg)]", className)}>
       <div className="flex h-full min-h-0 flex-col">
         <CostsTopBar loading={loading} onRefresh={onRefresh} />
         <CostsErrorBanner error={error} />
@@ -284,8 +282,8 @@ function CostsWorkspaceLayout({
   props: CostsWorkspaceProps;
 }) {
   return (
-    <div className="flex h-full min-h-0 bg-[#0a0d12]">
-      <CostsWorkspaceSidebarPanel data={props.data} scope={props.scope} onScopeChange={props.onScopeChange} className="w-[300px] shrink-0 border-r border-white/10" />
+    <div className="flex h-full min-h-0 bg-[var(--da-bg)]">
+      <CostsWorkspaceSidebarPanel data={props.data} scope={props.scope} onScopeChange={props.onScopeChange} className="w-[300px] shrink-0 border-r border-[var(--da-border)]" />
       <CostsWorkspaceMainPanel data={props.data} loading={props.loading} error={props.error} onRefresh={props.onRefresh} expandedResourceIds={props.expandedResourceIds} onToggleResource={props.onToggleResource} />
     </div>
   );

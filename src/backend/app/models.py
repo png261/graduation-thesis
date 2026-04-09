@@ -37,12 +37,6 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    gitlab_oauth_tokens: Mapped[list[GitLabOAuthToken]] = relationship(
-        "GitLabOAuthToken",
-        back_populates="user",
-        cascade="all, delete-orphan",
-    )
-
 
 class Project(Base):
     __tablename__ = "projects"
@@ -56,23 +50,10 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     credentials: Mapped[str | None] = mapped_column(Text, nullable=True)
-    active_blueprints_json: Mapped[dict[str, dict] | None] = mapped_column(JSON, nullable=True)
     github_repo_full_name: Mapped[str | None] = mapped_column(String, nullable=True)
     github_base_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     github_working_branch: Mapped[str | None] = mapped_column(String, nullable=True)
     github_connected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    telegram_chat_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    telegram_topic_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    telegram_topic_title: Mapped[str | None] = mapped_column(String, nullable=True)
-    telegram_connected_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    telegram_pending_code_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    telegram_pending_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )
@@ -103,8 +84,8 @@ class Project(Base):
         back_populates="project",
         cascade="all, delete-orphan",
     )
-    blueprint_runs: Mapped[list[ProjectBlueprintRun]] = relationship(
-        "ProjectBlueprintRun",
+    generation_runs: Mapped[list[ProjectGenerationRun]] = relationship(
+        "ProjectGenerationRun",
         back_populates="project",
         cascade="all, delete-orphan",
     )
@@ -120,7 +101,7 @@ class Project(Base):
     )
 
 
-class ProjectBlueprintRun(Base):
+class ProjectGenerationRun(Base):
     __tablename__ = "project_blueprint_runs"
     __table_args__ = (
         Index("ix_project_blueprint_runs_project_created_at", "project_id", "created_at"),
@@ -135,9 +116,9 @@ class ProjectBlueprintRun(Base):
     )
     thread_id: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)
-    blueprint_id: Mapped[str] = mapped_column(String, nullable=False)
-    blueprint_version: Mapped[str] = mapped_column(String, nullable=False)
-    blueprint_name: Mapped[str] = mapped_column(String, nullable=False)
+    source_id: Mapped[str] = mapped_column("blueprint_id", String, nullable=False)
+    source_version: Mapped[str] = mapped_column("blueprint_version", String, nullable=False)
+    source_name: Mapped[str] = mapped_column("blueprint_name", String, nullable=False)
     inputs_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -146,7 +127,7 @@ class ProjectBlueprintRun(Base):
         nullable=False,
     )
 
-    project: Mapped[Project] = relationship("Project", back_populates="blueprint_runs")
+    project: Mapped[Project] = relationship("Project", back_populates="generation_runs")
 
 
 class ProjectTerraformGeneration(Base):
@@ -159,7 +140,8 @@ class ProjectTerraformGeneration(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    blueprint_run_id: Mapped[str] = mapped_column(
+    generation_run_id: Mapped[str] = mapped_column(
+        "blueprint_run_id",
         String,
         ForeignKey("project_blueprint_runs.id", ondelete="CASCADE"),
         nullable=False,
@@ -181,7 +163,7 @@ class ProjectTerraformGeneration(Base):
     )
 
     project: Mapped[Project] = relationship("Project", back_populates="terraform_generations")
-    blueprint_run: Mapped[ProjectBlueprintRun] = relationship("ProjectBlueprintRun")
+    generation_run: Mapped[ProjectGenerationRun] = relationship("ProjectGenerationRun")
 
 
 class ProjectAnsibleGeneration(Base):
@@ -194,7 +176,8 @@ class ProjectAnsibleGeneration(Base):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    blueprint_run_id: Mapped[str] = mapped_column(
+    generation_run_id: Mapped[str] = mapped_column(
+        "blueprint_run_id",
         String,
         ForeignKey("project_blueprint_runs.id", ondelete="CASCADE"),
         nullable=False,
@@ -217,7 +200,7 @@ class ProjectAnsibleGeneration(Base):
     )
 
     project: Mapped[Project] = relationship("Project", back_populates="ansible_generations")
-    blueprint_run: Mapped[ProjectBlueprintRun] = relationship("ProjectBlueprintRun")
+    generation_run: Mapped[ProjectGenerationRun] = relationship("ProjectGenerationRun")
 
 
 class Thread(Base):
@@ -664,34 +647,3 @@ class GitHubOAuthToken(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="github_oauth_tokens")
-
-
-class GitLabOAuthToken(Base):
-    __tablename__ = "gitlab_oauth_tokens"
-    __table_args__ = (Index("ux_gitlab_oauth_tokens_user", "user_id", unique=True),)
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    scope: Mapped[str | None] = mapped_column(String, nullable=True)
-    provider_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    username: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-    user: Mapped[User] = relationship("User", back_populates="gitlab_oauth_tokens")

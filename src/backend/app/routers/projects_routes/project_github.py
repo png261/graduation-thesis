@@ -1,16 +1,15 @@
 """Project GitHub connect/disconnect/pull-request endpoints."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.routers import github_dependencies as github_deps
 from app.services.agent import invalidate_agent
 from app.services.github import auth as github_auth
 from app.services.github import projects as github_projects
-from app.services.telegram import notifications as telegram_notifications
 
 router = APIRouter()
 
@@ -52,9 +51,7 @@ def _raise_route_auth_error(exc: github_auth.GitHubAuthError, *, code: str) -> N
 
 @router.get("/{project_id}/github")
 async def project_github_status(
-    context: github_deps.ProjectGitHubStatusContext = Depends(
-        github_deps.get_project_github_status_context
-    ),
+    context: github_deps.ProjectGitHubStatusContext = Depends(github_deps.get_project_github_status_context),
 ) -> dict:
     payload = github_projects.connection_payload(context.project)
     payload.update(
@@ -73,9 +70,7 @@ async def connect_project_github(
     project_id: str,
     body: GitHubConnectBody,
     session: AsyncSession = Depends(github_deps.get_db_session),
-    context: github_deps.ProjectAccountContext = Depends(
-        github_deps.require_project_and_authenticated_account
-    ),
+    context: github_deps.ProjectAccountContext = Depends(github_deps.require_project_and_authenticated_account),
 ) -> dict:
     try:
         payload = await github_projects.connect_project_repository(
@@ -100,9 +95,7 @@ async def sync_project_github(
     project_id: str,
     body: GitHubSyncBody,
     session: AsyncSession = Depends(github_deps.get_db_session),
-    context: github_deps.ProjectAccountContext = Depends(
-        github_deps.require_project_with_connected_account
-    ),
+    context: github_deps.ProjectAccountContext = Depends(github_deps.require_project_with_connected_account),
 ) -> dict:
     try:
         payload = await github_projects.sync_project_repository(
@@ -124,9 +117,7 @@ async def sync_project_github(
 async def disconnect_project_github(
     project_id: str,
     session: AsyncSession = Depends(github_deps.get_db_session),
-    context: github_deps.ProjectDisconnectContext = Depends(
-        github_deps.get_project_disconnect_context
-    ),
+    context: github_deps.ProjectDisconnectContext = Depends(github_deps.get_project_disconnect_context),
 ) -> dict:
     payload = await github_projects.disconnect_project_repository(
         session,
@@ -147,9 +138,7 @@ async def disconnect_project_github(
 @router.get("/{project_id}/github/pull-request/defaults")
 async def project_pull_request_defaults(
     session: AsyncSession = Depends(github_deps.get_db_session),
-    context: github_deps.ProjectAccountContext = Depends(
-        github_deps.require_project_with_connected_account
-    ),
+    context: github_deps.ProjectAccountContext = Depends(github_deps.require_project_with_connected_account),
 ) -> dict:
     try:
         return await github_projects.build_project_pull_request_defaults(
@@ -165,9 +154,7 @@ async def create_project_pull_request(
     project_id: str,
     body: GitHubPullRequestBody,
     session: AsyncSession = Depends(github_deps.get_db_session),
-    context: github_deps.ProjectAccountContext = Depends(
-        github_deps.require_project_with_connected_account
-    ),
+    context: github_deps.ProjectAccountContext = Depends(github_deps.require_project_with_connected_account),
 ) -> dict:
     try:
         result = await github_projects.create_project_pull_request(
@@ -178,11 +165,6 @@ async def create_project_pull_request(
             title=body.title,
             body=body.description,
             base_branch=body.base_branch,
-        )
-        await telegram_notifications.notify_project(
-            context.project,
-            get_settings(),
-            telegram_notifications.github_pull_request_text(context.project, result),
         )
         return result
     except github_projects.GitHubProjectError as exc:

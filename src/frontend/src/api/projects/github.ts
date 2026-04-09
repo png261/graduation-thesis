@@ -78,8 +78,7 @@ export interface ProjectPullRequestDefaults {
   base_branch: string;
   working_branch: string;
   repo_full_name: string;
-  source: "ansible_generation" | "terraform_generation" | "blueprint_run" | "fallback";
-  blueprint_run_id: string | null;
+  source: "ansible_generation" | "terraform_generation" | "fallback";
   terraform_generation_id: string | null;
   ansible_generation_id: string | null;
 }

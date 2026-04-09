@@ -84,9 +84,11 @@ function fallbackChecklistItem(
     return {
       name,
       ready: deployPreflight.generation_gate.ansible_ready,
-      code: "ansible_generation_missing",
+      code: deployPreflight.generation_gate.ansible_required ? "ansible_generation_missing" : "ansible_not_required",
       message: deployPreflight.generation_gate.ansible_ready
-        ? "Generated Ansible is ready."
+        ? deployPreflight.generation_gate.ansible_required
+          ? "Generated Ansible is ready."
+          : "Generated Terraform does not require Ansible."
         : "Generated Ansible is not ready for deploy.",
     };
   }

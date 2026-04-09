@@ -54,6 +54,7 @@ export interface OpenTofuDeployPreflight {
     terraform_generated: boolean;
     terraform_ready: boolean;
     ansible_ready: boolean;
+    ansible_required: boolean;
     target_contract_ready: boolean;
     target_contract_stale: boolean;
     blocking: boolean;

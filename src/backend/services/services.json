@@ -23,12 +23,6 @@
     "asgi_app": "workflow_service.asgi:app",
     "default_port": 8000
   },
-  "blueprint": {
-    "service_dir": "blueprint",
-    "python_package": "blueprint_service",
-    "asgi_app": "blueprint_service.asgi:app",
-    "default_port": 8000
-  },
   "provisioning": {
     "service_dir": "provisioning",
     "python_package": "provisioning_service",

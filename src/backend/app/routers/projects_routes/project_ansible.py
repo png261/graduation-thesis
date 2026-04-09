@@ -14,8 +14,6 @@ from app.services.ansible import deploy as ansible_deploy
 from app.services.project_execution.contracts import ProjectExecutionRequest
 
 router = APIRouter()
-
-
 class AnsibleRunBody(BaseModel):
     selected_modules: list[str] = []
     intent: str | None = None

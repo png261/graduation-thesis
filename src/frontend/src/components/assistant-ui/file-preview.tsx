@@ -30,7 +30,7 @@ export function FilePreview({ filename, mimeType, data }: FileMessagePartProps) 
         {filename && <span className="rounded-full bg-[var(--da-bg)] px-2 py-1">{filename}</span>}
         {mimeType && <span className="rounded-full bg-[var(--da-bg)] px-2 py-1">{mimeType}</span>}
       </div>
-      <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-[var(--da-bg)] p-3 text-xs text-blue-100/85">
+      <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-[var(--da-bg)] p-3 text-xs text-[color-mix(in_srgb,var(--da-text)_82%,transparent)]">
         {preview || "(empty file)"}
       </pre>
     </div>

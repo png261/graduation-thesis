@@ -358,22 +358,93 @@
         }
       }
     },
-    "/api/projects/import-guest": {
+    "/api/projects/{project_id}/threads/{thread_id}/messages": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "List Thread Messages",
+        "operationId": "list_thread_messages_api_projects__project_id__threads__thread_id__messages_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Thread Messages Api Projects  Project Id  Threads  Thread Id  Messages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "projects"
         ],
-        "summary": "Import Guest Project",
-        "operationId": "import_guest_project_api_projects_import_guest_post",
+        "summary": "Append Thread Message",
+        "operationId": "append_thread_message_api_projects__project_id__threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GuestProjectImport"
+                "$ref": "#/components/schemas/ThreadMessageUpsert"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -381,9 +452,9 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "type": "object",
-                  "title": "Response Import Guest Project Api Projects Import Guest Post"
+                  "additionalProperties": true,
+                  "title": "Response Append Thread Message Api Projects  Project Id  Threads  Thread Id  Messages Post"
                 }
               }
             }
@@ -499,6 +570,60 @@
         }
       }
     },
+    "/api/projects/{project_id}/github/sync": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Sync Project Github",
+        "operationId": "sync_project_github_api_projects__project_id__github_sync_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GitHubSyncBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Sync Project Github Api Projects  Project Id  Github Sync Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/github/disconnect": {
       "post": {
         "tags": [
@@ -526,6 +651,50 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Disconnect Project Github Api Projects  Project Id  Github Disconnect Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/github/pull-request/defaults": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Project Pull Request Defaults",
+        "operationId": "project_pull_request_defaults_api_projects__project_id__github_pull_request_defaults_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Project Pull Request Defaults Api Projects  Project Id  Github Pull Request Defaults Get"
                 }
               }
             }
@@ -597,13 +766,13 @@
         }
       }
     },
-    "/api/projects/{project_id}/telegram": {
+    "/api/projects/{project_id}/incidents": {
       "get": {
         "tags": [
           "projects"
         ],
-        "summary": "Project Telegram Status",
-        "operationId": "project_telegram_status_api_projects__project_id__telegram_get",
+        "summary": "List Incidents",
+        "operationId": "list_incidents_api_projects__project_id__incidents_get",
         "parameters": [
           {
             "name": "project_id",
@@ -612,6 +781,16 @@
             "schema": {
               "type": "string",
               "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
             }
           }
         ],
@@ -623,7 +802,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Project Telegram Status Api Projects  Project Id  Telegram Get"
+                  "title": "Response List Incidents Api Projects  Project Id  Incidents Get"
                 }
               }
             }
@@ -641,14 +820,23 @@
         }
       }
     },
-    "/api/projects/{project_id}/telegram/connect": {
-      "post": {
+    "/api/projects/{project_id}/incidents/{incident_id}": {
+      "get": {
         "tags": [
           "projects"
         ],
-        "summary": "Connect Project Telegram",
-        "operationId": "connect_project_telegram_api_projects__project_id__telegram_connect_post",
+        "summary": "Get Incident",
+        "operationId": "get_incident_api_projects__project_id__incidents__incident_id__get",
         "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Incident Id"
+            }
+          },
           {
             "name": "project_id",
             "in": "path",
@@ -667,7 +855,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Connect Project Telegram Api Projects  Project Id  Telegram Connect Post"
+                  "title": "Response Get Incident Api Projects  Project Id  Incidents  Incident Id  Get"
                 }
               }
             }
@@ -685,13 +873,76 @@
         }
       }
     },
-    "/api/projects/{project_id}/telegram/disconnect": {
+    "/api/projects/{project_id}/incidents/{incident_id}/resolution-quality": {
       "post": {
         "tags": [
           "projects"
         ],
-        "summary": "Disconnect Project Telegram",
-        "operationId": "disconnect_project_telegram_api_projects__project_id__telegram_disconnect_post",
+        "summary": "Mark Incident Resolution Quality",
+        "operationId": "mark_incident_resolution_quality_api_projects__project_id__incidents__incident_id__resolution_quality_post",
+        "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Incident Id"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolutionQualityBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mark Incident Resolution Quality Api Projects  Project Id  Incidents  Incident Id  Resolution Quality Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/incidents/metrics/summary": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Incident Metrics",
+        "operationId": "incident_metrics_api_projects__project_id__incidents_metrics_summary_get",
         "parameters": [
           {
             "name": "project_id",
@@ -711,7 +962,7 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true,
-                  "title": "Response Disconnect Project Telegram Api Projects  Project Id  Telegram Disconnect Post"
+                  "title": "Response Incident Metrics Api Projects  Project Id  Incidents Metrics Summary Get"
                 }
               }
             }
@@ -1069,6 +1320,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RerunJobBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1216,6 +1484,143 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Opentofu Status Api Projects  Project Id  Opentofu Status Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/opentofu/deploy/preflight": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Opentofu Deploy Preflight",
+        "operationId": "opentofu_deploy_preflight_api_projects__project_id__opentofu_deploy_preflight_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "review_session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review Session Id"
+            }
+          },
+          {
+            "name": "review_target",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "apply",
+              "title": "Review Target"
+            }
+          },
+          {
+            "name": "scope_mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "full",
+              "title": "Scope Mode"
+            }
+          },
+          {
+            "name": "selected_modules",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Selected Modules"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Opentofu Deploy Preflight Api Projects  Project Id  Opentofu Deploy Preflight Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/projects/{project_id}/opentofu/target-contract/validate": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Opentofu Validate Target Contract",
+        "operationId": "opentofu_validate_target_contract_api_projects__project_id__opentofu_target_contract_validate_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Opentofu Validate Target Contract Api Projects  Project Id  Opentofu Target Contract Validate Post"
                 }
               }
             }
@@ -1498,6 +1903,56 @@
         }
       }
     },
+    "/api/projects/{project_id}/opentofu/deploy/destroy/stream": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Opentofu Destroy Stream",
+        "operationId": "opentofu_destroy_stream_api_projects__project_id__opentofu_deploy_destroy_stream_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenTofuDestroyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/opentofu/costs": {
       "get": {
         "tags": [
@@ -1680,6 +2135,50 @@
         }
       }
     },
+    "/api/projects/{project_id}/state-backends/deploy-drift": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Deploy Drift Summary",
+        "operationId": "deploy_drift_summary_api_projects__project_id__state_backends_deploy_drift_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Deploy Drift Summary Api Projects  Project Id  State Backends Deploy Drift Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/state-backends/import/cloud/buckets": {
       "get": {
         "tags": [
@@ -1707,12 +2206,21 @@
             }
           },
           {
-            "name": "credential_profile_id",
+            "name": "access_key_id",
             "in": "query",
             "required": true,
             "schema": {
               "type": "string",
-              "title": "Credential Profile Id"
+              "title": "Access Key Id"
+            }
+          },
+          {
+            "name": "secret_access_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret Access Key"
             }
           }
         ],
@@ -1769,12 +2277,21 @@
             }
           },
           {
-            "name": "credential_profile_id",
+            "name": "access_key_id",
             "in": "query",
             "required": true,
             "schema": {
               "type": "string",
-              "title": "Credential Profile Id"
+              "title": "Access Key Id"
+            }
+          },
+          {
+            "name": "secret_access_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Secret Access Key"
             }
           },
           {
@@ -1914,60 +2431,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Import State Backend From Github Api Projects  Project Id  State Backends Import Github Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/projects/{project_id}/state-backends/import/gitlab": {
-      "post": {
-        "tags": [
-          "projects"
-        ],
-        "summary": "Import State Backend From Gitlab",
-        "operationId": "import_state_backend_from_gitlab_api_projects__project_id__state_backends_import_gitlab_post",
-        "parameters": [
-          {
-            "name": "project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Project Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScmImportBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Import State Backend From Gitlab Api Projects  Project Id  State Backends Import Gitlab Post"
                 }
               }
             }
@@ -2698,164 +3161,6 @@
         }
       }
     },
-    "/api/projects/{project_id}/skills": {
-      "get": {
-        "tags": [
-          "projects"
-        ],
-        "summary": "List Skills",
-        "operationId": "list_skills_api_projects__project_id__skills_get",
-        "parameters": [
-          {
-            "name": "project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Project Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response List Skills Api Projects  Project Id  Skills Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/projects/{project_id}/skills/{skill_name}": {
-      "put": {
-        "tags": [
-          "projects"
-        ],
-        "summary": "Upsert Skill",
-        "operationId": "upsert_skill_api_projects__project_id__skills__skill_name__put",
-        "parameters": [
-          {
-            "name": "skill_name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Skill Name"
-            }
-          },
-          {
-            "name": "project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Project Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SkillUpsert"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Upsert Skill Api Projects  Project Id  Skills  Skill Name  Put"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "projects"
-        ],
-        "summary": "Delete Skill",
-        "operationId": "delete_skill_api_projects__project_id__skills__skill_name__delete",
-        "parameters": [
-          {
-            "name": "skill_name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Skill Name"
-            }
-          },
-          {
-            "name": "project_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Project Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Delete Skill Api Projects  Project Id  Skills  Skill Name  Delete"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/projects/{project_id}/files/signed-url": {
       "get": {
         "tags": [
@@ -3433,13 +3738,13 @@
         }
       }
     },
-    "/api/github/session": {
+    "/api/github/oauth/start": {
       "get": {
         "tags": [
           "github"
         ],
-        "summary": "Github Session Status",
-        "operationId": "github_session_status_api_github_session_get",
+        "summary": "Github Oauth Start",
+        "operationId": "github_oauth_start_api_github_oauth_start_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3448,7 +3753,7 @@
                 "schema": {
                   "additionalProperties": true,
                   "type": "object",
-                  "title": "Response Github Session Status Api Github Session Get"
+                  "title": "Response Github Oauth Start Api Github Oauth Start Get"
                 }
               }
             }
@@ -3456,146 +3761,13 @@
         }
       }
     },
-    "/api/github/repos": {
+    "/api/github/oauth/callback": {
       "get": {
         "tags": [
           "github"
         ],
-        "summary": "Github Repos",
-        "operationId": "github_repos_api_github_repos_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Github Repos Api Github Repos Get"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "github"
-        ],
-        "summary": "Github Create Repo",
-        "operationId": "github_create_repo_api_github_repos_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateRepoBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Github Create Repo Api Github Repos Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/gitlab/session": {
-      "get": {
-        "tags": [
-          "gitlab"
-        ],
-        "summary": "Gitlab Session",
-        "operationId": "gitlab_session_api_gitlab_session_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Gitlab Session Api Gitlab Session Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/gitlab/repos": {
-      "get": {
-        "tags": [
-          "gitlab"
-        ],
-        "summary": "Gitlab Repos",
-        "operationId": "gitlab_repos_api_gitlab_repos_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Gitlab Repos Api Gitlab Repos Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/gitlab/oauth/start": {
-      "get": {
-        "tags": [
-          "gitlab"
-        ],
-        "summary": "Gitlab Oauth Start",
-        "operationId": "gitlab_oauth_start_api_gitlab_oauth_start_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Gitlab Oauth Start Api Gitlab Oauth Start Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/gitlab/oauth/callback": {
-      "get": {
-        "tags": [
-          "gitlab"
-        ],
-        "summary": "Gitlab Oauth Callback",
-        "operationId": "gitlab_oauth_callback_api_gitlab_oauth_callback_get",
+        "summary": "Github Oauth Callback",
+        "operationId": "github_oauth_callback_api_github_oauth_callback_get",
         "parameters": [
           {
             "name": "code",
@@ -3668,6 +3840,93 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github/session": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Github Session Status",
+        "operationId": "github_session_status_api_github_session_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Github Session Status Api Github Session Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github/repos": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Github Repos",
+        "operationId": "github_repos_api_github_repos_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Github Repos Api Github Repos Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "Github Create Repo",
+        "operationId": "github_create_repo_api_github_repos_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRepoBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Github Create Repo Api Github Repos Post"
+                }
               }
             }
           },
@@ -3827,51 +4086,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Delete Profile Api State Credential Profiles  Profile Id  Delete"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/telegram/webhook": {
-      "post": {
-        "tags": [
-          "telegram"
-        ],
-        "summary": "Telegram Webhook",
-        "operationId": "telegram_webhook_api_telegram_webhook_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "type": "object",
-                "title": "Payload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response Telegram Webhook Api Telegram Webhook Post"
                 }
               }
             }
@@ -4069,6 +4283,55 @@
         ],
         "title": "Body_import_zip_file_api_projects__project_id__files_import_zip_post"
       },
+      "ChatAttachment": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "document",
+              "image"
+            ],
+            "title": "Type",
+            "default": "document"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "contentType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contenttype"
+          },
+          "sizeBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sizebytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "content"
+        ],
+        "title": "ChatAttachment"
+      },
       "ChatMessage": {
         "properties": {
           "role": {
@@ -4078,6 +4341,13 @@
           "content": {
             "type": "string",
             "title": "Content"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/ChatAttachment"
+            },
+            "type": "array",
+            "title": "Attachments"
           }
         },
         "type": "object",
@@ -4169,9 +4439,13 @@
             "title": "Name",
             "default": ""
           },
-          "credential_profile_id": {
+          "access_key_id": {
             "type": "string",
-            "title": "Credential Profile Id"
+            "title": "Access Key Id"
+          },
+          "secret_access_key": {
+            "type": "string",
+            "title": "Secret Access Key"
           },
           "bucket": {
             "type": "string",
@@ -4191,7 +4465,8 @@
         "type": "object",
         "required": [
           "provider",
-          "credential_profile_id",
+          "access_key_id",
+          "secret_access_key",
           "bucket"
         ],
         "title": "CloudImportBody"
@@ -4326,6 +4601,51 @@
             ],
             "title": "Intent"
           },
+          "review_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Session Id"
+          },
+          "review_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Target"
+          },
+          "scope_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Mode"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmation"
+          },
           "options": {
             "additionalProperties": true,
             "type": "object",
@@ -4411,6 +4731,11 @@
               }
             ],
             "title": "Base Branch"
+          },
+          "confirm_workspace_switch": {
+            "type": "boolean",
+            "title": "Confirm Workspace Switch",
+            "default": false
           }
         },
         "type": "object",
@@ -4448,77 +4773,16 @@
         ],
         "title": "GitHubPullRequestBody"
       },
-      "GuestFileImport": {
+      "GitHubSyncBody": {
         "properties": {
-          "path": {
-            "type": "string",
-            "title": "Path"
-          },
-          "content": {
-            "type": "string",
-            "title": "Content"
+          "confirm_workspace_switch": {
+            "type": "boolean",
+            "title": "Confirm Workspace Switch",
+            "default": false
           }
         },
         "type": "object",
-        "required": [
-          "path",
-          "content"
-        ],
-        "title": "GuestFileImport"
-      },
-      "GuestProjectImport": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name",
-            "default": "Imported Guest Session"
-          },
-          "provider": {
-            "type": "string",
-            "enum": [
-              "aws",
-              "gcloud"
-            ],
-            "title": "Provider",
-            "default": "aws"
-          },
-          "files": {
-            "items": {
-              "$ref": "#/components/schemas/GuestFileImport"
-            },
-            "type": "array",
-            "title": "Files",
-            "default": []
-          },
-          "threads": {
-            "items": {
-              "$ref": "#/components/schemas/GuestThreadImport"
-            },
-            "type": "array",
-            "title": "Threads",
-            "default": []
-          }
-        },
-        "type": "object",
-        "title": "GuestProjectImport"
-      },
-      "GuestThreadImport": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "title": {
-            "type": "string",
-            "title": "Title",
-            "default": ""
-          }
-        },
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "GuestThreadImport"
+        "title": "GitHubSyncBody"
       },
       "HTTPValidationError": {
         "properties": {
@@ -4553,8 +4817,7 @@
               "type": "string"
             },
             "type": "array",
-            "title": "Selected Modules",
-            "default": []
+            "title": "Selected Modules"
           },
           "intent": {
             "anyOf": [
@@ -4571,10 +4834,165 @@
             "type": "boolean",
             "title": "Override Policy",
             "default": false
+          },
+          "review_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Session Id"
+          },
+          "review_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Target"
+          },
+          "scope_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Mode"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpenTofuConfirmationBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options"
           }
         },
         "type": "object",
         "title": "OpenTofuApplyBody"
+      },
+      "OpenTofuConfirmationBody": {
+        "properties": {
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Name"
+          },
+          "keyword": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword"
+          },
+          "selected_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Modules"
+          }
+        },
+        "type": "object",
+        "title": "OpenTofuConfirmationBody"
+      },
+      "OpenTofuDestroyBody": {
+        "properties": {
+          "selected_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected Modules"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent"
+          },
+          "review_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Session Id"
+          },
+          "review_target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Target"
+          },
+          "scope_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Mode"
+          },
+          "confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpenTofuConfirmationBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options"
+          }
+        },
+        "type": "object",
+        "title": "OpenTofuDestroyBody"
       },
       "OpenTofuPreviewBody": {
         "properties": {
@@ -4614,6 +5032,30 @@
           "name"
         ],
         "title": "ProjectCreate"
+      },
+      "RerunJobBody": {
+        "properties": {
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options"
+          }
+        },
+        "type": "object",
+        "title": "RerunJobBody"
+      },
+      "ResolutionQualityBody": {
+        "properties": {
+          "quality": {
+            "type": "string",
+            "title": "Quality"
+          }
+        },
+        "type": "object",
+        "required": [
+          "quality"
+        ],
+        "title": "ResolutionQualityBody"
       },
       "ScmImportBody": {
         "properties": {
@@ -4659,24 +5101,6 @@
         ],
         "title": "ScmImportBody"
       },
-      "SkillUpsert": {
-        "properties": {
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "content": {
-            "type": "string",
-            "title": "Content"
-          }
-        },
-        "type": "object",
-        "required": [
-          "content"
-        ],
-        "title": "SkillUpsert"
-      },
       "ThreadCreate": {
         "properties": {
           "id": {
@@ -4694,6 +5118,20 @@
           "id"
         ],
         "title": "ThreadCreate"
+      },
+      "ThreadMessageUpsert": {
+        "properties": {
+          "item": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Item"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item"
+        ],
+        "title": "ThreadMessageUpsert"
       },
       "ValidationError": {
         "properties": {

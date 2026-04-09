@@ -1,12 +1,11 @@
 """Ansible configuration visualization helpers."""
+
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
 from typing import Any
-
-from app.services.blueprints.types import BlueprintPostDeployChecks
 
 _TASK_NAME_RE = re.compile(r"^\s*-\s*name:\s*(.+?)\s*$")
 _MODULE_LINE_RE = re.compile(r"^\s*(?:-\s*)?([A-Za-z0-9_.]+)\s*:\s*(.*?)\s*$")
@@ -22,6 +21,7 @@ _PACKAGE_MODULE_SUFFIXES = ("package", "apt", "yum", "dnf", "homebrew", "apk", "
 _SERVICE_MODULE_SUFFIXES = ("service", "systemd")
 _FILE_MODULE_SUFFIXES = ("copy", "template", "file")
 _POST_DEPLOY_TEXT_LIMIT = 1200
+PostDeployChecks = dict[str, Any]
 
 
 def _clean_scalar(value: str) -> str:
@@ -167,7 +167,7 @@ def collect_config_visualization(project_root: Path) -> dict[str, Any]:
     }
 
 
-def default_post_deploy_checks() -> BlueprintPostDeployChecks:
+def default_post_deploy_checks() -> PostDeployChecks:
     return {
         "services": ["sshd"],
         "package_versions": ["python3"],
@@ -235,7 +235,9 @@ def read_latest_run_summary(project_root: Path) -> dict[str, Any] | None:
         target_ids = list(transport.get("target_ids") or [])
     target_count = _int_value(payload.get("target_count"))
     if target_count < 1:
-        target_count = int((transport or {}).get("target_count") or len(target_ids) or _int_value(payload.get("host_count")))
+        target_count = int(
+            (transport or {}).get("target_count") or len(target_ids) or _int_value(payload.get("host_count"))
+        )
     payload["transport"] = transport
     payload["selected_modules"] = _string_list(payload.get("selected_modules")) or _string_list(payload.get("modules"))
     payload["target_count"] = target_count
@@ -243,7 +245,7 @@ def read_latest_run_summary(project_root: Path) -> dict[str, Any] | None:
     return payload
 
 
-def resolve_post_deploy_checks(checks: BlueprintPostDeployChecks | dict[str, Any] | None) -> BlueprintPostDeployChecks:
+def resolve_post_deploy_checks(checks: PostDeployChecks | dict[str, Any] | None) -> PostDeployChecks:
     fallback = default_post_deploy_checks()
     source = checks if isinstance(checks, dict) else {}
     health_checks = [

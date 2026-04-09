@@ -7,14 +7,6 @@ class BaseStreamEvent(TypedDict, total=False):
     type: str
 
 
-class UsageEvent(BaseStreamEvent):
-    type: Literal["usage"]
-    promptTokens: int
-    completionTokens: int
-    modelId: str | None
-    modelContextWindow: int | None
-
-
 class PolicyCheckStartEvent(BaseStreamEvent):
     type: Literal["policy.check.start"]
     changedPaths: list[str]
@@ -28,57 +20,14 @@ class PolicyCheckResultEvent(BaseStreamEvent):
     changedPaths: list[str]
 
 
-class BlueprintInputSummaryItem(TypedDict, total=False):
-    key: str
-    label: str
-    required: bool
-    riskClass: str
-    defaultValue: str | None
-    resolved: bool
-    value: str | None
-
-
-class BlueprintStepPayload(TypedDict):
-    id: str
-    type: str
-    title: str
-    description: str
-    requiredInputs: list[str]
-    expectedResult: str
-
-
-class BlueprintPayload(TypedDict):
-    id: str
-    kind: str
-    name: str
-    summary: str
-    resourcesOrActions: list[str]
-    requiredInputs: list[BlueprintInputSummaryItem]
-    steps: list[BlueprintStepPayload]
-
-
-class BlueprintSuggestionsEvent(BaseStreamEvent):
-    type: Literal["blueprint.suggestions"]
-    kind: str
-    suggestions: list[BlueprintPayload]
-
-
-class BlueprintInputsSummaryEvent(BaseStreamEvent):
-    type: Literal["blueprint.inputs.summary"]
-    kind: str
-    blueprintId: str
-    blueprintName: str
-    inputs: list[BlueprintInputSummaryItem]
-
-
-class BlueprintProvenanceEvent(BaseStreamEvent):
-    type: Literal["blueprint.provenance"]
-    kind: str
-    source: str
-    runId: str | None
-    createdAt: str | None
-    inputs: dict[str, str]
-    blueprint: BlueprintPayload
+class EvidenceBundleEvent(BaseStreamEvent):
+    type: Literal["evidence.bundle"]
+    schemaVersion: int
+    changedFiles: list[str]
+    validationsRun: list[str]
+    passFailEvidence: list[str]
+    unresolvedRisks: list[str]
+    completionRationale: list[str]
 
 
 class DoneEvent(BaseStreamEvent):
@@ -123,12 +72,9 @@ class IncidentRecommendationEvent(BaseStreamEvent):
 
 
 StreamEvent = (
-    UsageEvent
-    | PolicyCheckStartEvent
+    PolicyCheckStartEvent
     | PolicyCheckResultEvent
-    | BlueprintSuggestionsEvent
-    | BlueprintInputsSummaryEvent
-    | BlueprintProvenanceEvent
+    | EvidenceBundleEvent
     | IncidentClassifiedEvent
     | IncidentMemoryHitEvent
     | IncidentActionBlockedEvent

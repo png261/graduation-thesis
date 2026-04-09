@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { useAuth } from "./contexts/AuthContext";
 import { FilesystemContextProvider } from "./contexts/FilesystemContext";
@@ -13,7 +13,6 @@ import {
 } from "./features/project-create";
 import { ProjectConfigTab } from "./features/project-config";
 import { useProjects } from "./hooks/useProjects";
-import { getSuggestions } from "./lib/suggestions";
 import { LocalRuntimeProvider } from "./runtime/LocalRuntimeProvider";
 
 function LoadingState({ message }: { message: string }) {
@@ -104,7 +103,6 @@ type WorkspaceShellArgs = {
   setCurrentProjectId: ReturnType<typeof useProjects>["setCurrentProjectId"];
   createDialog: ReturnType<typeof useProjectCreateDialog>;
   renameDialog: ReturnType<typeof useRenameProjectDialog>;
-  suggestions: ReturnType<typeof getSuggestions>;
   deleteProject: ReturnType<typeof useProjects>["deleteProject"];
 };
 
@@ -125,7 +123,7 @@ function WorkspaceProjectHeader({
       onProjectChange={args.setCurrentProjectId}
       onCreateProject={() => args.createDialog.handleCreateDialogOpenChange(true)}
       onRenameProject={() => args.renameDialog.setRenameOpen(true)}
-      readOnly={panelState.isGuest}
+      readOnly={false}
       githubStatus={panelState.githubStatus}
       workflowBusy={panelState.workflowBusy}
       onDownloadZip={panelActions.onDownloadZip}
@@ -205,7 +203,6 @@ function WorkspaceBody({ args }: { args: WorkspaceShellArgs }) {
           projectId={args.currentProjectId}
           panelState={panelState}
           panelActions={panelActions}
-          suggestions={args.suggestions}
         />
       ) : args.workspaceTab === "jobs" ? (
         <JobsPage args={args} panelState={panelState} panelActions={panelActions} />
@@ -281,8 +278,6 @@ export default function App() {
     currentProjectId: projectsState.currentProject?.id ?? "",
     onRename: projectsState.renameProject,
   });
-  const suggestions = useMemo(() => getSuggestions(projectsState.currentProject?.name ?? ""), [projectsState.currentProject?.name]);
-
   if (authLoading) return <LoadingState message="Loading session..." />;
   if (!authenticated) return <SignInState authError={authError} login={login} />;
   if (projectsState.loading) return <LoadingState message="Loading projects..." />;
@@ -306,7 +301,6 @@ export default function App() {
       setCurrentProjectId={projectsState.setCurrentProjectId}
       createDialog={createDialog}
       renameDialog={renameDialog}
-      suggestions={suggestions}
       deleteProject={projectsState.deleteProject}
     />
   );

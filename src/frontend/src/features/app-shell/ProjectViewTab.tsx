@@ -2,7 +2,6 @@ import type { Project } from "../../api/projects";
 import { AssistantSidebar } from "../../components/assistant-ui/assistant-sidebar";
 import type { FilesystemPanelActions, FilesystemPanelState } from "../../components/FilesystemPanel";
 import { FilesystemPanel } from "../../components/FilesystemPanel";
-import type { Suggestion } from "../../lib/suggestions";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
 export function ProjectViewTab({
@@ -15,7 +14,6 @@ export function ProjectViewTab({
   projectId,
   panelState,
   panelActions,
-  suggestions,
 }: {
   projects: Project[];
   currentProject: Project | undefined;
@@ -26,7 +24,6 @@ export function ProjectViewTab({
   projectId: string;
   panelState: FilesystemPanelState;
   panelActions: FilesystemPanelActions;
-  suggestions: Suggestion[];
 }) {
   return (
     <div className="flex h-full max-h-full min-h-0 flex-col overflow-hidden bg-[var(--da-panel)]">
@@ -37,7 +34,7 @@ export function ProjectViewTab({
         onProjectChange={onProjectChange}
         onCreateProject={onCreateProject}
         onRenameProject={onRenameProject}
-        readOnly={panelState.isGuest}
+        readOnly={false}
         githubStatus={panelState.githubStatus}
         workflowBusy={panelState.workflowBusy}
         onDownloadZip={panelActions.onDownloadZip}
@@ -46,7 +43,7 @@ export function ProjectViewTab({
         onRunWorkflow={panelActions.onRunWorkflow}
       />
       <div className="min-h-0 flex-1">
-        <AssistantSidebar suggestions={suggestions}>
+        <AssistantSidebar>
           <FilesystemPanel projectId={projectId} state={panelState} actions={panelActions} />
         </AssistantSidebar>
       </div>

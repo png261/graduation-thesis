@@ -142,7 +142,6 @@ function AccountMenu({
           </>
         ) : (
           <>
-            <DropdownMenuLabel>Guest</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onLogin}>Sign in with Cognito</DropdownMenuItem>
           </>

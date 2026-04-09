@@ -15,7 +15,6 @@ interface ExplorerPanelProps {
   tree: TreeNode[];
   selectedPath: string | null;
   selectedPaths: Set<string>;
-  readOnly: boolean;
   expandedFolders: Set<string>;
   toggleFolder: (path: string) => void;
   onOpenFile: (path: string) => void;
@@ -67,13 +66,11 @@ function ExplorerFilterInput({
 }
 
 function EmptyExplorerState({
-  readOnly,
   importBusy,
   importError,
   onOpenImportGitHub,
   onOpenZipPicker,
 }: {
-  readOnly: boolean;
   importBusy: boolean;
   importError: string;
   onOpenImportGitHub: () => void;
@@ -86,17 +83,6 @@ function EmptyExplorerState({
         <br />
         Import code to get started.
       </p>
-      {readOnly ? null : (
-        <div className="space-y-2">
-          <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenImportGitHub}>
-            Import from GitHub
-          </Button>
-          <Button size="sm" variant="outline" className="w-full" disabled={importBusy} onClick={onOpenZipPicker}>
-            Upload ZIP
-          </Button>
-          {importError ? <p className="text-xs text-red-300">{importError}</p> : null}
-        </div>
-      )}
     </div>
   );
 }
@@ -115,7 +101,6 @@ function ExplorerTreeArea(props: {
   if (props.tree.length < 1 && !props.pendingCreation) {
     return (
       <EmptyExplorerState
-        readOnly={props.panel.readOnly}
         importBusy={props.panel.importBusy}
         importError={props.panel.importError}
         onOpenImportGitHub={props.panel.onOpenImportGitHub}
@@ -131,7 +116,6 @@ function ExplorerTreeArea(props: {
       tree={props.tree.length < 1 ? [] : props.filteredTree}
       selectedPath={props.panel.selectedPath}
       selectedPaths={props.panel.selectedPaths}
-      readOnly={props.panel.readOnly}
       expandedFolders={props.panel.expandedFolders}
       toggleFolder={props.panel.toggleFolder}
       onOpenFile={props.panel.onOpenFile}
@@ -161,11 +145,10 @@ export function ExplorerPanel(props: ExplorerPanelProps) {
   }, []);
 
   const handleRequestCreate = useCallback((mode: "file" | "folder", parentPath: string) => {
-    if (props.readOnly) return;
     const normalizedParent = parentPath && parentPath.trim() ? parentPath : "/";
     const pendingId = `__new__:${mode}:${nextPendingIdRef.current++}`;
     setPendingCreation({ id: pendingId, parentPath: normalizedParent, mode });
-  }, [props.readOnly]);
+  }, []);
 
   const handleCreateAtPath = useCallback((mode: "file" | "folder", parentPath: string, name: string) => {
     const trimmed = name.trim();
@@ -205,8 +188,8 @@ export function ExplorerPanel(props: ExplorerPanelProps) {
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => handleRequestCreate("file", "/")}>New file</ContextMenuItem>
-          <ContextMenuItem disabled={props.readOnly} onSelect={() => handleRequestCreate("folder", "/")}>New folder</ContextMenuItem>
+          <ContextMenuItem onSelect={() => handleRequestCreate("file", "/")}>New file</ContextMenuItem>
+          <ContextMenuItem onSelect={() => handleRequestCreate("folder", "/")}>New folder</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={props.onRefresh}>Refresh</ContextMenuItem>
         </ContextMenuContent>

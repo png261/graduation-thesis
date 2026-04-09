@@ -1,15 +1,11 @@
 import Editor from "@monaco-editor/react";
 import { useEffect, useState } from "react";
 
-import {
-  getProjectFileSignedUrl,
-  readProjectFileBlob,
-} from "../../../api/projects/index";
+import { getProjectFileSignedUrl, readProjectFileBlob } from "../../../api/projects/index";
 
 interface EditorPaneProps {
   projectId: string;
   selectedPath: string | null;
-  readOnly: boolean;
   isLoading: boolean;
   language: string;
   content: string;
@@ -34,7 +30,7 @@ function isImagePath(path: string | null): path is string {
 
 function EditorErrorBanner({ message }: { message: string }) {
   if (!message) return null;
-  return <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-200">{message}</div>;
+  return <div className="border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700">{message}</div>;
 }
 
 function EmptyEditorState() {
@@ -43,19 +39,16 @@ function EmptyEditorState() {
       <svg className="h-10 w-10 text-[var(--da-muted)]/30" viewBox="0 0 16 16" fill="currentColor">
         <path d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5L9.5 0H4zm5.5 1v3.5H13L9.5 1z" />
       </svg>
-      <p className="text-xs text-[var(--da-muted)]">Select a file to edit</p>
+      <p className="text-sm text-[var(--da-muted)]">Select a file to edit</p>
     </div>
   );
 }
 
 function LoadingEditorState() {
-  return <div className="flex h-full items-center justify-center text-xs text-[var(--da-muted)]">Loading…</div>;
+  return <div className="flex h-full items-center justify-center text-sm text-[var(--da-muted)]">Loading…</div>;
 }
 
-function resolveReadonlyPreview(args: {
-  selectedPath: string;
-  content: string;
-}) {
+function resolveReadonlyPreview(args: { selectedPath: string; content: string }) {
   if (args.content.startsWith("data:image/")) return { src: args.content, error: "" };
   if (extensionFromPath(args.selectedPath) === "svg" && args.content.trim()) {
     return { blob: new Blob([args.content], { type: "image/svg+xml" }), error: "" };
@@ -63,12 +56,7 @@ function resolveReadonlyPreview(args: {
   return { error: "Image preview requires authenticated project access." };
 }
 
-function useImagePreviewState(args: {
-  projectId: string;
-  selectedPath: string;
-  readOnly: boolean;
-  content: string;
-}) {
+function useImagePreviewState(args: { projectId: string; selectedPath: string; content: string }) {
   const [src, setSrc] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -88,14 +76,6 @@ function useImagePreviewState(args: {
       setLoading(true);
       setSrc("");
       setError("");
-      if (args.readOnly) {
-        const preview = resolveReadonlyPreview({ selectedPath: args.selectedPath, content: args.content });
-        if (preview.src) setSrc(preview.src);
-        if (preview.blob) setPreviewFromBlob(preview.blob);
-        if (preview.error) setError(preview.error);
-        if (!preview.blob) setLoading(false);
-        return;
-      }
       try {
         const signedUrl = await getProjectFileSignedUrl(args.projectId, args.selectedPath);
         if (!active) return;
@@ -119,30 +99,27 @@ function useImagePreviewState(args: {
       active = false;
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
-  }, [args.content, args.projectId, args.readOnly, args.selectedPath]);
+  }, [args.content, args.projectId, args.selectedPath]);
   return { src, error, loading, setError, setLoading };
 }
 
 function ImagePreview({
   projectId,
   selectedPath,
-  readOnly,
   content,
 }: {
   projectId: string;
   selectedPath: string;
-  readOnly: boolean;
   content: string;
 }) {
   const { src, error, loading, setError, setLoading } = useImagePreviewState({
     projectId,
     selectedPath,
-    readOnly,
     content,
   });
 
   if (loading) return <LoadingEditorState />;
-  if (error) return <div className="flex h-full items-center justify-center px-4 text-xs text-red-300">{error}</div>;
+  if (error) return <div className="flex h-full items-center justify-center px-4 text-sm text-red-700">{error}</div>;
   return (
     <div className="flex h-full items-center justify-center overflow-auto bg-[var(--da-bg)] p-4">
       <img
@@ -161,12 +138,10 @@ function ImagePreview({
 function MonacoEditorView({
   language,
   content,
-  readOnly,
   setContent,
 }: {
   language: string;
   content: string;
-  readOnly: boolean;
   setContent: (value: string) => void;
 }) {
   return (
@@ -174,11 +149,21 @@ function MonacoEditorView({
       height="100%"
       language={language}
       value={content}
-      onChange={(value) => {
-        if (!readOnly) setContent(value ?? "");
+      theme="vs-light"
+      options={{
+        fontSize: 13,
+        lineHeight: 22,
+        fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        wordWrap: "on",
+        lineNumbers: "on",
+        renderLineHighlight: "line",
+        smoothScrolling: true,
+        cursorBlinking: "smooth",
+        tabSize: 2,
+        padding: { top: 10, bottom: 10 },
       }}
-      theme="vs-dark"
-      options={{ readOnly, fontSize: 12, fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace", minimap: { enabled: false }, scrollBeyondLastLine: false, wordWrap: "on", lineNumbers: "on", renderLineHighlight: "line", smoothScrolling: true, cursorBlinking: "smooth", tabSize: 2, padding: { top: 8, bottom: 8 } }}
     />
   );
 }
@@ -189,7 +174,6 @@ function EditorContent({
   isLoading,
   language,
   content,
-  readOnly,
   setContent,
 }: {
   projectId: string;
@@ -197,13 +181,13 @@ function EditorContent({
   isLoading: boolean;
   language: string;
   content: string;
-  readOnly: boolean;
   setContent: (value: string) => void;
 }) {
   if (!selectedPath) return <EmptyEditorState />;
   if (isLoading) return <LoadingEditorState />;
-  if (isImagePath(selectedPath)) return <ImagePreview projectId={projectId} selectedPath={selectedPath} readOnly={readOnly} content={content} />;
-  return <MonacoEditorView language={language} content={content} readOnly={readOnly} setContent={setContent} />;
+  if (isImagePath(selectedPath))
+    return <ImagePreview projectId={projectId} selectedPath={selectedPath} content={content} />;
+  return <MonacoEditorView language={language} content={content} setContent={setContent} />;
 }
 
 export function EditorPane(props: EditorPaneProps) {
@@ -212,7 +196,14 @@ export function EditorPane(props: EditorPaneProps) {
       <EditorErrorBanner message={props.exportError} />
       <EditorErrorBanner message={props.workflowError} />
       <div className="min-h-0 flex-1 overflow-hidden">
-        <EditorContent projectId={props.projectId} selectedPath={props.selectedPath} isLoading={props.isLoading} language={props.language} content={props.content} readOnly={props.readOnly} setContent={props.setContent} />
+        <EditorContent
+          projectId={props.projectId}
+          selectedPath={props.selectedPath}
+          isLoading={props.isLoading}
+          language={props.language}
+          content={props.content}
+          setContent={props.setContent}
+        />
       </div>
     </div>
   );

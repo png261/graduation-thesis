@@ -14,7 +14,6 @@ import { remapMovedPath } from "../features/filesystem/explorer/moveUtils";
 
 export type { FileEntry };
 
-const guestFileStore = new Map<string, Record<string, string>>();
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"]);
 
 export interface UseFilesystemReturn {
@@ -58,12 +57,6 @@ function makeFileEntries(fileMap: Record<string, string>): FileEntry[] {
   return Object.keys(fileMap).sort().map((path) => ({ path, size: fileMap[path].length, modifiedAt: now, createdAt: now }));
 }
 
-function getGuestFilesSnapshotForProject(projectId: string, guestFiles: Record<string, string>) {
-  const filesForProject = guestFileStore.get(projectId) ?? guestFiles;
-  if (!guestFileStore.has(projectId)) guestFileStore.set(projectId, filesForProject);
-  return filesForProject;
-}
-
 function setSelectedFileState(
   path: string,
   value: string,
@@ -87,13 +80,12 @@ function clearSelectedFileState(
 }
 
 function useFilesystemState() {
-  const [guestFiles, setGuestFiles] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [content, setContentState] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  return { guestFiles, setGuestFiles, files, setFiles, selectedPath, setSelectedPath, content, setContentState, savedContent, setSavedContent, isLoading, setIsLoading };
+  return {files, selectedPath, content, savedContent, isLoading, setFiles, setSelectedPath, setSelectedFileState, setContentState, setSavedContent, setIsLoading}
 }
 
 type FilesystemState = ReturnType<typeof useFilesystemState>;
@@ -101,27 +93,20 @@ type FilesystemState = ReturnType<typeof useFilesystemState>;
 function useFetchFilesAction(projectId: string, authenticated: boolean, state: FilesystemState) {
   return useCallback(async () => {
     if (!projectId) return;
-    if (!authenticated) {
-      const filesForProject = getGuestFilesSnapshotForProject(projectId, state.guestFiles);
-      state.setFiles(makeFileEntries(filesForProject));
-      const firstPath = Object.keys(filesForProject).sort()[0];
-      if (!state.selectedPath && firstPath) setSelectedFileState(firstPath, filesForProject[firstPath], state.setSelectedPath, state.setContentState, state.setSavedContent);
-      return;
-    }
     try {
       state.setFiles(await listProjectFiles(projectId));
     } catch {
       // non-fatal
     }
-  }, [authenticated, projectId, state.guestFiles, state.selectedPath, state.setContentState, state.setFiles, state.setSavedContent, state.setSelectedPath]);
+  }, [authenticated, projectId, state.selectedPath, state.setContentState, state.setFiles, state.setSavedContent, state.setSelectedPath]);
 }
 
-function useOpenFileAction(projectId: string, authenticated: boolean, guestFiles: Record<string, string>, state: FilesystemState) {
+function useOpenFileAction(projectId: string, authenticated: boolean, state: FilesystemState) {
   return useCallback(async (path: string) => {
     state.setIsLoading(true);
     try {
       if (!authenticated) {
-        setSelectedFileState(path, guestFiles[path] ?? "", state.setSelectedPath, state.setContentState, state.setSavedContent);
+        setSelectedFileState(path, state.setSelectedPath, state.setContentState, state.setSavedContent);
         return;
       }
       if (isImagePath(path)) {
@@ -135,22 +120,13 @@ function useOpenFileAction(projectId: string, authenticated: boolean, guestFiles
     } finally {
       state.setIsLoading(false);
     }
-  }, [authenticated, guestFiles, projectId, state]);
+  }, [authenticated, projectId, state]);
 }
 
 function useSaveFileAction(projectId: string, authenticated: boolean, readOnly: boolean, fetchFiles: () => Promise<void>, state: FilesystemState) {
   return useCallback(async (path: string, newContent: string) => {
     if (readOnly) return;
     if (isImagePath(path)) return;
-    if (!authenticated) {
-      state.setGuestFiles((previous) => {
-        const next = { ...previous, [path]: newContent };
-        guestFileStore.set(projectId, next);
-        return next;
-      });
-      state.setSavedContent(newContent);
-      return;
-    }
     await writeProjectFile(projectId, path, newContent);
     state.setSavedContent(newContent);
     await fetchFiles();
@@ -160,16 +136,6 @@ function useSaveFileAction(projectId: string, authenticated: boolean, readOnly: 
 function useDeleteFileAction(projectId: string, authenticated: boolean, readOnly: boolean, selectedPath: string | null, fetchFiles: () => Promise<void>, state: FilesystemState) {
   return useCallback(async (path: string) => {
     if (readOnly) return;
-    if (!authenticated) {
-      state.setGuestFiles((previous) => {
-        const next = { ...previous };
-        delete next[path];
-        guestFileStore.set(projectId, next);
-        return next;
-      });
-      if (selectedPath === path) clearSelectedFileState(state.setSelectedPath, state.setContentState, state.setSavedContent);
-      return;
-    }
     await deleteProjectFile(projectId, path);
     if (selectedPath === path) clearSelectedFileState(state.setSelectedPath, state.setContentState, state.setSavedContent);
     await fetchFiles();
@@ -180,16 +146,6 @@ function useCreateFileAction(projectId: string, authenticated: boolean, readOnly
   return useCallback(async (path: string, initialContent = "") => {
     if (readOnly) return;
     const normalised = normalizePath(path);
-    if (!authenticated) {
-      state.setGuestFiles((previous) => {
-        const next = { ...previous, [normalised]: initialContent };
-        guestFileStore.set(projectId, next);
-        return next;
-      });
-      await fetchFiles();
-      await openFile(normalised);
-      return;
-    }
     await writeProjectFile(projectId, normalised, initialContent);
     await fetchFiles();
     await openFile(normalised);
@@ -237,16 +193,11 @@ function useRenamePathAction(
   }, [authenticated, fetchFiles, projectId, readOnly, selectedPath, state]);
 }
 
-export function getGuestFilesSnapshot(projectId: string): Array<{ path: string; content: string }> {
-  const files = guestFileStore.get(projectId) ?? {};
-  return Object.entries(files).map(([path, content]) => ({ path, content }));
-}
-
 export function useFilesystem(projectId: string, options: UseFilesystemOptions): UseFilesystemReturn {
   const state = useFilesystemState();
   const isDirty = useMemo(() => state.content !== state.savedContent, [state.content, state.savedContent]);
   const fetchFiles = useFetchFilesAction(projectId, options.authenticated, state);
-  const openFile = useOpenFileAction(projectId, options.authenticated, state.guestFiles, state);
+  const openFile = useOpenFileAction(projectId, options.authenticated, state);
   const saveFile = useSaveFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, state);
   const deleteFile = useDeleteFileAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
   const createFile = useCreateFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, openFile, state);

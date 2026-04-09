@@ -19,7 +19,8 @@ router = APIRouter()
 class CloudImportBody(BaseModel):
     provider: str
     name: str = ""
-    credential_profile_id: str
+    access_key_id: str
+    secret_access_key: str
     bucket: str
     key: str = ""
     prefix: str = ""
@@ -58,7 +59,8 @@ async def deploy_drift_summary(
 @router.get("/{project_id}/state-backends/import/cloud/buckets")
 async def list_cloud_buckets(
     provider: str = Query(...),
-    credential_profile_id: str = Query(...),
+    access_key_id: str = Query(...),
+    secret_access_key: str = Query(...),
     user: User = Depends(auth_deps.require_current_user),
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
@@ -66,7 +68,8 @@ async def list_cloud_buckets(
         buckets = await state_service.browse_cloud_buckets(
             user_id=user.id,
             provider=provider,
-            credential_profile_id=credential_profile_id,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
             settings=get_settings(),
         )
         return {"buckets": buckets}
@@ -79,7 +82,8 @@ async def list_cloud_buckets(
 @router.get("/{project_id}/state-backends/import/cloud/objects")
 async def list_cloud_objects(
     provider: str = Query(...),
-    credential_profile_id: str = Query(...),
+    access_key_id: str = Query(...),
+    secret_access_key: str = Query(...),
     bucket: str = Query(...),
     prefix: str = Query(default=""),
     user: User = Depends(auth_deps.require_current_user),
@@ -89,7 +93,8 @@ async def list_cloud_objects(
         objects = await state_service.browse_cloud_objects(
             user_id=user.id,
             provider=provider,
-            credential_profile_id=credential_profile_id,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
             bucket=bucket,
             prefix=prefix,
             settings=get_settings(),
@@ -113,7 +118,9 @@ async def import_cloud_state_backend(
             user_id=user.id,
             provider=body.provider,
             name=body.name,
-            credential_profile_id=body.credential_profile_id,
+            credential_profile_id=None,
+            access_key_id=body.access_key_id,
+            secret_access_key=body.secret_access_key,
             bucket=body.bucket,
             key=body.key,
             prefix=body.prefix,
@@ -148,33 +155,6 @@ async def import_state_backend_from_github(
         raise_http_error(400, code=str(exc), message=str(exc))
     except Exception as exc:
         raise_http_error(400, code="import_github_failed", message=str(exc))
-
-
-@router.post("/{project_id}/state-backends/import/gitlab")
-async def import_state_backend_from_gitlab(
-    body: ScmImportBody,
-    user: User = Depends(auth_deps.require_current_user),
-    project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    access_token = await state_service.get_gitlab_token_for_user(user_id=user.id, settings=get_settings())
-    if not access_token:
-        raise_http_error(401, code="gitlab_login_required", message="GitLab login required")
-    try:
-        return await state_service.import_from_gitlab_repo(
-            project=project,
-            user_id=user.id,
-            access_token=access_token,
-            repo_full_name=body.repo_full_name,
-            branch=body.branch,
-            credential_profile_id=body.credential_profile_id,
-            selected_candidates=body.selected_candidates,
-            dry_run=body.dry_run,
-            settings=get_settings(),
-        )
-    except ValueError as exc:
-        raise_http_error(400, code=str(exc), message=str(exc))
-    except Exception as exc:
-        raise_http_error(400, code="import_gitlab_failed", message=str(exc))
 
 
 @router.post("/{project_id}/state-backends/{backend_id}/sync")

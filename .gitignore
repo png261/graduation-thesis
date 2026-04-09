@@ -35,3 +35,6 @@ __pycache__
 .github/prompts
 skills-lock.json
 .gitnexus
+.omx/
+.claude/
+CLAUDE.md

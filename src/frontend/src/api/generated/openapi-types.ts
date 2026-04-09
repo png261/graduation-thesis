@@ -92,17 +92,18 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/projects/import-guest": {
+    "/api/projects/{project_id}/threads/{thread_id}/messages": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Thread Messages */
+        get: operations["list_thread_messages_api_projects__project_id__threads__thread_id__messages_get"];
         put?: never;
-        /** Import Guest Project */
-        post: operations["import_guest_project_api_projects_import_guest_post"];
+        /** Append Thread Message */
+        post: operations["append_thread_message_api_projects__project_id__threads__thread_id__messages_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -143,6 +144,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/github/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Project Github */
+        post: operations["sync_project_github_api_projects__project_id__github_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/github/disconnect": {
         parameters: {
             query?: never;
@@ -154,6 +172,23 @@ export interface paths {
         put?: never;
         /** Disconnect Project Github */
         post: operations["disconnect_project_github_api_projects__project_id__github_disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/github/pull-request/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Pull Request Defaults */
+        get: operations["project_pull_request_defaults_api_projects__project_id__github_pull_request_defaults_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -177,15 +212,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/projects/{project_id}/telegram": {
+    "/api/projects/{project_id}/incidents": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Project Telegram Status */
-        get: operations["project_telegram_status_api_projects__project_id__telegram_get"];
+        /** List Incidents */
+        get: operations["list_incidents_api_projects__project_id__incidents_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -194,24 +229,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/projects/{project_id}/telegram/connect": {
+    "/api/projects/{project_id}/incidents/{incident_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get Incident */
+        get: operations["get_incident_api_projects__project_id__incidents__incident_id__get"];
         put?: never;
-        /** Connect Project Telegram */
-        post: operations["connect_project_telegram_api_projects__project_id__telegram_connect_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/projects/{project_id}/telegram/disconnect": {
+    "/api/projects/{project_id}/incidents/{incident_id}/resolution-quality": {
         parameters: {
             query?: never;
             header?: never;
@@ -220,8 +255,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Disconnect Project Telegram */
-        post: operations["disconnect_project_telegram_api_projects__project_id__telegram_disconnect_post"];
+        /** Mark Incident Resolution Quality */
+        post: operations["mark_incident_resolution_quality_api_projects__project_id__incidents__incident_id__resolution_quality_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/incidents/metrics/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Incident Metrics */
+        get: operations["incident_metrics_api_projects__project_id__incidents_metrics_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -365,6 +417,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/opentofu/deploy/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Opentofu Deploy Preflight */
+        get: operations["opentofu_deploy_preflight_api_projects__project_id__opentofu_deploy_preflight_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/opentofu/target-contract/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Opentofu Validate Target Contract */
+        post: operations["opentofu_validate_target_contract_api_projects__project_id__opentofu_target_contract_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/opentofu/deploy/preview": {
         parameters: {
             query?: never;
@@ -450,6 +536,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{project_id}/opentofu/deploy/destroy/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Opentofu Destroy Stream */
+        post: operations["opentofu_destroy_stream_api_projects__project_id__opentofu_deploy_destroy_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{project_id}/opentofu/costs": {
         parameters: {
             query?: never;
@@ -493,6 +596,23 @@ export interface paths {
         };
         /** List State Backends */
         get: operations["list_state_backends_api_projects__project_id__state_backends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{project_id}/state-backends/deploy-drift": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Deploy Drift Summary */
+        get: operations["deploy_drift_summary_api_projects__project_id__state_backends_deploy_drift_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -563,23 +683,6 @@ export interface paths {
         put?: never;
         /** Import State Backend From Github */
         post: operations["import_state_backend_from_github_api_projects__project_id__state_backends_import_github_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/projects/{project_id}/state-backends/import/gitlab": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Import State Backend From Gitlab */
-        post: operations["import_state_backend_from_gitlab_api_projects__project_id__state_backends_import_gitlab_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -758,41 +861,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/projects/{project_id}/skills": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Skills */
-        get: operations["list_skills_api_projects__project_id__skills_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/projects/{project_id}/skills/{skill_name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Upsert Skill */
-        put: operations["upsert_skill_api_projects__project_id__skills__skill_name__put"];
-        post?: never;
-        /** Delete Skill */
-        delete: operations["delete_skill_api_projects__project_id__skills__skill_name__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/projects/{project_id}/files/signed-url": {
         parameters: {
             query?: never;
@@ -948,6 +1016,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/github/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Github Oauth Start */
+        get: operations["github_oauth_start_api_github_oauth_start_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Github Oauth Callback */
+        get: operations["github_oauth_callback_api_github_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/github/session": {
         parameters: {
             query?: never;
@@ -977,74 +1079,6 @@ export interface paths {
         put?: never;
         /** Github Create Repo */
         post: operations["github_create_repo_api_github_repos_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/gitlab/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Gitlab Session */
-        get: operations["gitlab_session_api_gitlab_session_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/gitlab/repos": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Gitlab Repos */
-        get: operations["gitlab_repos_api_gitlab_repos_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/gitlab/oauth/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Gitlab Oauth Start */
-        get: operations["gitlab_oauth_start_api_gitlab_oauth_start_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/gitlab/oauth/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Gitlab Oauth Callback */
-        get: operations["gitlab_oauth_callback_api_gitlab_oauth_callback_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1082,23 +1116,6 @@ export interface paths {
         post?: never;
         /** Delete Profile */
         delete: operations["delete_profile_api_state_credential_profiles__profile_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/telegram/webhook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Telegram Webhook */
-        post: operations["telegram_webhook_api_telegram_webhook_post"];
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1187,12 +1204,31 @@ export interface components {
             /** File */
             file: string;
         };
+        /** ChatAttachment */
+        ChatAttachment: {
+            /**
+             * Type
+             * @default document
+             * @enum {string}
+             */
+            type: "document" | "image";
+            /** Name */
+            name: string;
+            /** Content */
+            content: string;
+            /** Contenttype */
+            contentType?: string | null;
+            /** Sizebytes */
+            sizeBytes?: number | null;
+        };
         /** ChatMessage */
         ChatMessage: {
             /** @description user | assistant | system */
             role: components["schemas"]["ChatRole"];
             /** Content */
             content: string;
+            /** Attachments */
+            attachments?: components["schemas"]["ChatAttachment"][];
         };
         /** ChatRequest */
         ChatRequest: {
@@ -1224,8 +1260,10 @@ export interface components {
              * @default
              */
             name: string;
-            /** Credential Profile Id */
-            credential_profile_id: string;
+            /** Access Key Id */
+            access_key_id: string;
+            /** Secret Access Key */
+            secret_access_key: string;
             /** Bucket */
             bucket: string;
             /**
@@ -1297,6 +1335,16 @@ export interface components {
             selected_modules?: string[];
             /** Intent */
             intent?: string | null;
+            /** Review Session Id */
+            review_session_id?: string | null;
+            /** Review Target */
+            review_target?: string | null;
+            /** Scope Mode */
+            scope_mode?: string | null;
+            /** Confirmation */
+            confirmation?: {
+                [key: string]: unknown;
+            } | null;
             /** Options */
             options?: {
                 [key: string]: unknown;
@@ -1329,6 +1377,11 @@ export interface components {
             repo_full_name: string;
             /** Base Branch */
             base_branch?: string | null;
+            /**
+             * Confirm Workspace Switch
+             * @default false
+             */
+            confirm_workspace_switch: boolean;
         };
         /** GitHubPullRequestBody */
         GitHubPullRequestBody: {
@@ -1342,46 +1395,13 @@ export interface components {
             /** Base Branch */
             base_branch?: string | null;
         };
-        /** GuestFileImport */
-        GuestFileImport: {
-            /** Path */
-            path: string;
-            /** Content */
-            content: string;
-        };
-        /** GuestProjectImport */
-        GuestProjectImport: {
+        /** GitHubSyncBody */
+        GitHubSyncBody: {
             /**
-             * Name
-             * @default Imported Guest Session
+             * Confirm Workspace Switch
+             * @default false
              */
-            name: string;
-            /**
-             * Provider
-             * @default aws
-             * @enum {string}
-             */
-            provider: "aws" | "gcloud";
-            /**
-             * Files
-             * @default []
-             */
-            files: components["schemas"]["GuestFileImport"][];
-            /**
-             * Threads
-             * @default []
-             */
-            threads: components["schemas"]["GuestThreadImport"][];
-        };
-        /** GuestThreadImport */
-        GuestThreadImport: {
-            /** Id */
-            id: string;
-            /**
-             * Title
-             * @default
-             */
-            title: string;
+            confirm_workspace_switch: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1395,11 +1415,8 @@ export interface components {
         };
         /** OpenTofuApplyBody */
         OpenTofuApplyBody: {
-            /**
-             * Selected Modules
-             * @default []
-             */
-            selected_modules: string[];
+            /** Selected Modules */
+            selected_modules?: string[];
             /** Intent */
             intent?: string | null;
             /**
@@ -1407,6 +1424,44 @@ export interface components {
              * @default false
              */
             override_policy: boolean;
+            /** Review Session Id */
+            review_session_id?: string | null;
+            /** Review Target */
+            review_target?: string | null;
+            /** Scope Mode */
+            scope_mode?: string | null;
+            confirmation?: components["schemas"]["OpenTofuConfirmationBody"] | null;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+        };
+        /** OpenTofuConfirmationBody */
+        OpenTofuConfirmationBody: {
+            /** Project Name */
+            project_name?: string | null;
+            /** Keyword */
+            keyword?: string | null;
+            /** Selected Modules */
+            selected_modules?: string[];
+        };
+        /** OpenTofuDestroyBody */
+        OpenTofuDestroyBody: {
+            /** Selected Modules */
+            selected_modules?: string[];
+            /** Intent */
+            intent?: string | null;
+            /** Review Session Id */
+            review_session_id?: string | null;
+            /** Review Target */
+            review_target?: string | null;
+            /** Scope Mode */
+            scope_mode?: string | null;
+            confirmation?: components["schemas"]["OpenTofuConfirmationBody"] | null;
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
         };
         /** OpenTofuPreviewBody */
         OpenTofuPreviewBody: {
@@ -1423,6 +1478,18 @@ export interface components {
              * @enum {string}
              */
             provider: "aws" | "gcloud";
+        };
+        /** RerunJobBody */
+        RerunJobBody: {
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+        };
+        /** ResolutionQualityBody */
+        ResolutionQualityBody: {
+            /** Quality */
+            quality: string;
         };
         /** ScmImportBody */
         ScmImportBody: {
@@ -1442,16 +1509,6 @@ export interface components {
                 [key: string]: string;
             }[];
         };
-        /** SkillUpsert */
-        SkillUpsert: {
-            /**
-             * Description
-             * @default
-             */
-            description: string;
-            /** Content */
-            content: string;
-        };
         /** ThreadCreate */
         ThreadCreate: {
             /** Id */
@@ -1461,6 +1518,13 @@ export interface components {
              * @default
              */
             title: string;
+        };
+        /** ThreadMessageUpsert */
+        ThreadMessageUpsert: {
+            /** Item */
+            item: {
+                [key: string]: unknown;
+            };
         };
         /** ValidationError */
         ValidationError: {
@@ -1748,16 +1812,53 @@ export interface operations {
             };
         };
     };
-    import_guest_project_api_projects_import_guest_post: {
+    list_thread_messages_api_projects__project_id__threads__thread_id__messages_get: {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                thread_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    append_thread_message_api_projects__project_id__threads__thread_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                project_id: string;
+            };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GuestProjectImport"];
+                "application/json": components["schemas"]["ThreadMessageUpsert"];
             };
         };
         responses: {
@@ -1853,7 +1954,77 @@ export interface operations {
             };
         };
     };
+    sync_project_github_api_projects__project_id__github_sync_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GitHubSyncBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     disconnect_project_github_api_projects__project_id__github_disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_pull_request_defaults_api_projects__project_id__github_pull_request_defaults_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1923,9 +2094,11 @@ export interface operations {
             };
         };
     };
-    project_telegram_status_api_projects__project_id__telegram_get: {
+    list_incidents_api_projects__project_id__incidents_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -1956,11 +2129,12 @@ export interface operations {
             };
         };
     };
-    connect_project_telegram_api_projects__project_id__telegram_connect_post: {
+    get_incident_api_projects__project_id__incidents__incident_id__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                incident_id: string;
                 project_id: string;
             };
             cookie?: never;
@@ -1989,7 +2163,45 @@ export interface operations {
             };
         };
     };
-    disconnect_project_telegram_api_projects__project_id__telegram_disconnect_post: {
+    mark_incident_resolution_quality_api_projects__project_id__incidents__incident_id__resolution_quality_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolutionQualityBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    incident_metrics_api_projects__project_id__incidents_metrics_summary_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -2209,7 +2421,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RerunJobBody"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2302,6 +2518,77 @@ export interface operations {
         };
     };
     opentofu_status_api_projects__project_id__opentofu_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    opentofu_deploy_preflight_api_projects__project_id__opentofu_deploy_preflight_get: {
+        parameters: {
+            query?: {
+                review_session_id?: string | null;
+                review_target?: string;
+                scope_mode?: string;
+                selected_modules?: string[];
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    opentofu_validate_target_contract_api_projects__project_id__opentofu_target_contract_validate_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -2510,6 +2797,41 @@ export interface operations {
             };
         };
     };
+    opentofu_destroy_stream_api_projects__project_id__opentofu_deploy_destroy_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenTofuDestroyBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     opentofu_costs_api_projects__project_id__opentofu_costs_get: {
         parameters: {
             query?: {
@@ -2616,11 +2938,45 @@ export interface operations {
             };
         };
     };
+    deploy_drift_summary_api_projects__project_id__state_backends_deploy_drift_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_cloud_buckets_api_projects__project_id__state_backends_import_cloud_buckets_get: {
         parameters: {
             query: {
                 provider: string;
-                credential_profile_id: string;
+                access_key_id: string;
+                secret_access_key: string;
             };
             header?: never;
             path: {
@@ -2656,7 +3012,8 @@ export interface operations {
         parameters: {
             query: {
                 provider: string;
-                credential_profile_id: string;
+                access_key_id: string;
+                secret_access_key: string;
                 bucket: string;
                 prefix?: string;
             };
@@ -2728,43 +3085,6 @@ export interface operations {
         };
     };
     import_state_backend_from_github_api_projects__project_id__state_backends_import_github_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ScmImportBody"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    import_state_backend_from_gitlab_api_projects__project_id__state_backends_import_gitlab_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -3227,111 +3547,6 @@ export interface operations {
             };
         };
     };
-    list_skills_api_projects__project_id__skills_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upsert_skill_api_projects__project_id__skills__skill_name__put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                skill_name: string;
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SkillUpsert"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_skill_api_projects__project_id__skills__skill_name__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                skill_name: string;
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     create_file_signed_url_api_projects__project_id__files_signed_url_get: {
         parameters: {
             query: {
@@ -3716,6 +3931,62 @@ export interface operations {
             };
         };
     };
+    github_oauth_start_api_github_oauth_start_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    github_oauth_callback_api_github_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+                error_description?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     github_session_status_api_github_session_get: {
         parameters: {
             query?: never;
@@ -3782,106 +4053,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    gitlab_session_api_gitlab_session_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    gitlab_repos_api_gitlab_repos_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    gitlab_oauth_start_api_gitlab_oauth_start_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    gitlab_oauth_callback_api_gitlab_oauth_callback_get: {
-        parameters: {
-            query?: {
-                code?: string | null;
-                state?: string | null;
-                error?: string | null;
-                error_description?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -3999,43 +4170,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    telegram_webhook_api_telegram_webhook_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {

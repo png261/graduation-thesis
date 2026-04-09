@@ -1,33 +1,6 @@
 from __future__ import annotations
 
-import re
-
-import yaml
-
 from .runtime import blueprint_service, conversation_persistence, identity_project_persistence, identity_project_service
-
-_VALID_SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
-
-
-def safe_skill_name(name: str) -> str:
-    normalised = re.sub(r"[^a-z0-9-]", "-", name.lower().strip()).strip("-")
-    normalised = re.sub(r"-{2,}", "-", normalised)
-    if not normalised or not _VALID_SKILL_NAME.match(normalised):
-        raise ValueError(f"Invalid skill name: '{name}'")
-    return normalised
-
-
-def parse_skill_frontmatter(content: str) -> str:
-    if content.startswith("---"):
-        end = content.find("\n---", 3)
-        if end != -1:
-            try:
-                frontmatter = yaml.safe_load(content[3:end])
-                if isinstance(frontmatter, dict):
-                    return str(frontmatter.get("description", ""))
-            except yaml.YAMLError:
-                pass
-    return ""
 
 
 def mask_credentials(creds: dict) -> dict:

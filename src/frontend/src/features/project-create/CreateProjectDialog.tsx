@@ -60,7 +60,7 @@ function CreateProjectProviderField({ model }: { model: CreateProjectDialogModel
 function CreateProjectError({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+    <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
       <AlertTitle>Create failed</AlertTitle>
       <AlertDescription>{error}</AlertDescription>
     </Alert>

@@ -1,12 +1,13 @@
 """Local filesystem storage for project-scoped files."""
+
 from __future__ import annotations
 
 import os
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -283,7 +284,9 @@ def rename_path(project_id: str, virtual_path: str, new_name: str) -> dict[str, 
 
     source_parts = PurePosixPath(source_virtual).parts
     parent_virtual = "/" if len(source_parts) <= 2 else "/" + "/".join(source_parts[1:-1])
-    destination_virtual = normalize_virtual_path(f"/{candidate_name}" if parent_virtual == "/" else f"{parent_virtual}/{candidate_name}")
+    destination_virtual = normalize_virtual_path(
+        f"/{candidate_name}" if parent_virtual == "/" else f"{parent_virtual}/{candidate_name}"
+    )
     destination_abs = resolve(project_id, destination_virtual)
 
     if destination_virtual == source_virtual:
@@ -320,18 +323,3 @@ def ensure_default_agent_memory(project_id: str, content: str) -> None:
     memory_path = root / "AGENT.md"
     if not memory_path.exists():
         memory_path.write_text(content)
-
-
-def iter_skill_files(project_id: str) -> list[tuple[str, str]]:
-    root = ensure_project_dir(project_id)
-    skills_root = root / "skills"
-    if not skills_root.exists():
-        return []
-    items: list[tuple[str, str]] = []
-    for skill_md in skills_root.glob("*/SKILL.md"):
-        if not skill_md.is_file():
-            continue
-        skill_name = skill_md.parent.name
-        items.append((skill_name, skill_md.read_text()))
-    items.sort(key=lambda item: item[0])
-    return items

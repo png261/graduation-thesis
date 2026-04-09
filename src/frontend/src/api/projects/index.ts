@@ -1,6 +1,5 @@
 export * from "./types";
 export * from "./projects";
-export * from "./blueprints";
 export * from "./workspace";
 export * from "./filesystem";
 export * from "./threads";
@@ -9,8 +8,5 @@ export * from "./opentofu";
 export * from "./ansible";
 export * from "./jobs";
 export * from "./github";
-export * from "./gitlab";
-export * from "./telegram";
-export * from "./guest";
 export * from "./state";
 export * from "./stateBackends";

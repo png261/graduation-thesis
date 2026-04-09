@@ -15,7 +15,7 @@ interface GraphSidebarProps {
 function graphScopeButtonClass(active: boolean) {
   return cn(
     "w-full rounded-lg border px-4 py-3 text-left text-xl font-semibold leading-none",
-    active ? "border-white/70 bg-white/[0.1] text-white" : "border-white/10 bg-white/[0.03] text-white/80 hover:border-white/25",
+    active ? "border-blue-300 bg-blue-50 text-[var(--da-text)]" : "border-[var(--da-border)] bg-[var(--da-panel)] text-[color-mix(in_srgb,var(--da-text)_82%,transparent)] hover:border-blue-200",
   );
 }
 
@@ -38,15 +38,6 @@ function GraphModulesList({ modules, scope, onScopeChange }: { modules: string[]
   );
 }
 
-function GraphSidebarHint() {
-  return (
-    <div className="flex items-start gap-2 text-lg leading-snug text-white/55">
-      <Info className="mt-0.5 h-4 w-4 shrink-0" />
-      <p>The graph is rendered using your Terraform configuration.</p>
-    </div>
-  );
-}
-
 function GraphRefreshButton({ loading, onRefresh }: { loading: boolean; onRefresh: () => void }) {
   return (
     <Button variant="outline" size="sm" className="mt-2 w-full justify-center gap-1.5" onClick={onRefresh} disabled={loading}>
@@ -58,11 +49,9 @@ function GraphRefreshButton({ loading, onRefresh }: { loading: boolean; onRefres
 
 export function GraphSidebar({ modules, scope, loading, onScopeChange, onRefresh, className }: GraphSidebarProps) {
   return (
-    <aside className={cn("h-full w-[300px] border-r border-white/10 bg-gradient-to-b from-[#14171d] to-[#101319] p-4", className)}>
-      <h3 className="mb-5 text-3xl font-semibold leading-none text-white/90">Graph View</h3>
+    <aside className={cn("h-full w-[300px] border-r border-[var(--da-border)] bg-gradient-to-b from-[var(--da-elevated)] to-[var(--da-panel)] p-4", className)}>
       <div className="space-y-3">
         <GraphModulesList modules={modules} scope={scope} onScopeChange={onScopeChange} />
-        <GraphSidebarHint />
         <GraphRefreshButton loading={loading} onRefresh={onRefresh} />
       </div>
     </aside>

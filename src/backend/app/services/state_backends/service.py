@@ -20,7 +20,6 @@ from app.services.incident import service as incident_service
 from app.services.jobs import service as jobs_service
 from app.services.opentofu.runtime.shared import discover_modules_from_project_dir
 from app.services.project import files as project_files
-from app.services.telegram import notifications as telegram_notifications
 
 from .cloud_adapters import (
     CloudAdapter,
@@ -30,7 +29,7 @@ from .cloud_adapters import (
     parse_state_payload,
 )
 from .credential_profiles import resolve_profile_credentials
-from .crypto import decrypt_text
+from .crypto import decrypt_text, encrypt_text
 from .scanners import scan_backend_candidates
 
 DRIFT_REFRESH_MAX_AGE_MINUTES = 60
@@ -183,7 +182,11 @@ def _deploy_drift_status(
 ) -> tuple[str, bool, str]:
     if primary_backend.get("last_error") or str((latest_sync or {}).get("status") or "") == "failed":
         return "error", True, str(primary_backend.get("last_error") or "Primary backend drift refresh failed.")
-    if last_successful_refresh_at is None or freshness_minutes is None or freshness_minutes > DRIFT_REFRESH_MAX_AGE_MINUTES:
+    if (
+        last_successful_refresh_at is None
+        or freshness_minutes is None
+        or freshness_minutes > DRIFT_REFRESH_MAX_AGE_MINUTES
+    ):
         return "refresh_required", True, "Refresh the primary backend drift status before deploy."
     if active_drift_alert_count > 0:
         return "drift_detected", True, f"{active_drift_alert_count} active drift alert(s) detected."
@@ -506,17 +509,16 @@ async def browse_cloud_buckets(
     *,
     user_id: str,
     provider: str,
-    credential_profile_id: str,
+    access_key_id: str,
+    secret_access_key: str,
     settings: Settings,
 ) -> list[str]:
-    profile_provider, credentials = await resolve_profile_credentials(
-        profile_id=credential_profile_id,
-        user_id=user_id,
-        secret=settings.state_encryption_key,
-    )
     normalized = normalize_cloud_provider(provider)
-    if profile_provider != normalized:
-        raise ValueError("profile_provider_mismatch")
+    credentials = _inline_cloud_credentials(
+        provider=normalized,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
     adapter = get_cloud_adapter(normalized, credentials)
     return adapter.list_buckets()
 
@@ -525,19 +527,18 @@ async def browse_cloud_objects(
     *,
     user_id: str,
     provider: str,
-    credential_profile_id: str,
+    access_key_id: str,
+    secret_access_key: str,
     bucket: str,
     prefix: str,
     settings: Settings,
 ) -> list[dict[str, Any]]:
-    profile_provider, credentials = await resolve_profile_credentials(
-        profile_id=credential_profile_id,
-        user_id=user_id,
-        secret=settings.state_encryption_key,
-    )
     normalized = normalize_cloud_provider(provider)
-    if profile_provider != normalized:
-        raise ValueError("profile_provider_mismatch")
+    credentials = _inline_cloud_credentials(
+        provider=normalized,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+    )
     adapter = get_cloud_adapter(normalized, credentials)
     objects = likely_state_objects(adapter.list_objects(bucket=bucket, prefix=prefix or ""))
     return [
@@ -556,7 +557,7 @@ async def _create_backend(
     name: str,
     source_type: str,
     provider: str,
-    credential_profile_id: str,
+    credential_profile_id: str | None,
     bucket_name: str,
     object_key: str,
     object_prefix: str,
@@ -580,7 +581,7 @@ async def _create_backend(
         path=path,
         schedule_minutes=60,
         retention_days=90,
-        settings_json={"notifications": {"telegram": True}},
+        settings_json={},
     )
     async with db.get_session() as session:
         session.add(backend)
@@ -593,20 +594,29 @@ async def import_cloud_backend(
     user_id: str,
     provider: str,
     name: str,
-    credential_profile_id: str,
+    credential_profile_id: str | None,
+    access_key_id: str = "",
+    secret_access_key: str = "",
     bucket: str,
     key: str,
     prefix: str,
     settings: Settings,
 ) -> dict[str, Any]:
     normalized = normalize_cloud_provider(provider)
-    profile_provider, credentials = await resolve_profile_credentials(
-        profile_id=credential_profile_id,
-        user_id=user_id,
-        secret=settings.state_encryption_key,
-    )
-    if profile_provider != normalized:
-        raise ValueError("profile_provider_mismatch")
+    if credential_profile_id:
+        profile_provider, credentials = await resolve_profile_credentials(
+            profile_id=credential_profile_id,
+            user_id=user_id,
+            secret=settings.state_encryption_key,
+        )
+        if profile_provider != normalized:
+            raise ValueError("profile_provider_mismatch")
+    else:
+        credentials = _inline_cloud_credentials(
+            provider=normalized,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+        )
     adapter = get_cloud_adapter(normalized, credentials)
     object_key = (key or "").strip()
     object_prefix = (prefix or "").strip()
@@ -628,6 +638,14 @@ async def import_cloud_backend(
         branch=None,
         path=None,
     )
+    if not credential_profile_id:
+        backend.settings_json = {
+            **(backend.settings_json or {}),
+            "cloud_credentials_encrypted": encrypt_text(
+                secret=settings.state_encryption_key,
+                value=json.dumps(credentials),
+            ),
+        }
     await run_backend_sync(
         backend_id=backend.id,
         triggered_by="manual_import",
@@ -640,7 +658,7 @@ def _is_scan_candidate_path(path: str) -> bool:
     lower = path.lower()
     if lower.endswith(".tf"):
         return True
-    return any(token in lower for token in ("gitlab-ci", "github/workflows", ".env"))
+    return any(token in lower for token in ("github/workflows", ".env"))
 
 
 async def _github_fetch_files(access_token: str, repo_full_name: str, branch: str | None) -> list[tuple[str, str]]:
@@ -681,42 +699,6 @@ async def _github_fetch_files(access_token: str, repo_full_name: str, branch: st
     return await asyncio.to_thread(_load_files)
 
 
-async def _gitlab_fetch_files(access_token: str, repo_full_name: str, branch: str | None, settings: Settings) -> list[tuple[str, str]]:
-    def _load_files() -> list[tuple[str, str]]:
-        try:
-            import gitlab
-        except Exception as exc:  # pragma: no cover - import failure path
-            raise RuntimeError("gitlab_sdk_unavailable") from exc
-        try:
-            client = gitlab.Gitlab(settings.gitlab_api_url, oauth_token=access_token, per_page=100)
-            client.auth()
-            project = client.projects.get(repo_full_name.strip())
-            ref = (branch or "").strip() or str(getattr(project, "default_branch", "") or "main")
-            tree = project.repository_tree(path="", ref=ref, recursive=True, all=True)
-        except Exception as exc:
-            raise RuntimeError(str(exc) or "gitlab_tree_failed") from exc
-
-        files: list[tuple[str, str]] = []
-        for row in tree:
-            if not isinstance(row, dict) or row.get("type") != "blob":
-                continue
-            path = str(row.get("path") or "").strip()
-            if not path or not _is_scan_candidate_path(path):
-                continue
-            try:
-                file_obj = project.files.get(file_path=path, ref=ref)
-                encoded = str(getattr(file_obj, "content", "") or "")
-                if not encoded:
-                    continue
-                decoded = base64.b64decode(encoded).decode("utf-8", errors="ignore")
-                files.append((path, decoded))
-            except Exception:
-                continue
-        return files
-
-    return await asyncio.to_thread(_load_files)
-
-
 async def import_from_github_repo(
     *,
     project: Project,
@@ -752,48 +734,6 @@ async def import_from_github_repo(
         await _update_backend_source(
             backend_id=backend["id"],
             source_type="github",
-            repository=repo_full_name,
-            branch=branch,
-        )
-        created.append(backend)
-    return {"discovered": discovered, "created": created}
-
-
-async def import_from_gitlab_repo(
-    *,
-    project: Project,
-    user_id: str,
-    access_token: str,
-    repo_full_name: str,
-    branch: str | None,
-    credential_profile_id: str,
-    selected_candidates: list[dict[str, str]] | None,
-    dry_run: bool,
-    settings: Settings,
-) -> dict[str, Any]:
-    files = await _gitlab_fetch_files(access_token, repo_full_name, branch, settings)
-    discovered = scan_backend_candidates(files)
-    if dry_run:
-        return {"discovered": discovered, "created": []}
-    chosen = selected_candidates if selected_candidates else discovered
-    if not chosen:
-        raise ValueError("no_backend_candidate_found")
-    created: list[dict[str, Any]] = []
-    for item in chosen:
-        backend = await import_cloud_backend(
-            project=project,
-            user_id=user_id,
-            provider=str(item.get("provider") or ""),
-            name=str(item.get("name") or f"gitlab:{repo_full_name}"),
-            credential_profile_id=credential_profile_id,
-            bucket=str(item.get("bucket") or ""),
-            key=str(item.get("key") or ""),
-            prefix=str(item.get("prefix") or ""),
-            settings=settings,
-        )
-        await _update_backend_source(
-            backend_id=backend["id"],
-            source_type="gitlab",
             repository=repo_full_name,
             branch=branch,
         )
@@ -1039,27 +979,6 @@ async def _notify_alerts_if_needed(
         memories=memories,
         correlation_id=correlation_id,
     )
-    severity_set = set(settings.state_alert_notify_severity_list())
-    relevant_drift = [row for row in drift_alerts if row.severity.lower() in severity_set and row.status == "active"]
-    relevant_policy = [row for row in policy_alerts if row.severity.lower() in severity_set and row.status == "active"]
-    should_notify = bool(relevant_drift or relevant_policy)
-    if should_notify:
-        should_notify = await incident_service.should_emit_alert(
-            project_id=project_id,
-            incident_key=decision["incident_key"],
-            settings=settings,
-        )
-    if should_notify:
-        lines = [
-            f"State backend: {backend.name}",
-            f"Provider: {backend.provider}",
-            f"Active drift alerts: {len(relevant_drift)}",
-            f"Active policy alerts: {len(relevant_policy)}",
-            f"Severity: {decision['severity']}",
-            f"Confidence: {decision['confidence']:.2f}",
-            f"Recommended action: {decision['recommended_action']}",
-        ]
-        await telegram_notifications.notify_by_project_id(project_id, settings, "\n".join(lines))
     if decision["action_class"] == incident_service.ACTION_BLOCKED:
         events.append(
             {
@@ -1075,7 +994,7 @@ async def _notify_alerts_if_needed(
         "events": events,
         "memories": memories,
         "correlation_id": correlation_id,
-        "notified": should_notify,
+        "notified": False,
     }
 
 
@@ -1102,15 +1021,43 @@ async def _resolve_backend_runtime(
     user_id = str(project.user_id or "")
     if not user_id:
         raise ValueError("project_owner_required")
-    if not backend.credential_profile_id:
-        raise ValueError("credential_profile_required")
-
-    provider, credentials = await resolve_profile_credentials(
-        profile_id=backend.credential_profile_id,
-        user_id=user_id,
-        secret=cfg.state_encryption_key,
-    )
+    if backend.credential_profile_id:
+        provider, credentials = await resolve_profile_credentials(
+            profile_id=backend.credential_profile_id,
+            user_id=user_id,
+            secret=cfg.state_encryption_key,
+        )
+    else:
+        encrypted = str((backend.settings_json or {}).get("cloud_credentials_encrypted") or "").strip()
+        if not encrypted:
+            raise ValueError("cloud_credentials_required")
+        raw = decrypt_text(secret=cfg.state_encryption_key, value=encrypted)
+        if not raw:
+            raise ValueError("cloud_credentials_required")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("cloud_credentials_required")
+        provider = str(backend.provider or "")
+        credentials = {str(key): str(value) for key, value in payload.items() if value is not None}
     return provider, credentials, get_cloud_adapter(provider, credentials)
+
+
+def _inline_cloud_credentials(
+    *,
+    provider: str,
+    access_key_id: str,
+    secret_access_key: str,
+) -> dict[str, str]:
+    if provider == "aws":
+        access = access_key_id.strip()
+        secret = secret_access_key.strip()
+        if not access or not secret:
+            raise ValueError("aws_credentials_required")
+        return {
+            "aws_access_key_id": access,
+            "aws_secret_access_key": secret,
+        }
+    return {}
 
 
 async def _snapshot_backend_state(
@@ -1331,9 +1278,7 @@ async def list_state_resources(
     await get_state_backend(project_id=project_id, backend_id=backend_id)
     async with db.get_session() as session:
         rows = await session.execute(
-            select(StateResource)
-            .where(StateResource.backend_id == backend_id)
-            .order_by(StateResource.address.asc())
+            select(StateResource).where(StateResource.backend_id == backend_id).order_by(StateResource.address.asc())
         )
         resources = rows.scalars().all()
     needle = (search or "").strip().lower()
@@ -1341,7 +1286,9 @@ async def list_state_resources(
         resources = [
             row
             for row in resources
-            if needle in row.address.lower() or needle in row.resource_type.lower() or needle in row.resource_name.lower()
+            if needle in row.address.lower()
+            or needle in row.resource_type.lower()
+            or needle in row.resource_name.lower()
         ]
     return [_serialize_resource(row, show_sensitive=show_sensitive) for row in resources]
 
@@ -1376,7 +1323,9 @@ async def list_state_history(*, project_id: str, backend_id: str, search: str = 
     return output
 
 
-async def list_drift_alerts(*, project_id: str, backend_id: str, active_only: bool = False, search: str = "") -> list[dict[str, Any]]:
+async def list_drift_alerts(
+    *, project_id: str, backend_id: str, active_only: bool = False, search: str = ""
+) -> list[dict[str, Any]]:
     await get_state_backend(project_id=project_id, backend_id=backend_id)
     async with db.get_session() as session:
         query = select(DriftAlert).where(DriftAlert.backend_id == backend_id)
@@ -1387,12 +1336,16 @@ async def list_drift_alerts(*, project_id: str, backend_id: str, active_only: bo
     needle = (search or "").strip().lower()
     if needle:
         alerts = [
-            row for row in alerts if needle in row.resource_address.lower() or needle in json.dumps(row.details_json or {}).lower()
+            row
+            for row in alerts
+            if needle in row.resource_address.lower() or needle in json.dumps(row.details_json or {}).lower()
         ]
     return [_serialize_alert(row) for row in alerts]
 
 
-async def list_policy_alerts(*, project_id: str, backend_id: str, active_only: bool = False, search: str = "") -> list[dict[str, Any]]:
+async def list_policy_alerts(
+    *, project_id: str, backend_id: str, active_only: bool = False, search: str = ""
+) -> list[dict[str, Any]]:
     await get_state_backend(project_id=project_id, backend_id=backend_id)
     async with db.get_session() as session:
         query = select(PolicyAlert).where(PolicyAlert.backend_id == backend_id)
@@ -1405,7 +1358,9 @@ async def list_policy_alerts(*, project_id: str, backend_id: str, active_only: b
         alerts = [
             row
             for row in alerts
-            if needle in row.resource_address.lower() or needle in row.rule_id.lower() or needle in json.dumps(row.details_json or {}).lower()
+            if needle in row.resource_address.lower()
+            or needle in row.rule_id.lower()
+            or needle in json.dumps(row.details_json or {}).lower()
         ]
     return [_serialize_alert(row) for row in alerts]
 
@@ -1618,16 +1573,3 @@ async def get_project_deploy_drift_summary(project_id: str) -> dict[str, Any]:
         "active_drift_alert_count": active_drift_alert_count,
         "fallback_runtime": None,
     }
-
-
-async def get_gitlab_token_for_user(*, user_id: str, settings: Settings) -> str | None:
-    from app.models import GitLabOAuthToken
-
-    async with db.get_session() as session:
-        rows = await session.execute(select(GitLabOAuthToken).where(GitLabOAuthToken.user_id == user_id))
-        token = rows.scalar_one_or_none()
-    if token is None:
-        return None
-    if token.expires_at and token.expires_at <= _now():
-        return None
-    return decrypt_text(secret=settings.state_encryption_key, value=token.access_token_encrypted)

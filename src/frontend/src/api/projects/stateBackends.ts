@@ -40,11 +40,12 @@ export async function getProjectDeployDriftSummary(
 
 export async function listCloudBuckets(
   projectId: string,
-  options: { provider: string; credentialProfileId: string },
+  options: { provider: string; accessKeyId: string; secretAccessKey: string },
 ): Promise<string[]> {
   const query = new URLSearchParams({
     provider: options.provider,
-    credential_profile_id: options.credentialProfileId,
+    access_key_id: options.accessKeyId,
+    secret_access_key: options.secretAccessKey,
   });
   const res = await apiRequest(`/api/projects/${projectId}/state-backends/import/cloud/buckets?${query.toString()}`, {
     credentials: "include",
@@ -55,11 +56,12 @@ export async function listCloudBuckets(
 
 export async function listCloudObjects(
   projectId: string,
-  options: { provider: string; credentialProfileId: string; bucket: string; prefix?: string },
+  options: { provider: string; accessKeyId: string; secretAccessKey: string; bucket: string; prefix?: string },
 ): Promise<Array<{ key: string; size: number; updated_at: string | null }>> {
   const query = new URLSearchParams({
     provider: options.provider,
-    credential_profile_id: options.credentialProfileId,
+    access_key_id: options.accessKeyId,
+    secret_access_key: options.secretAccessKey,
     bucket: options.bucket,
   });
   if (options.prefix) query.set("prefix", options.prefix);
@@ -75,7 +77,8 @@ export async function importCloudStateBackend(
   payload: {
     provider: string;
     name?: string;
-    credential_profile_id: string;
+    access_key_id: string;
+    secret_access_key: string;
     bucket: string;
     key?: string;
     prefix?: string;
@@ -101,25 +104,6 @@ export async function importStateBackendFromGitHub(
   },
 ): Promise<{ discovered: StateBackendImportCandidate[]; created: StateBackend[] }> {
   const res = await apiRequest(`/api/projects/${projectId}/state-backends/import/github`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return apiJson<{ discovered: StateBackendImportCandidate[]; created: StateBackend[] }>(res);
-}
-
-export async function importStateBackendFromGitLab(
-  projectId: string,
-  payload: {
-    repo_full_name: string;
-    branch?: string | null;
-    credential_profile_id: string;
-    dry_run?: boolean;
-    selected_candidates?: StateBackendImportCandidate[];
-  },
-): Promise<{ discovered: StateBackendImportCandidate[]; created: StateBackend[] }> {
-  const res = await apiRequest(`/api/projects/${projectId}/state-backends/import/gitlab`, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },

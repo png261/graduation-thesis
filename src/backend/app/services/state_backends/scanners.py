@@ -124,7 +124,7 @@ def scan_backend_candidates(files: Iterable[tuple[str, str]]) -> list[dict[str, 
                 row["source_path"] = path
                 candidates.append(row)
             continue
-        if any(token in path_lower for token in (".gitlab-ci", ".github/workflows", ".env", "terraform")):
+        if any(token in path_lower for token in (".github/workflows", ".env", "terraform")):
             ci_hints.update(_extract_ci_vars(content))
 
     if ci_hints.get("bucket"):

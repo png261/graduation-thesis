@@ -9,7 +9,6 @@ service shells under `src/backend/app/`.
 - `identity-project/` -> `app.identity_project_main:app`
 - `conversation/` -> `app.conversation_main:app`
 - `workflow/` -> `app.workflow_main:app`
-- `blueprint/` -> `app.blueprint_main:app`
 - `provisioning/` -> `app.provisioning_main:app`
 - `configuration-incident/` -> `app.configuration_incident_main:app`
 - `scm/` -> `app.scm_main:app`
@@ -69,7 +68,6 @@ Recommended starting deploy order:
 2. identity-project
 3. workflow
 4. conversation
-5. blueprint
-6. provisioning
-7. configuration-incident
-8. scm
+5. provisioning
+6. configuration-incident
+7. scm

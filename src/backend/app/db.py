@@ -1,4 +1,5 @@
 """Database initialisation: AsyncPostgresSaver (checkpoints) + SQLAlchemy ORM."""
+
 from __future__ import annotations
 
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -23,18 +24,11 @@ _exit_stack: AsyncExitStack | None = None
 _LEGACY_PROJECT_COLUMN_PATCHES = (
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS provider VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS credentials TEXT",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS active_blueprints_json JSON",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repo_full_name VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_base_branch VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_working_branch VARCHAR",
     "ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_connected_at TIMESTAMPTZ",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_topic_id VARCHAR",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_topic_title VARCHAR",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_connected_at TIMESTAMPTZ",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_pending_code_hash VARCHAR",
-    "ALTER TABLE projects ADD COLUMN IF NOT EXISTS telegram_pending_expires_at TIMESTAMPTZ",
 )
 
 
@@ -42,7 +36,7 @@ def _sqla_url(conn_string: str) -> str:
     """Convert a plain PostgreSQL URL to the SQLAlchemy+psycopg async dialect."""
     for prefix in ("postgresql://", "postgres://"):
         if conn_string.startswith(prefix):
-            return "postgresql+psycopg" + conn_string[len(prefix) - 3:]
+            return "postgresql+psycopg" + conn_string[len(prefix) - 3 :]
     # Already has a dialect (e.g. postgresql+psycopg://...)
     return conn_string
 
@@ -69,9 +63,7 @@ async def init_db(
     _exit_stack = stack
 
     # LangGraph checkpointer — conversation history keyed by thread_id
-    _saver = await stack.enter_async_context(
-        AsyncPostgresSaver.from_conn_string(conn_string)
-    )
+    _saver = await stack.enter_async_context(AsyncPostgresSaver.from_conn_string(conn_string))
     if run_setup:
         await _saver.setup()
 
@@ -84,7 +76,6 @@ async def init_db(
             await _create_orm_schema(conn)
             # Compatibility path for old databases created before new Project columns.
             await _apply_legacy_project_column_patches(conn)
-
 
 
 async def close_db() -> None:

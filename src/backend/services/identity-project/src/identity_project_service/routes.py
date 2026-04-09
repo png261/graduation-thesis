@@ -25,9 +25,7 @@ from .runtime import conversation_persistence, identity_project_persistence, ide
 from .serializers import (
     mask_credentials,
     merge_credentials,
-    parse_skill_frontmatter,
     project_to_dict,
-    safe_skill_name,
     thread_to_dict,
 )
 
@@ -53,29 +51,7 @@ class ThreadMessageUpsert(BaseModel):
     item: dict[str, Any]
 
 
-class GuestFileImport(BaseModel):
-    path: str
-    content: str
-
-
-class GuestThreadImport(BaseModel):
-    id: str
-    title: str = ""
-
-
-class GuestProjectImport(BaseModel):
-    name: str = "Imported Guest Session"
-    provider: Literal["aws", "gcloud"] = "aws"
-    files: list[GuestFileImport] = []
-    threads: list[GuestThreadImport] = []
-
-
 class MemoryUpdate(BaseModel):
-    content: str
-
-
-class SkillUpsert(BaseModel):
-    description: str = ""
     content: str
 
 
@@ -428,41 +404,6 @@ async def append_thread_message(
     return {"ok": True}
 
 
-@router.post("/api/projects/import-guest")
-async def import_guest_project(
-    body: GuestProjectImport,
-    user: identity_project_persistence.User = Depends(auth_deps.require_current_user),
-) -> dict:
-    project_id = str(uuid.uuid4())
-    project = identity_project_persistence.Project(
-        id=project_id,
-        user_id=user.id,
-        name=body.name.strip() or "Imported Guest Session",
-        provider=body.provider,
-    )
-    async with identity_project_persistence.get_session() as session:
-        session.add(project)
-        for thread in body.threads:
-            session.add(
-                conversation_persistence.Thread(
-                    id=thread.id,
-                    project_id=project_id,
-                    title=thread.title.strip() or "",
-                )
-            )
-
-    for file in body.files:
-        identity_project_service.write_text(project_id, file.path, file.content)
-
-    identity_project_service.invalidate_project_agent(project_id)
-    return {
-        "id": project_id,
-        "name": project.name,
-        "provider": project.provider,
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-
-
 @router.get("/api/projects/{project_id}/memory")
 async def get_memory(
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
@@ -480,51 +421,6 @@ async def update_memory(
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
     identity_project_service.write_text(project.id, "/AGENT.md", body.content)
-    identity_project_service.invalidate_project_agent(project.id)
-    return {"ok": True}
-
-
-@router.get("/api/projects/{project_id}/skills")
-async def list_skills(
-    project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    skills = []
-    for skill_name, content in identity_project_service.iter_skill_files(project.id):
-        description = parse_skill_frontmatter(content)
-        skills.append({"name": skill_name, "description": description, "content": content})
-        skills.sort(key=lambda skill: skill["name"])
-    return {"skills": skills}
-
-
-@router.put("/api/projects/{project_id}/skills/{skill_name}")
-async def upsert_skill(
-    skill_name: str,
-    body: SkillUpsert,
-    project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    try:
-        name = safe_skill_name(skill_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    identity_project_service.write_text(project.id, f"/skills/{name}/SKILL.md", body.content)
-    identity_project_service.invalidate_project_agent(project.id)
-    return {"ok": True, "name": name}
-
-
-@router.delete("/api/projects/{project_id}/skills/{skill_name}")
-async def delete_skill(
-    skill_name: str,
-    project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    try:
-        name = safe_skill_name(skill_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    key = f"/skills/{name}/SKILL.md"
-    try:
-        identity_project_service.delete_file(project.id, key)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Skill not found")
     identity_project_service.invalidate_project_agent(project.id)
     return {"ok": True}
 

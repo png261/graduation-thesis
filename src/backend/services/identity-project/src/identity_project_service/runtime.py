@@ -3,7 +3,6 @@ from fastapi import APIRouter
 from app.app_factory import create_service_app
 from app.core.config import get_settings
 from app.core.service_settings import build_service_settings_bundle
-from app.shared.blueprint import api as blueprint_service
 from app.shared.conversation import persistence as conversation_persistence
 from app.shared.conversation.runtime import runtime as shared_conversation_db
 from app.shared.identity.runtime import runtime as shared_identity_db
@@ -26,7 +25,6 @@ def create_app(router: APIRouter):
 
 
 __all__ = [
-    "blueprint_service",
     "conversation_persistence",
     "create_app",
     "identity_project_persistence",

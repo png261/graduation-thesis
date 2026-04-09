@@ -5,36 +5,22 @@ import {
   createFixAllPlan,
   deleteStateBackend,
   getDriftAlerts,
-  getGitHubSession,
-  getGitLabOauthStart,
-  getGitLabSession,
   getPolicyAlerts,
   getProjectDeployDriftSummary,
   getStateBackendSettings,
   getStateHistory,
   getStateResources,
   importCloudStateBackend,
-  importStateBackendFromGitHub,
-  importStateBackendFromGitLab,
   listCloudBuckets,
   listCloudObjects,
-  listCredentialProfiles,
-  listGitHubRepos,
-  listGitLabRepos,
   listStateBackends,
   setPrimaryStateBackend,
   syncStateBackend,
   updateStateBackendSettings,
-  type CredentialProfile,
   type DriftAlert,
-  type GitHubRepo,
-  type GitHubSession,
-  type GitLabRepo,
-  type GitLabSession,
   type PolicyAlert,
   type ProjectDeployDriftSummary,
   type StateBackend,
-  type StateBackendImportCandidate,
   type StateBackendSettings,
   type StateHistoryItem,
   type StateResource,
@@ -42,16 +28,6 @@ import {
 import { toErrorMessage } from "../../../lib/errors";
 
 type BackendTab = "resources" | "history" | "drift" | "policy" | "settings";
-type ConnectSource = "cloud" | "github" | "gitlab";
-
-function firstProfileForProvider(profiles: CredentialProfile[], provider: string): string {
-  return profiles.find((row) => row.provider === provider)?.id ?? "";
-}
-
-function selectedCandidates(candidates: StateBackendImportCandidate[], selected: Record<string, boolean>) {
-  const rows = candidates.filter((row) => selected[row.name]);
-  return rows.length > 0 ? rows : candidates;
-}
 
 function useBackendState() {
   const [backends, setBackends] = useState<StateBackend[]>([]);
@@ -114,7 +90,8 @@ function useBackendState() {
 
 function useCloudConnectState() {
   const [cloudProvider, setCloudProvider] = useState<"aws" | "gcs">("aws");
-  const [cloudProfileId, setCloudProfileId] = useState("");
+  const [cloudAccessKeyId, setCloudAccessKeyId] = useState("");
+  const [cloudSecretAccessKey, setCloudSecretAccessKey] = useState("");
   const [cloudName, setCloudName] = useState("");
   const [cloudBucket, setCloudBucket] = useState("");
   const [cloudPrefix, setCloudPrefix] = useState("");
@@ -125,8 +102,10 @@ function useCloudConnectState() {
   return {
     cloudProvider,
     setCloudProvider,
-    cloudProfileId,
-    setCloudProfileId,
+    cloudAccessKeyId,
+    setCloudAccessKeyId,
+    cloudSecretAccessKey,
+    setCloudSecretAccessKey,
     cloudName,
     setCloudName,
     cloudBucket,
@@ -144,84 +123,19 @@ function useCloudConnectState() {
   };
 }
 
-function useGithubConnectState() {
-  const [githubSession, setGithubSession] = useState<GitHubSession>({ authenticated: false });
-  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
-  const [githubRepo, setGithubRepo] = useState("");
-  const [githubBranch, setGithubBranch] = useState("");
-  const [githubProfileId, setGithubProfileId] = useState("");
-  const [githubCandidates, setGithubCandidates] = useState<StateBackendImportCandidate[]>([]);
-  const [githubSelectedCandidates, setGithubSelectedCandidates] = useState<Record<string, boolean>>({});
-  return {
-    githubSession,
-    setGithubSession,
-    githubRepos,
-    setGithubRepos,
-    githubRepo,
-    setGithubRepo,
-    githubBranch,
-    setGithubBranch,
-    githubProfileId,
-    setGithubProfileId,
-    githubCandidates,
-    setGithubCandidates,
-    githubSelectedCandidates,
-    setGithubSelectedCandidates,
-  };
-}
-
-function useGitlabConnectState() {
-  const [gitlabSession, setGitlabSession] = useState<GitLabSession>({ authenticated: false });
-  const [gitlabRepos, setGitlabRepos] = useState<GitLabRepo[]>([]);
-  const [gitlabRepo, setGitlabRepo] = useState("");
-  const [gitlabBranch, setGitlabBranch] = useState("");
-  const [gitlabProfileId, setGitlabProfileId] = useState("");
-  const [gitlabCandidates, setGitlabCandidates] = useState<StateBackendImportCandidate[]>([]);
-  const [gitlabSelectedCandidates, setGitlabSelectedCandidates] = useState<Record<string, boolean>>({});
-  return {
-    gitlabSession,
-    setGitlabSession,
-    gitlabRepos,
-    setGitlabRepos,
-    gitlabRepo,
-    setGitlabRepo,
-    gitlabBranch,
-    setGitlabBranch,
-    gitlabProfileId,
-    setGitlabProfileId,
-    gitlabCandidates,
-    setGitlabCandidates,
-    gitlabSelectedCandidates,
-    setGitlabSelectedCandidates,
-  };
-}
-
 function useConnectState() {
   const [connectOpen, setConnectOpen] = useState(false);
-  const [connectSource, setConnectSource] = useState<ConnectSource>("cloud");
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState("");
-  const [profiles, setProfiles] = useState<CredentialProfile[]>([]);
-  const [profilesLoading, setProfilesLoading] = useState(false);
   const cloud = useCloudConnectState();
-  const github = useGithubConnectState();
-  const gitlab = useGitlabConnectState();
   return {
     connectOpen,
     setConnectOpen,
-    connectSource,
-    setConnectSource,
     connectBusy,
     setConnectBusy,
     connectError,
     setConnectError,
-    profiles,
-    setProfiles,
-    profilesLoading,
-    setProfilesLoading,
     ...cloud,
-    ...github,
-    ...gitlab,
   };
 }
 
@@ -319,40 +233,19 @@ function useBackendLoaders(projectId: string, backend: ReturnType<typeof useBack
   return { loadBackends, loadDetails, loadDeployDrift };
 }
 
-function useProfileLoaders(connect: ReturnType<typeof useConnectState>) {
-  const loadProfiles = useCallback(async () => {
-    connect.setProfilesLoading(true);
-    try {
-      const rows = await listCredentialProfiles();
-      connect.setProfiles(rows);
-      connect.setCloudProfileId((prev) => prev || firstProfileForProvider(rows, connect.cloudProvider));
-      connect.setGithubProfileId((prev) => prev || firstProfileForProvider(rows, "aws") || firstProfileForProvider(rows, "gcs"));
-      connect.setGitlabProfileId((prev) => prev || firstProfileForProvider(rows, "aws") || firstProfileForProvider(rows, "gcs"));
-    } catch {
-      connect.setProfiles([]);
-    } finally {
-      connect.setProfilesLoading(false);
-    }
-  }, [
-    connect.cloudProvider,
-    connect.setCloudProfileId,
-    connect.setGithubProfileId,
-    connect.setGitlabProfileId,
-    connect.setProfiles,
-    connect.setProfilesLoading,
-  ]);
-  return { loadProfiles };
-}
-
 function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnectState>) {
   const loadCloudBuckets = useCallback(async () => {
-    if (!connect.cloudProfileId) {
+    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey) {
       connect.setCloudBuckets([]);
       return;
     }
     connect.setCloudLoading(true);
     try {
-      const buckets = await listCloudBuckets(projectId, { provider: connect.cloudProvider, credentialProfileId: connect.cloudProfileId });
+      const buckets = await listCloudBuckets(projectId, {
+        provider: connect.cloudProvider,
+        accessKeyId: connect.cloudAccessKeyId,
+        secretAccessKey: connect.cloudSecretAccessKey,
+      });
       connect.setCloudBuckets(buckets);
       connect.setCloudBucket((prev) => (prev && buckets.includes(prev) ? prev : buckets[0] || ""));
     } catch (error: unknown) {
@@ -362,8 +255,9 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
       connect.setCloudLoading(false);
     }
   }, [
-    connect.cloudProfileId,
+    connect.cloudAccessKeyId,
     connect.cloudProvider,
+    connect.cloudSecretAccessKey,
     connect.setCloudBucket,
     connect.setCloudBuckets,
     connect.setCloudLoading,
@@ -372,7 +266,7 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
   ]);
 
   const loadCloudObjects = useCallback(async () => {
-    if (!connect.cloudProfileId || !connect.cloudBucket) {
+    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey || !connect.cloudBucket) {
       connect.setCloudObjects([]);
       return;
     }
@@ -380,7 +274,8 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
     try {
       const objects = await listCloudObjects(projectId, {
         provider: connect.cloudProvider,
-        credentialProfileId: connect.cloudProfileId,
+        accessKeyId: connect.cloudAccessKeyId,
+        secretAccessKey: connect.cloudSecretAccessKey,
         bucket: connect.cloudBucket,
         prefix: connect.cloudPrefix,
       });
@@ -395,8 +290,9 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
   }, [
     connect.cloudBucket,
     connect.cloudPrefix,
-    connect.cloudProfileId,
+    connect.cloudAccessKeyId,
     connect.cloudProvider,
+    connect.cloudSecretAccessKey,
     connect.setCloudKey,
     connect.setCloudLoading,
     connect.setCloudObjects,
@@ -407,61 +303,8 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
   return { loadCloudBuckets, loadCloudObjects };
 }
 
-function useRepoSourceLoaders(connect: ReturnType<typeof useConnectState>) {
-  const loadGithubSource = useCallback(async () => {
-    try {
-      const session = await getGitHubSession();
-      connect.setGithubSession(session);
-      if (!session.authenticated) {
-        connect.setGithubRepos([]);
-        return;
-      }
-      const repos = await listGitHubRepos();
-      connect.setGithubRepos(repos);
-      connect.setGithubRepo((prev) => prev || repos[0]?.full_name || "");
-      connect.setGithubBranch((prev) => prev || repos[0]?.default_branch || "main");
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "Failed to load GitHub repositories"));
-    }
-  }, [
-    connect.setConnectError,
-    connect.setGithubBranch,
-    connect.setGithubRepo,
-    connect.setGithubRepos,
-    connect.setGithubSession,
-  ]);
-
-  const loadGitlabSource = useCallback(async () => {
-    try {
-      const session = await getGitLabSession();
-      connect.setGitlabSession(session);
-      if (!session.authenticated) {
-        connect.setGitlabRepos([]);
-        return;
-      }
-      const repos = await listGitLabRepos();
-      connect.setGitlabRepos(repos);
-      connect.setGitlabRepo((prev) => prev || repos[0]?.full_name || "");
-      connect.setGitlabBranch((prev) => prev || repos[0]?.default_branch || "main");
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "Failed to load GitLab repositories"));
-    }
-  }, [
-    connect.setConnectError,
-    connect.setGitlabBranch,
-    connect.setGitlabRepo,
-    connect.setGitlabRepos,
-    connect.setGitlabSession,
-  ]);
-
-  return { loadGithubSource, loadGitlabSource };
-}
-
 function useConnectLoaders(projectId: string, connect: ReturnType<typeof useConnectState>) {
-  const profileLoaders = useProfileLoaders(connect);
-  const cloudLoaders = useCloudLoaders(projectId, connect);
-  const repoLoaders = useRepoSourceLoaders(connect);
-  return { ...profileLoaders, ...cloudLoaders, ...repoLoaders };
+  return useCloudLoaders(projectId, connect);
 }
 
 function useConnectActions(
@@ -470,38 +313,10 @@ function useConnectActions(
   connect: ReturnType<typeof useConnectState>,
   loadBackends: () => Promise<void>,
   loadDeployDrift: () => Promise<void>,
-  loadGitlabSource: () => Promise<void>,
 ) {
-  const openGitlabOAuth = useCallback(async () => {
-    const data = await getGitLabOauthStart();
-    const popup = window.open(data.authorize_url, "gitlab-oauth", "width=640,height=720");
-    if (!popup) throw new Error("Unable to open GitLab OAuth popup");
-    await new Promise<void>((resolve, reject) => {
-      const handler = (event: MessageEvent) => {
-        const payload = event.data;
-        if (!payload || payload.source !== "gitlab-oauth") return;
-        window.removeEventListener("message", handler);
-        if (payload.status === "ok") {
-          resolve();
-          return;
-        }
-        reject(new Error(payload.message || "GitLab OAuth failed"));
-      };
-      window.addEventListener("message", handler);
-      const timer = window.setInterval(() => {
-        if (popup.closed) {
-          window.clearInterval(timer);
-          window.removeEventListener("message", handler);
-          resolve();
-        }
-      }, 400);
-    });
-    await loadGitlabSource();
-  }, [loadGitlabSource]);
-
   const runCloudImport = useCallback(async () => {
-    if (!connect.cloudProfileId || !connect.cloudBucket) {
-      connect.setConnectError("Select credential profile and bucket");
+    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey || !connect.cloudBucket) {
+      connect.setConnectError("Provide access key ID, secret key, and bucket");
       return;
     }
     connect.setConnectBusy(true);
@@ -510,7 +325,8 @@ function useConnectActions(
       await importCloudStateBackend(projectId, {
         provider: connect.cloudProvider,
         name: connect.cloudName,
-        credential_profile_id: connect.cloudProfileId,
+        access_key_id: connect.cloudAccessKeyId,
+        secret_access_key: connect.cloudSecretAccessKey,
         bucket: connect.cloudBucket,
         key: connect.cloudKey,
         prefix: connect.cloudPrefix,
@@ -529,8 +345,9 @@ function useConnectActions(
     connect.cloudKey,
     connect.cloudName,
     connect.cloudPrefix,
-    connect.cloudProfileId,
+    connect.cloudAccessKeyId,
     connect.cloudProvider,
+    connect.cloudSecretAccessKey,
     connect.setConnectBusy,
     connect.setConnectError,
     connect.setConnectOpen,
@@ -540,149 +357,7 @@ function useConnectActions(
     pushLog,
   ]);
 
-  const scanGithubRepo = useCallback(async () => {
-    if (!connect.githubRepo || !connect.githubProfileId) {
-      connect.setConnectError("Select repository and credential profile");
-      return;
-    }
-    connect.setConnectBusy(true);
-    connect.setConnectError("");
-    try {
-      const result = await importStateBackendFromGitHub(projectId, {
-        repo_full_name: connect.githubRepo,
-        branch: connect.githubBranch || null,
-        credential_profile_id: connect.githubProfileId,
-        dry_run: true,
-      });
-      connect.setGithubCandidates(result.discovered);
-      connect.setGithubSelectedCandidates(Object.fromEntries(result.discovered.map((row) => [row.name, true])));
-      if (result.discovered.length < 1) connect.setConnectError("No backend configuration found in repository");
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "Failed to scan GitHub repository"));
-    } finally {
-      connect.setConnectBusy(false);
-    }
-  }, [
-    connect.githubBranch,
-    connect.githubProfileId,
-    connect.githubRepo,
-    connect.setConnectBusy,
-    connect.setConnectError,
-    connect.setGithubCandidates,
-    connect.setGithubSelectedCandidates,
-    projectId,
-  ]);
-
-  const importGithubRepo = useCallback(async () => {
-    if (!connect.githubRepo || !connect.githubProfileId) {
-      connect.setConnectError("Select repository and credential profile");
-      return;
-    }
-    connect.setConnectBusy(true);
-    connect.setConnectError("");
-    try {
-      const result = await importStateBackendFromGitHub(projectId, {
-        repo_full_name: connect.githubRepo,
-        branch: connect.githubBranch || null,
-        credential_profile_id: connect.githubProfileId,
-        selected_candidates: selectedCandidates(connect.githubCandidates, connect.githubSelectedCandidates),
-      });
-      pushLog(`Imported ${result.created.length} backend(s) from GitHub`);
-      connect.setConnectOpen(false);
-      await loadBackends();
-      await loadDeployDrift();
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "GitHub import failed"));
-    } finally {
-      connect.setConnectBusy(false);
-    }
-  }, [
-    connect.githubBranch,
-    connect.githubCandidates,
-    connect.githubProfileId,
-    connect.githubRepo,
-    connect.githubSelectedCandidates,
-    connect.setConnectBusy,
-    connect.setConnectError,
-    connect.setConnectOpen,
-    loadBackends,
-    loadDeployDrift,
-    projectId,
-    pushLog,
-  ]);
-
-  const scanGitlabRepo = useCallback(async () => {
-    if (!connect.gitlabRepo || !connect.gitlabProfileId) {
-      connect.setConnectError("Select repository and credential profile");
-      return;
-    }
-    connect.setConnectBusy(true);
-    connect.setConnectError("");
-    try {
-      const result = await importStateBackendFromGitLab(projectId, {
-        repo_full_name: connect.gitlabRepo,
-        branch: connect.gitlabBranch || null,
-        credential_profile_id: connect.gitlabProfileId,
-        dry_run: true,
-      });
-      connect.setGitlabCandidates(result.discovered);
-      connect.setGitlabSelectedCandidates(Object.fromEntries(result.discovered.map((row) => [row.name, true])));
-      if (result.discovered.length < 1) connect.setConnectError("No backend configuration found in repository");
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "Failed to scan GitLab repository"));
-    } finally {
-      connect.setConnectBusy(false);
-    }
-  }, [
-    connect.gitlabBranch,
-    connect.gitlabProfileId,
-    connect.gitlabRepo,
-    connect.setConnectBusy,
-    connect.setConnectError,
-    connect.setGitlabCandidates,
-    connect.setGitlabSelectedCandidates,
-    projectId,
-  ]);
-
-  const importGitlabRepo = useCallback(async () => {
-    if (!connect.gitlabRepo || !connect.gitlabProfileId) {
-      connect.setConnectError("Select repository and credential profile");
-      return;
-    }
-    connect.setConnectBusy(true);
-    connect.setConnectError("");
-    try {
-      const result = await importStateBackendFromGitLab(projectId, {
-        repo_full_name: connect.gitlabRepo,
-        branch: connect.gitlabBranch || null,
-        credential_profile_id: connect.gitlabProfileId,
-        selected_candidates: selectedCandidates(connect.gitlabCandidates, connect.gitlabSelectedCandidates),
-      });
-      pushLog(`Imported ${result.created.length} backend(s) from GitLab`);
-      connect.setConnectOpen(false);
-      await loadBackends();
-      await loadDeployDrift();
-    } catch (error: unknown) {
-      connect.setConnectError(toErrorMessage(error, "GitLab import failed"));
-    } finally {
-      connect.setConnectBusy(false);
-    }
-  }, [
-    connect.gitlabBranch,
-    connect.gitlabCandidates,
-    connect.gitlabProfileId,
-    connect.gitlabRepo,
-    connect.gitlabSelectedCandidates,
-    connect.setConnectBusy,
-    connect.setConnectError,
-    connect.setConnectOpen,
-    loadBackends,
-    loadDeployDrift,
-    projectId,
-    pushLog,
-  ]);
-
-  return { openGitlabOAuth, runCloudImport, scanGithubRepo, importGithubRepo, scanGitlabRepo, importGitlabRepo };
+  return { runCloudImport };
 }
 
 function useBackendActions(
@@ -765,11 +440,8 @@ function useStateBackendsEffects(args: {
   loadBackends: () => Promise<void>;
   loadDetails: () => Promise<void>;
   loadDeployDrift: () => Promise<void>;
-  loadProfiles: () => Promise<void>;
   loadCloudBuckets: () => Promise<void>;
   loadCloudObjects: () => Promise<void>;
-  loadGithubSource: () => Promise<void>;
-  loadGitlabSource: () => Promise<void>;
 }) {
   useEffect(() => {
     void args.loadBackends();
@@ -786,21 +458,18 @@ function useStateBackendsEffects(args: {
   useEffect(() => {
     if (!args.connect.connectOpen) return;
     args.connect.setConnectError("");
-    void args.loadProfiles();
-    if (args.connect.connectSource === "cloud") void args.loadCloudBuckets();
-    if (args.connect.connectSource === "github") void args.loadGithubSource();
-    if (args.connect.connectSource === "gitlab") void args.loadGitlabSource();
-  }, [args.connect.connectOpen, args.connect.connectSource, args.connect.setConnectError, args.loadCloudBuckets, args.loadGithubSource, args.loadGitlabSource, args.loadProfiles]);
-
-  useEffect(() => {
-    if (!args.connect.connectOpen || args.connect.connectSource !== "cloud") return;
     void args.loadCloudBuckets();
-  }, [args.connect.cloudProvider, args.connect.cloudProfileId, args.connect.connectOpen, args.connect.connectSource, args.loadCloudBuckets]);
+  }, [args.connect.connectOpen, args.connect.setConnectError, args.loadCloudBuckets]);
 
   useEffect(() => {
-    if (!args.connect.connectOpen || args.connect.connectSource !== "cloud") return;
+    if (!args.connect.connectOpen) return;
+    void args.loadCloudBuckets();
+  }, [args.connect.cloudAccessKeyId, args.connect.cloudProvider, args.connect.cloudSecretAccessKey, args.connect.connectOpen, args.loadCloudBuckets]);
+
+  useEffect(() => {
+    if (!args.connect.connectOpen) return;
     void args.loadCloudObjects();
-  }, [args.connect.cloudBucket, args.connect.cloudPrefix, args.connect.connectOpen, args.connect.connectSource, args.loadCloudObjects]);
+  }, [args.connect.cloudAccessKeyId, args.connect.cloudBucket, args.connect.cloudPrefix, args.connect.cloudSecretAccessKey, args.connect.connectOpen, args.loadCloudObjects]);
 
   useEffect(() => {
     args.backend.setResources([]);
@@ -866,11 +535,6 @@ function buildConnectWorkspaceResult(args: {
   loadBackends: () => Promise<void>;
   loadDetails: () => Promise<void>;
   runCloudImport: () => Promise<void>;
-  scanGithubRepo: () => Promise<void>;
-  importGithubRepo: () => Promise<void>;
-  scanGitlabRepo: () => Promise<void>;
-  importGitlabRepo: () => Promise<void>;
-  openGitlabOAuth: () => Promise<void>;
   syncSelectedBackend: () => Promise<void>;
   removeSelectedBackend: () => Promise<void>;
   saveSettings: () => Promise<void>;
@@ -881,16 +545,14 @@ function buildConnectWorkspaceResult(args: {
   return {
     connectOpen: args.connect.connectOpen,
     setConnectOpen: args.connect.setConnectOpen,
-    connectSource: args.connect.connectSource,
-    setConnectSource: args.connect.setConnectSource,
     connectBusy: args.connect.connectBusy,
     connectError: args.connect.connectError,
-    profiles: args.connect.profiles,
-    profilesLoading: args.connect.profilesLoading,
     cloudProvider: args.connect.cloudProvider,
     setCloudProvider: args.connect.setCloudProvider,
-    cloudProfileId: args.connect.cloudProfileId,
-    setCloudProfileId: args.connect.setCloudProfileId,
+    cloudAccessKeyId: args.connect.cloudAccessKeyId,
+    setCloudAccessKeyId: args.connect.setCloudAccessKeyId,
+    cloudSecretAccessKey: args.connect.cloudSecretAccessKey,
+    setCloudSecretAccessKey: args.connect.setCloudSecretAccessKey,
     cloudName: args.connect.cloudName,
     setCloudName: args.connect.setCloudName,
     cloudBucket: args.connect.cloudBucket,
@@ -902,36 +564,9 @@ function buildConnectWorkspaceResult(args: {
     cloudBuckets: args.connect.cloudBuckets,
     cloudObjects: args.connect.cloudObjects,
     cloudLoading: args.connect.cloudLoading,
-    githubSession: args.connect.githubSession,
-    githubRepos: args.connect.githubRepos,
-    githubRepo: args.connect.githubRepo,
-    setGithubRepo: args.connect.setGithubRepo,
-    githubBranch: args.connect.githubBranch,
-    setGithubBranch: args.connect.setGithubBranch,
-    githubProfileId: args.connect.githubProfileId,
-    setGithubProfileId: args.connect.setGithubProfileId,
-    githubCandidates: args.connect.githubCandidates,
-    githubSelectedCandidates: args.connect.githubSelectedCandidates,
-    setGithubSelectedCandidates: args.connect.setGithubSelectedCandidates,
-    gitlabSession: args.connect.gitlabSession,
-    gitlabRepos: args.connect.gitlabRepos,
-    gitlabRepo: args.connect.gitlabRepo,
-    setGitlabRepo: args.connect.setGitlabRepo,
-    gitlabBranch: args.connect.gitlabBranch,
-    setGitlabBranch: args.connect.setGitlabBranch,
-    gitlabProfileId: args.connect.gitlabProfileId,
-    setGitlabProfileId: args.connect.setGitlabProfileId,
-    gitlabCandidates: args.connect.gitlabCandidates,
-    gitlabSelectedCandidates: args.connect.gitlabSelectedCandidates,
-    setGitlabSelectedCandidates: args.connect.setGitlabSelectedCandidates,
     loadBackends: args.loadBackends,
     loadDetails: args.loadDetails,
     runCloudImport: args.runCloudImport,
-    scanGithubRepo: args.scanGithubRepo,
-    importGithubRepo: args.importGithubRepo,
-    scanGitlabRepo: args.scanGitlabRepo,
-    importGitlabRepo: args.importGitlabRepo,
-    openGitlabOAuth: args.openGitlabOAuth,
     syncSelectedBackend: args.syncSelectedBackend,
     removeSelectedBackend: args.removeSelectedBackend,
     saveSettings: args.saveSettings,
@@ -948,11 +583,6 @@ function buildStateBackendsResult(args: {
   loadBackends: () => Promise<void>;
   loadDetails: () => Promise<void>;
   runCloudImport: () => Promise<void>;
-  scanGithubRepo: () => Promise<void>;
-  importGithubRepo: () => Promise<void>;
-  scanGitlabRepo: () => Promise<void>;
-  importGitlabRepo: () => Promise<void>;
-  openGitlabOAuth: () => Promise<void>;
   syncSelectedBackend: () => Promise<void>;
   removeSelectedBackend: () => Promise<void>;
   saveSettings: () => Promise<void>;
@@ -967,11 +597,6 @@ function buildStateBackendsResult(args: {
       loadBackends: args.loadBackends,
       loadDetails: args.loadDetails,
       runCloudImport: args.runCloudImport,
-      scanGithubRepo: args.scanGithubRepo,
-      importGithubRepo: args.importGithubRepo,
-      scanGitlabRepo: args.scanGitlabRepo,
-      importGitlabRepo: args.importGitlabRepo,
-      openGitlabOAuth: args.openGitlabOAuth,
       syncSelectedBackend: args.syncSelectedBackend,
       removeSelectedBackend: args.removeSelectedBackend,
       saveSettings: args.saveSettings,
@@ -990,21 +615,8 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     [backend.backends, backend.selectedBackendId],
   );
   const { loadBackends, loadDetails, loadDeployDrift } = useBackendLoaders(projectId, backend);
-  const {
-    loadProfiles,
-    loadCloudBuckets,
-    loadCloudObjects,
-    loadGithubSource,
-    loadGitlabSource,
-  } = useConnectLoaders(projectId, connect);
-  const {
-    openGitlabOAuth,
-    runCloudImport,
-    scanGithubRepo,
-    importGithubRepo,
-    scanGitlabRepo,
-    importGitlabRepo,
-  } = useConnectActions(projectId, pushLog, connect, loadBackends, loadDeployDrift, loadGitlabSource);
+  const { loadCloudBuckets, loadCloudObjects } = useConnectLoaders(projectId, connect);
+  const { runCloudImport } = useConnectActions(projectId, pushLog, connect, loadBackends, loadDeployDrift);
   const {
     syncSelectedBackend,
     removeSelectedBackend,
@@ -1021,11 +633,8 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     loadBackends,
     loadDetails,
     loadDeployDrift,
-    loadProfiles,
     loadCloudBuckets,
     loadCloudObjects,
-    loadGithubSource,
-    loadGitlabSource,
   });
 
   return buildStateBackendsResult({
@@ -1035,11 +644,6 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     loadBackends,
     loadDetails,
     runCloudImport,
-    scanGithubRepo,
-    importGithubRepo,
-    scanGitlabRepo,
-    importGitlabRepo,
-    openGitlabOAuth,
     syncSelectedBackend,
     removeSelectedBackend,
     saveSettings,

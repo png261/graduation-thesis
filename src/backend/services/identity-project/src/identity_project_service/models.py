@@ -38,7 +38,6 @@ class Project(IdentityProjectBase):
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider: Mapped[str | None] = mapped_column(String, nullable=True)
     credentials: Mapped[str | None] = mapped_column(Text, nullable=True)
-    active_blueprints_json: Mapped[dict[str, dict] | None] = mapped_column(JSON, nullable=True)
     github_repo_full_name: Mapped[str | None] = mapped_column(String, nullable=True)
     github_repository_id: Mapped[str | None] = mapped_column(String, nullable=True)
     github_repository_owner: Mapped[str | None] = mapped_column(String, nullable=True)

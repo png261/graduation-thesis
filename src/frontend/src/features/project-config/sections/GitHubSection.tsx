@@ -130,11 +130,11 @@ function GitHubConnectedState({ state }: { state: ProjectConfigState }) {
 function GitHubConfirmationNotice({ state }: { state: ProjectConfigState }) {
   if (!state.pendingRepositoryConfirmation) return null;
   return (
-    <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-100">
+    <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-700">
       <AlertTitle>Replace workspace files?</AlertTitle>
       <AlertDescription className="space-y-2">
         <p>{state.pendingRepositoryConfirmation.confirmationMessage}</p>
-        <p>Only AGENTS.md, .agents/skills/, .claude/skills/, .opentofu-runtime/, and .git are preserved automatically.</p>
+        <p>Only AGENTS.md, .opentofu-runtime/, and .git are preserved automatically.</p>
       </AlertDescription>
     </Alert>
   );
@@ -163,7 +163,7 @@ function GitHubResultAlerts({ state }: { state: ProjectConfigState }) {
           <a href={state.lastPullRequestUrl} target="_blank" rel="noreferrer" className="underline">{state.lastPullRequestUrl}</a>
         </AlertDescription>
       </Alert> : null}
-      {state.githubError ? <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+      {state.githubError ? <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
         <AlertTitle>GitHub error</AlertTitle>
         <AlertDescription>{state.githubError}</AlertDescription>
       </Alert> : null}

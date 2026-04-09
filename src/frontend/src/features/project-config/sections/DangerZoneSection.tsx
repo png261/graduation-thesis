@@ -16,7 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../..
 function DeleteProjectError({ deleteError }: { deleteError: string }) {
   if (!deleteError) return null;
   return (
-    <Alert className="border-red-500/40 bg-red-500/10 text-red-100">
+    <Alert className="border-red-500/40 bg-red-500/10 text-red-700">
       <AlertTitle>Delete failed</AlertTitle>
       <AlertDescription>{deleteError}</AlertDescription>
     </Alert>
@@ -69,7 +69,7 @@ export function DangerZoneSection({
   return (
     <Card className="border-red-500/40 bg-red-950/10 xl:col-span-2">
       <CardHeader>
-        <CardTitle className="text-base text-red-200">Danger Zone</CardTitle>
+        <CardTitle className="text-base text-red-700">Danger Zone</CardTitle>
         <CardDescription>Permanently delete this project and its workspace data.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

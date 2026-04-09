@@ -96,12 +96,14 @@ function SidebarTabSelector({ state }: { state: FilesystemPanelState }) {
           <button
             key={value}
             type="button"
-            disabled={state.isGuest && value !== "code"}
+            disabled={false}
             onClick={() => state.setWorkspaceTab(value)}
             className={cn(
-              "inline-flex h-12 items-center justify-center gap-2 rounded-lg border text-base font-semibold",
-              state.workspaceTab === value ? "border-white/30 bg-white/[0.08] text-white" : "border-transparent bg-transparent text-white/75 hover:bg-white/[0.05] hover:text-white",
-              state.isGuest && value !== "code" && "cursor-not-allowed opacity-40",
+              "inline-flex h-12 items-center justify-center gap-2 rounded-lg border text-sm font-semibold",
+              state.workspaceTab === value
+                ? "border-[var(--da-accent)] bg-[color-mix(in_srgb,var(--da-accent)_10%,var(--da-elevated))] text-[var(--da-text)]"
+                : "border-transparent bg-transparent text-[var(--da-muted)] hover:bg-[var(--da-panel)] hover:text-[var(--da-text)]",
+              "cursor-not-allowed opacity-40",
             )}
           >
             <Icon className="h-4 w-4" />
@@ -115,16 +117,52 @@ function SidebarTabSelector({ state }: { state: FilesystemPanelState }) {
 
 function CodeSidebar({ state, actions }: { state: FilesystemPanelState; actions: FilesystemPanelActions }) {
   return (
-    <ExplorerPanel tree={state.tree} selectedPath={state.selectedPath} selectedPaths={state.selectedPaths} readOnly={state.isGuest} expandedFolders={state.expandedFolders} toggleFolder={state.toggleFolder} onOpenFile={actions.onOpenFile} onSelectionChange={actions.onSelectionChange} onMovePaths={actions.onMove} onRenamePath={actions.onRename} onDelete={actions.onDelete} onRefresh={actions.onRefresh} newItemMode={state.newItemMode} setNewItemMode={state.setNewItemMode} onNewFile={actions.onNewFile} onNewFolder={actions.onNewFolder} onOpenImportGitHub={state.openImportRepoDialog} onUploadZip={actions.onUploadZip} importBusy={state.importRepoBusy || state.zipImportBusy} importError={state.importRepoError || state.zipImportError} />
+    <ExplorerPanel
+      tree={state.tree}
+      selectedPath={state.selectedPath}
+      selectedPaths={state.selectedPaths}
+      expandedFolders={state.expandedFolders}
+      toggleFolder={state.toggleFolder}
+      onOpenFile={actions.onOpenFile}
+      onSelectionChange={actions.onSelectionChange}
+      onMovePaths={actions.onMove}
+      onRenamePath={actions.onRename}
+      onDelete={actions.onDelete}
+      onRefresh={actions.onRefresh}
+      newItemMode={state.newItemMode}
+      setNewItemMode={state.setNewItemMode}
+      onNewFile={actions.onNewFile}
+      onNewFolder={actions.onNewFolder}
+      onOpenImportGitHub={state.openImportRepoDialog}
+      onUploadZip={actions.onUploadZip}
+      importBusy={state.importRepoBusy || state.zipImportBusy}
+      importError={state.importRepoError || state.zipImportError}
+    />
   );
 }
 
 function CostsSidebar({ state }: { state: FilesystemPanelState }) {
-  return <CostsWorkspaceSidebarPanel data={state.costData} scope={state.costScope} onScopeChange={state.setCostScope} className="h-full overflow-y-auto" />;
+  return (
+    <CostsWorkspaceSidebarPanel
+      data={state.costData}
+      scope={state.costScope}
+      onScopeChange={state.setCostScope}
+      className="h-full overflow-y-auto"
+    />
+  );
 }
 
 function GraphSidebarView({ state, actions }: { state: FilesystemPanelState; actions: FilesystemPanelActions }) {
-  return <GraphSidebar modules={state.graphModules} scope={state.graphScope} loading={state.graphLoading} onScopeChange={state.setGraphScope} onRefresh={actions.onRefreshGraph} className="h-full w-full border-r-0" />;
+  return (
+    <GraphSidebar
+      modules={state.graphModules}
+      scope={state.graphScope}
+      loading={state.graphLoading}
+      onScopeChange={state.setGraphScope}
+      onRefresh={actions.onRefreshGraph}
+      className="h-full w-full border-r-0"
+    />
+  );
 }
 
 function JobsSidebar({ state }: { state: FilesystemPanelState }) {
@@ -166,7 +204,15 @@ function WorkspaceSidebarContent({ state, actions }: { state: FilesystemPanelSta
   return <JobsSidebar state={state} />;
 }
 
-function CodeMainToolbar({ selectedPath, content, isLoading }: { selectedPath: string | null; content: string; isLoading: boolean }) {
+function CodeMainToolbar({
+  selectedPath,
+  content,
+  isLoading,
+}: {
+  selectedPath: string | null;
+  content: string;
+  isLoading: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const canCopy = Boolean(!isLoading && content && isCopyableFile(selectedPath));
 
@@ -187,12 +233,26 @@ function CodeMainToolbar({ selectedPath, content, isLoading }: { selectedPath: s
   };
 
   return (
-    <div className="flex h-14 items-center justify-between gap-3 border-b border-[var(--da-border)] bg-[#0c1018] px-4">
+    <div className="flex h-14 items-center justify-between gap-3 border-b border-[var(--da-border)] bg-[var(--da-panel)] px-4">
       <div className="flex min-w-0 items-center gap-3">
-        <span className="truncate font-mono text-lg text-white/85">{selectedPath || "No file selected"}</span>
-        <span className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-sm font-medium text-white/75">v0.0.1</span>
+        <span className="truncate font-mono text-sm font-medium text-[var(--da-text)]">
+          {selectedPath || "No file selected"}
+        </span>
+        <span className="rounded-full border border-[var(--da-border)] bg-[var(--da-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--da-muted)]">
+          v0.0.1
+        </span>
       </div>
-      <button type="button" onClick={() => void handleCopy()} disabled={!canCopy} className={cn("inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold", canCopy ? "text-white hover:bg-white/[0.06]" : "cursor-not-allowed text-white/35")}>
+      <button
+        type="button"
+        onClick={() => void handleCopy()}
+        disabled={!canCopy}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold",
+          canCopy
+            ? "text-[var(--da-text)] hover:bg-[var(--da-elevated)]"
+            : "cursor-not-allowed text-[var(--da-muted)]/65",
+        )}
+      >
         {copied ? <Check className="h-4 w-4 text-emerald-300" /> : <Copy className="h-4 w-4" />}
         {copied ? "Copied" : "Copy code"}
       </button>
@@ -202,21 +262,53 @@ function CodeMainToolbar({ selectedPath, content, isLoading }: { selectedPath: s
 
 function CodeMainView({ state, projectId }: { state: FilesystemPanelState; projectId: string }) {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#0a0e15]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--da-bg)]">
       <CodeMainToolbar selectedPath={state.selectedPath} content={state.content} isLoading={state.isLoading} />
       <div className="min-h-0 flex-1">
-        <EditorPane projectId={projectId} selectedPath={state.selectedPath} readOnly={state.isGuest} isLoading={state.isLoading} language={state.language} content={state.content} setContent={state.setContent} exportError={state.exportError} workflowError={state.workflowError} />
+        <EditorPane
+          projectId={projectId}
+          selectedPath={state.selectedPath}
+          isLoading={state.isLoading}
+          language={state.language}
+          content={state.content}
+          setContent={state.setContent}
+          exportError={state.exportError}
+          workflowError={state.workflowError}
+        />
       </div>
     </div>
   );
 }
 
 function CostsMainView({ state, actions }: { state: FilesystemPanelState; actions: FilesystemPanelActions }) {
-  return <CostsWorkspaceMainPanel data={state.costData} loading={state.costLoading} error={state.costError} onRefresh={actions.onRefreshCosts} expandedResourceIds={state.expandedCostResources} onToggleResource={state.toggleCostResource} />;
+  return (
+    <CostsWorkspaceMainPanel
+      data={state.costData}
+      loading={state.costLoading}
+      error={state.costError}
+      onRefresh={actions.onRefreshCosts}
+      expandedResourceIds={state.expandedCostResources}
+      onToggleResource={state.toggleCostResource}
+    />
+  );
 }
 
 function GraphMainView({ state }: { state: FilesystemPanelState }) {
-  return <GraphWorkspaceMainPanel data={state.graphData} loading={state.graphLoading} error={state.graphError} scope={state.graphScope} mode={state.graphViewMode} onModeChange={state.setGraphViewMode} modules={state.graphModules} stale={state.graphStale} selectedNodeId={state.selectedGraphNodeId} onSelectedNodeIdChange={state.setSelectedGraphNodeId} selectedNode={state.selectedGraphNode} />;
+  return (
+    <GraphWorkspaceMainPanel
+      data={state.graphData}
+      loading={state.graphLoading}
+      error={state.graphError}
+      scope={state.graphScope}
+      mode={state.graphViewMode}
+      onModeChange={state.setGraphViewMode}
+      modules={state.graphModules}
+      stale={state.graphStale}
+      selectedNodeId={state.selectedGraphNodeId}
+      onSelectedNodeIdChange={state.setSelectedGraphNodeId}
+      selectedNode={state.selectedGraphNode}
+    />
+  );
 }
 
 function JobsMainView({ state }: { state: FilesystemPanelState }) {
@@ -265,7 +357,15 @@ function StateBackendsMainView({ state }: { state: FilesystemPanelState }) {
   );
 }
 
-function WorkspaceMainContent({ state, actions, projectId }: { state: FilesystemPanelState; actions: FilesystemPanelActions; projectId: string }) {
+function WorkspaceMainContent({
+  state,
+  actions,
+  projectId,
+}: {
+  state: FilesystemPanelState;
+  actions: FilesystemPanelActions;
+  projectId: string;
+}) {
   if (state.workspaceTab === "code") return <CodeMainView state={state} projectId={projectId} />;
   if (state.workspaceTab === "costs") return <CostsMainView state={state} actions={actions} />;
   if (state.workspaceTab === "graph") return <GraphMainView state={state} />;
@@ -276,28 +376,72 @@ function WorkspaceMainContent({ state, actions, projectId }: { state: Filesystem
 function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; actions: FilesystemPanelActions }) {
   return (
     <>
-      <CreateRepoDialog open={state.createRepoOpen} onOpenChange={state.setCreateRepoOpen} name={state.createRepoName} onNameChange={state.setCreateRepoName} description={state.createRepoDescription} onDescriptionChange={state.setCreateRepoDescription} isPrivate={state.createRepoPrivate} onPrivateChange={state.setCreateRepoPrivate} busy={state.createRepoBusy} error={state.createRepoError} onSubmit={actions.onCreateRepo} />
-      <CreatePullRequestDialog open={state.prOpen} onOpenChange={state.setPrOpen} loading={state.prLoading} title={state.prTitle} onTitleChange={state.setPrTitle} baseBranch={state.prBaseBranch} onBaseBranchChange={state.setPrBaseBranch} description={state.prDescription} onDescriptionChange={state.setPrDescription} error={state.prError} busy={state.prBusy} onSubmit={actions.onCreatePullRequest} githubConnected={Boolean(state.githubStatus?.connected)} placeholderBase={state.githubStatus?.base_branch || "main"} workingBranch={state.prWorkingBranch || state.githubStatus?.working_branch || ""} suggestionCopy={state.prSuggestionCopy} />
-      <ImportRepoDialog open={state.importRepoOpen} onOpenChange={state.setImportRepoOpen} loading={state.importRepoLoading} busy={state.importRepoBusy} error={state.importRepoError} connected={Boolean(state.githubStatus?.connected)} actionLabel={state.githubStatus?.connected ? "Sync Repository Baseline" : "Import Repository"} pendingConfirmationMessage={state.pendingRepositoryConfirmation?.confirmationMessage || ""} session={state.importRepoSession} repos={state.importRepoList} repoName={state.importRepoName} onRepoNameChange={(value) => {
-        state.clearPendingRepositoryConfirmation();
-        state.setImportRepoName(value);
-      }} baseBranch={state.importBaseBranch} onBaseBranchChange={(value) => {
-        state.clearPendingRepositoryConfirmation();
-        state.setImportBaseBranch(value);
-      }} onLogin={state.handleImportRepoLogin} onSubmit={actions.onImportFromGithub} />
+      <CreateRepoDialog
+        open={state.createRepoOpen}
+        onOpenChange={state.setCreateRepoOpen}
+        name={state.createRepoName}
+        onNameChange={state.setCreateRepoName}
+        description={state.createRepoDescription}
+        onDescriptionChange={state.setCreateRepoDescription}
+        isPrivate={state.createRepoPrivate}
+        onPrivateChange={state.setCreateRepoPrivate}
+        busy={state.createRepoBusy}
+        error={state.createRepoError}
+        onSubmit={actions.onCreateRepo}
+      />
+      <CreatePullRequestDialog
+        open={state.prOpen}
+        onOpenChange={state.setPrOpen}
+        loading={state.prLoading}
+        title={state.prTitle}
+        onTitleChange={state.setPrTitle}
+        baseBranch={state.prBaseBranch}
+        onBaseBranchChange={state.setPrBaseBranch}
+        description={state.prDescription}
+        onDescriptionChange={state.setPrDescription}
+        error={state.prError}
+        busy={state.prBusy}
+        onSubmit={actions.onCreatePullRequest}
+        githubConnected={Boolean(state.githubStatus?.connected)}
+        placeholderBase={state.githubStatus?.base_branch || "main"}
+        workingBranch={state.prWorkingBranch || state.githubStatus?.working_branch || ""}
+        suggestionCopy={state.prSuggestionCopy}
+      />
+      <ImportRepoDialog
+        open={state.importRepoOpen}
+        onOpenChange={state.setImportRepoOpen}
+        loading={state.importRepoLoading}
+        busy={state.importRepoBusy}
+        error={state.importRepoError}
+        connected={Boolean(state.githubStatus?.connected)}
+        actionLabel={state.githubStatus?.connected ? "Sync Repository Baseline" : "Import Repository"}
+        pendingConfirmationMessage={state.pendingRepositoryConfirmation?.confirmationMessage || ""}
+        session={state.importRepoSession}
+        repos={state.importRepoList}
+        repoName={state.importRepoName}
+        onRepoNameChange={(value) => {
+          state.clearPendingRepositoryConfirmation();
+          state.setImportRepoName(value);
+        }}
+        baseBranch={state.importBaseBranch}
+        onBaseBranchChange={(value) => {
+          state.clearPendingRepositoryConfirmation();
+          state.setImportBaseBranch(value);
+        }}
+        onLogin={state.handleImportRepoLogin}
+        onSubmit={actions.onImportFromGithub}
+      />
       <StateBackendsConnectDialog
         open={state.stateConnectOpen}
         onOpenChange={state.setStateConnectOpen}
-        source={state.stateConnectSource}
-        onSourceChange={state.setStateConnectSource}
         busy={state.stateConnectBusy}
         error={state.stateConnectError}
-        profiles={state.stateProfiles}
-        profilesLoading={state.stateProfilesLoading}
         cloudProvider={state.stateCloudProvider}
         setCloudProvider={state.setStateCloudProvider}
-        cloudProfileId={state.stateCloudProfileId}
-        setCloudProfileId={state.setStateCloudProfileId}
+        cloudAccessKeyId={state.stateCloudAccessKeyId}
+        setCloudAccessKeyId={state.setStateCloudAccessKeyId}
+        cloudSecretAccessKey={state.stateCloudSecretAccessKey}
+        setCloudSecretAccessKey={state.setStateCloudSecretAccessKey}
         cloudName={state.stateCloudName}
         setCloudName={state.setStateCloudName}
         cloudBucket={state.stateCloudBucket}
@@ -308,34 +452,7 @@ function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; ac
         setCloudKey={state.setStateCloudKey}
         cloudBuckets={state.stateCloudBuckets}
         cloudObjects={state.stateCloudObjects}
-        githubSession={state.stateGithubSession}
-        githubRepos={state.stateGithubRepos}
-        githubRepo={state.stateGithubRepo}
-        setGithubRepo={state.setStateGithubRepo}
-        githubBranch={state.stateGithubBranch}
-        setGithubBranch={state.setStateGithubBranch}
-        githubProfileId={state.stateGithubProfileId}
-        setGithubProfileId={state.setStateGithubProfileId}
-        githubCandidates={state.stateGithubCandidates}
-        githubSelectedCandidates={state.stateGithubSelectedCandidates}
-        setGithubSelectedCandidates={state.setStateGithubSelectedCandidates}
-        gitlabSession={state.stateGitlabSession}
-        gitlabRepos={state.stateGitlabRepos}
-        gitlabRepo={state.stateGitlabRepo}
-        setGitlabRepo={state.setStateGitlabRepo}
-        gitlabBranch={state.stateGitlabBranch}
-        setGitlabBranch={state.setStateGitlabBranch}
-        gitlabProfileId={state.stateGitlabProfileId}
-        setGitlabProfileId={state.setStateGitlabProfileId}
-        gitlabCandidates={state.stateGitlabCandidates}
-        gitlabSelectedCandidates={state.stateGitlabSelectedCandidates}
-        setGitlabSelectedCandidates={state.setStateGitlabSelectedCandidates}
         onRunCloudImport={state.runStateCloudImport}
-        onScanGitHub={state.scanStateGithubRepo}
-        onImportGitHub={state.importStateGithubRepo}
-        onConnectGitlab={state.connectStateGitlabOAuth}
-        onScanGitLab={state.scanStateGitlabRepo}
-        onImportGitLab={state.importStateGitlabRepo}
       />
     </>
   );
@@ -344,7 +461,7 @@ function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; ac
 export function FilesystemPanel({ projectId, state, actions }: FilesystemPanelProps) {
   return (
     <div className="flex h-full min-h-0 overflow-hidden border-l border-[var(--da-border)] bg-[var(--da-panel)]">
-      <aside className="flex h-full w-[320px] min-w-[280px] flex-col border-r border-[var(--da-border)] bg-[#0f131b]">
+      <aside className="flex h-full w-[352px] min-w-[304px] flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
         <SidebarTabSelector state={state} />
         <div className="min-h-0 flex-1 overflow-hidden">
           <WorkspaceSidebarContent state={state} actions={actions} />
@@ -361,7 +478,7 @@ export function FilesystemPanel({ projectId, state, actions }: FilesystemPanelPr
 export function FilesystemJobsPage({ state }: { state: FilesystemPanelState }) {
   return (
     <div className="flex h-full min-h-0 overflow-hidden border-l border-[var(--da-border)] bg-[var(--da-panel)]">
-      <aside className="flex h-full w-[320px] min-w-[280px] flex-col border-r border-[var(--da-border)] bg-[#0f131b]">
+      <aside className="flex h-full w-[352px] min-w-[304px] flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
         <div className="min-h-0 flex-1 overflow-hidden">
           <JobsSidebar state={state} />
         </div>
@@ -382,7 +499,7 @@ export function FilesystemStatePage({
 }) {
   return (
     <div className="flex h-full min-h-0 overflow-hidden border-l border-[var(--da-border)] bg-[var(--da-panel)]">
-      <aside className="flex h-full w-[320px] min-w-[280px] flex-col border-r border-[var(--da-border)] bg-[#0f131b]">
+      <aside className="flex h-full w-[352px] min-w-[304px] flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
         <div className="min-h-0 flex-1 overflow-hidden">
           <StateBackendsSidebar state={state} />
         </div>
