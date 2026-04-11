@@ -31,8 +31,6 @@ Replace placeholder values before deploying:
 
 - per-service database URL
 - Redis URL
-- Celery broker URL
-- Celery result backend
 
 ## Recommended AWS Rollout Order
 

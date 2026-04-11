@@ -50,7 +50,6 @@ function CreateProjectProviderField({ model }: { model: CreateProjectDialogModel
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="aws">AWS</SelectItem>
-          <SelectItem value="gcloud">GCP</SelectItem>
         </SelectContent>
       </Select>
     </div>
@@ -82,9 +81,6 @@ export function CreateProjectDialog({ model }: { model: CreateProjectDialogModel
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create Project</DialogTitle>
-          <DialogDescription>
-            Create an empty project. You can import from GitHub or upload ZIP in File View.
-          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <CreateProjectNameField model={model} />

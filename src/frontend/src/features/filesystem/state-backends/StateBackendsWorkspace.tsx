@@ -1,6 +1,7 @@
 import { Cloud, Database, RefreshCw, ShieldAlert, ShieldCheck, Zap } from "lucide-react";
 
 import type {
+  CredentialProfile,
   DriftAlert,
   PolicyAlert,
   ProjectDeployDriftSummary,
@@ -313,10 +314,9 @@ function SettingsPanel(props: {
 function CloudConnectPanel(props: {
   provider: "aws" | "gcs";
   setProvider: (provider: "aws" | "gcs") => void;
-  accessKeyId: string;
-  setAccessKeyId: (value: string) => void;
-  secretAccessKey: string;
-  setSecretAccessKey: (value: string) => void;
+  profiles: CredentialProfile[];
+  credentialProfileId: string;
+  setCredentialProfileId: (value: string) => void;
   name: string;
   setName: (value: string) => void;
   bucket: string;
@@ -338,13 +338,25 @@ function CloudConnectPanel(props: {
         </select>
       </label>
       <label className="space-y-1 text-sm">
-        <span>Access Key ID</span>
-        <Input value={props.accessKeyId} onChange={(event) => props.setAccessKeyId(event.target.value)} placeholder="AKIA..." />
+        <span>Credential Profile</span>
+        <select
+          className="h-9 w-full rounded border border-[var(--da-border)] bg-[var(--da-panel)] px-2"
+          value={props.credentialProfileId}
+          onChange={(event) => props.setCredentialProfileId(event.target.value)}
+        >
+          <option value="">Select saved profile</option>
+          {props.profiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name}
+            </option>
+          ))}
+        </select>
       </label>
-      <label className="space-y-1 text-sm">
-        <span>Secret Access Key</span>
-        <Input type="password" value={props.secretAccessKey} onChange={(event) => props.setSecretAccessKey(event.target.value)} placeholder="Enter secret key" />
-      </label>
+      {props.profiles.length < 1 ? (
+        <p className="text-xs text-[var(--da-muted)]">
+          Add a credential profile in Project Configuration before importing a cloud backend.
+        </p>
+      ) : null}
       <label className="space-y-1 text-sm">
         <span>Backend Name</span>
         <Input value={props.name} onChange={(event) => props.setName(event.target.value)} placeholder="My Terraform State" />
@@ -378,10 +390,9 @@ type StateBackendsConnectDialogProps = {
   error: string;
   cloudProvider: "aws" | "gcs";
   setCloudProvider: (provider: "aws" | "gcs") => void;
-  cloudAccessKeyId: string;
-  setCloudAccessKeyId: (value: string) => void;
-  cloudSecretAccessKey: string;
-  setCloudSecretAccessKey: (value: string) => void;
+  cloudProfiles: CredentialProfile[];
+  cloudCredentialProfileId: string;
+  setCloudCredentialProfileId: (value: string) => void;
   cloudName: string;
   setCloudName: (value: string) => void;
   cloudBucket: string;
@@ -406,10 +417,9 @@ export function StateBackendsConnectDialog(props: StateBackendsConnectDialogProp
           <CloudConnectPanel
             provider={props.cloudProvider}
             setProvider={props.setCloudProvider}
-            accessKeyId={props.cloudAccessKeyId}
-            setAccessKeyId={props.setCloudAccessKeyId}
-            secretAccessKey={props.cloudSecretAccessKey}
-            setSecretAccessKey={props.setCloudSecretAccessKey}
+            profiles={props.cloudProfiles}
+            credentialProfileId={props.cloudCredentialProfileId}
+            setCredentialProfileId={props.setCloudCredentialProfileId}
             name={props.cloudName}
             setName={props.setCloudName}
             bucket={props.cloudBucket}

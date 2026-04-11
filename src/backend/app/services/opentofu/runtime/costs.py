@@ -1,4 +1,5 @@
 """OpenTofu cost estimation via Infracost CLI."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,8 +14,7 @@ from typing import Any
 
 from redis import Redis
 
-from app.core.config import get_settings
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.services.project import files as project_files
 
 from .shared import collect_module_var_files, discover_modules_from_project_dir, load_project, project_lock
@@ -128,7 +128,9 @@ def _normalise_resource(
     name = str(resource.get("name") or "unknown")
     resource_type = str(resource.get("resourceType") or "unknown")
     monthly_cost = _to_money(_to_float(resource.get("monthlyCost")))
-    components, total_quantity, quantity_unit = _normalise_components(module, name, resource.get("costComponents") or [])
+    components, total_quantity, quantity_unit = _normalise_components(
+        module, name, resource.get("costComponents") or []
+    )
     return {
         "id": f"{module}:{name}",
         "module": module,
@@ -161,7 +163,9 @@ def _normalise_components(
     return components, total_quantity, quantity_unit
 
 
-def _normalise_component(module: str, resource_name: str, index: int, component: dict[str, Any]) -> tuple[dict[str, Any], float, str]:
+def _normalise_component(
+    module: str, resource_name: str, index: int, component: dict[str, Any]
+) -> tuple[dict[str, Any], float, str]:
     comp_quantity = _to_float(component.get("monthlyQuantity"))
     comp_unit = str(component.get("unit") or "").strip()
     return (
@@ -205,7 +209,9 @@ def _ensure_costs_ready(
             modules=modules,
         )
     if not (settings.infracost_api_key or "").strip():
-        return _error_payload("missing_api_key", "INFRACOST_API_KEY is not configured.", project_found=True, modules=modules)
+        return _error_payload(
+            "missing_api_key", "INFRACOST_API_KEY is not configured.", project_found=True, modules=modules
+        )
     return None
 
 
@@ -307,7 +313,9 @@ async def _collect_cost_rows(
             if payload is None:
                 warnings.append(f"Module '{module}' failed cost estimate: {error or 'unknown error'}")
                 continue
-            payload_currency, module_cost = _append_module_costs(module, payload, resource_rows=resource_rows, module_rows=module_rows)
+            payload_currency, module_cost = _append_module_costs(
+                module, payload, resource_rows=resource_rows, module_rows=module_rows
+            )
             if isinstance(payload_currency, str) and payload_currency.strip():
                 currency = payload_currency.strip().upper()
             total_monthly_cost += module_cost
@@ -338,6 +346,11 @@ def _scope_and_cache_key(project_id: str, module_scope: str) -> tuple[str, str]:
 def _cached_cost_result(cache_key: str, refresh: bool) -> dict[str, Any] | None:
     if refresh:
         return None
+    return _cache_get(cache_key)
+
+
+def peek_cached_costs(*, project_id: str, module_scope: str = "all") -> dict[str, Any] | None:
+    _, cache_key = _scope_and_cache_key(project_id, module_scope)
     return _cache_get(cache_key)
 
 

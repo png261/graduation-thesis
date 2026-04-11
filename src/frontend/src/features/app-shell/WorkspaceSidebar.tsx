@@ -1,4 +1,4 @@
-import { Database, ListChecks, LogOut, MessageSquareText, Settings, Settings2, UserRound } from "lucide-react";
+import { Database, LogOut, MessageSquareText, Settings, Settings2, UserRound } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
@@ -12,8 +12,8 @@ interface WorkspaceSidebarProps {
   onLogin: () => void;
   onLogout: () => void;
   onOpenUserSettings: () => void;
-  workspaceTab: "view" | "jobs" | "state" | "config";
-  onChange: (tab: "view" | "jobs" | "state" | "config") => void;
+  workspaceTab: "view" | "state" | "config";
+  onChange: (tab: "view" | "state" | "config") => void;
 }
 
 function WorkspaceTabActions({
@@ -21,9 +21,9 @@ function WorkspaceTabActions({
   canOpenConfig,
   onChange,
 }: {
-  workspaceTab: "view" | "jobs" | "state" | "config";
+  workspaceTab: "view" | "state" | "config";
   canOpenConfig: boolean;
-  onChange: (tab: "view" | "jobs" | "state" | "config") => void;
+  onChange: (tab: "view" | "state" | "config") => void;
 }) {
   return (
     <>
@@ -37,17 +37,6 @@ function WorkspaceTabActions({
       >
         <MessageSquareText className="h-4 w-4" />
         <span className="sr-only">Chat</span>
-      </Button>
-      <Button
-        variant={workspaceTab === "jobs" ? "default" : "ghost"}
-        size="icon"
-        className="h-10 w-10"
-        title="Jobs"
-        aria-label="Jobs"
-        onClick={() => onChange("jobs")}
-      >
-        <ListChecks className="h-4 w-4" />
-        <span className="sr-only">Jobs</span>
       </Button>
       <Button
         variant={workspaceTab === "state" ? "default" : "ghost"}

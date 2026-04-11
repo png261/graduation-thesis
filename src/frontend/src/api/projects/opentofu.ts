@@ -4,13 +4,10 @@ import type {
   OpenTofuGraphResult,
   OpenTofuPreviewResult,
   OpenTofuStatus,
-  ProjectJob,
   ProjectDriftStatus,
-  ProjectRunHistoryResult,
   ProjectSsmReadiness,
   ProjectTerraformTargetContract,
 } from "./types";
-import { rerunProjectJob } from "./jobs";
 
 export interface OpenTofuDeployChecklistItem {
   name: string;
@@ -229,26 +226,6 @@ export async function getOpenTofuGraph(
     credentials: "include",
   });
   return apiJson<OpenTofuGraphResult>(res);
-}
-
-export async function getProjectRunHistory(
-  projectId: string,
-  options?: { limit?: number; offset?: number },
-): Promise<ProjectRunHistoryResult> {
-  const query = new URLSearchParams();
-  if (typeof options?.limit === "number") query.set("limit", String(options.limit));
-  if (typeof options?.offset === "number") query.set("offset", String(options.offset));
-  const suffix = query.size > 0 ? `?${query}` : "";
-  const res = await apiRequest(`/api/projects/${projectId}/runs/history${suffix}`, {
-    credentials: "include",
-  });
-  return apiJson<ProjectRunHistoryResult>(res);
-}
-
-export async function rerunPostDeployChecks(projectId: string, jobId: string): Promise<ProjectJob> {
-  return rerunProjectJob(projectId, jobId, {
-    options: { post_deploy_only: true },
-  });
 }
 
 export async function getProjectDriftStatus(projectId: string): Promise<ProjectDriftStatus> {

@@ -4,7 +4,6 @@ from app.app_factory import create_service_app
 from app.core.config import get_settings
 from app.core.service_settings import build_service_settings_bundle
 from app.shared.identity.runtime import runtime as identity_project_db
-from app.shared.workflow import api as workflow_service
 
 from . import api as conversation_service
 from . import persistence as conversation_persistence
@@ -28,5 +27,4 @@ __all__ = [
     "conversation_service",
     "create_app",
     "settings",
-    "workflow_service",
 ]

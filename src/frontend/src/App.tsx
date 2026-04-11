@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { useAuth } from "./contexts/AuthContext";
 import { FilesystemContextProvider } from "./contexts/FilesystemContext";
-import { createFilesystemPanelActions, FilesystemJobsPage, FilesystemStatePage } from "./components/FilesystemPanel";
+import { createFilesystemPanelActions, FilesystemStatePage } from "./components/FilesystemPanel";
 import { ProjectViewTab, WorkspaceHeader, WorkspaceSidebar } from "./features/app-shell";
 import { useFilesystemPanelState } from "./features/filesystem";
 import {
@@ -92,8 +92,8 @@ function ProjectLoadErrorState({
 type WorkspaceShellArgs = {
   userScope: string;
   currentProjectId: string;
-  workspaceTab: "view" | "jobs" | "state" | "config";
-  setWorkspaceTab: (tab: "view" | "jobs" | "state" | "config") => void;
+  workspaceTab: "view" | "state" | "config";
+  setWorkspaceTab: (tab: "view" | "state" | "config") => void;
   session: ReturnType<typeof useAuth>["session"];
   login: () => void;
   logout: () => Promise<void>;
@@ -131,25 +131,6 @@ function WorkspaceProjectHeader({
       onOpenPullRequest={panelState.openPullRequestDialog}
       onRunWorkflow={panelActions.onRunWorkflow}
     />
-  );
-}
-
-function JobsPage({
-  args,
-  panelState,
-  panelActions,
-}: {
-  args: WorkspaceShellArgs;
-  panelState: ReturnType<typeof useFilesystemPanelState>;
-  panelActions: ReturnType<typeof createFilesystemPanelActions>;
-}) {
-  return (
-    <div className="flex h-full max-h-full min-h-0 flex-col overflow-hidden bg-[var(--da-panel)]">
-      <WorkspaceProjectHeader args={args} panelState={panelState} panelActions={panelActions} />
-      <div className="min-h-0 flex-1">
-        <FilesystemJobsPage state={panelState} />
-      </div>
-    </div>
   );
 }
 
@@ -204,8 +185,6 @@ function WorkspaceBody({ args }: { args: WorkspaceShellArgs }) {
           panelState={panelState}
           panelActions={panelActions}
         />
-      ) : args.workspaceTab === "jobs" ? (
-        <JobsPage args={args} panelState={panelState} panelActions={panelActions} />
       ) : args.workspaceTab === "state" ? (
         <StatePage args={args} panelState={panelState} panelActions={panelActions} />
       ) : (
@@ -217,10 +196,6 @@ function WorkspaceBody({ args }: { args: WorkspaceShellArgs }) {
             projectCount={args.projects.length}
             onDeleteProject={async () => {
               await args.deleteProject(args.currentProjectId);
-            }}
-            onOpenRunDetails={(runId) => {
-              panelState.setSelectedJobId(runId);
-              args.setWorkspaceTab("jobs");
             }}
           />
         </div>
@@ -271,7 +246,7 @@ export default function App() {
   const userId = session.user?.id;
   const userScope = `user:${userId ?? "unknown"}`;
   const projectsState = useProjects({ authenticated, userId });
-  const [workspaceTab, setWorkspaceTab] = useState<"view" | "jobs" | "state" | "config">("view");
+  const [workspaceTab, setWorkspaceTab] = useState<"view" | "state" | "config">("view");
   const createDialog = useProjectCreateDialog({ createProject: projectsState.createProject });
   const renameDialog = useRenameProjectDialog({
     currentProjectName: projectsState.currentProject?.name ?? "",

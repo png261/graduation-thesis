@@ -40,11 +40,6 @@ class ConversationAgentSettings:
 class WorkflowSettings:
     database_url: str
     redis_url: str
-    celery_broker_url: str
-    celery_result_backend: str
-    jobs_event_ttl_seconds: int
-    jobs_event_tail_limit: int
-    jobs_history_retention_days: int
 
 
 @dataclass(frozen=True)
@@ -120,11 +115,6 @@ def build_service_settings_bundle(settings: Settings) -> ServiceSettingsBundle:
         workflow=WorkflowSettings(
             database_url=settings.service_database_url("workflow", settings.workflow_database_url),
             redis_url=settings.redis_url,
-            celery_broker_url=settings.celery_broker_url,
-            celery_result_backend=settings.celery_result_backend,
-            jobs_event_ttl_seconds=settings.jobs_event_ttl_seconds,
-            jobs_event_tail_limit=settings.jobs_event_tail_limit,
-            jobs_history_retention_days=settings.jobs_history_retention_days,
         ),
         provisioning=ProvisioningSettings(
             database_url=settings.service_database_url("provisioning", settings.provisioning_database_url),

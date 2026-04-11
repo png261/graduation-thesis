@@ -5,26 +5,72 @@ from __future__ import annotations
 from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
+from deepagents.backends.protocol import EditResult, FileUploadResponse, WriteResult
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy import select
 
 from app import db
 from app.core.config import Settings
-from app.models import Project
 from app.services.model.factory import create_chat_model, get_agent_store
 from app.services.project import files as project_files
 
+from .config_loader import CONFIG_MOUNT_PATH, AgentRuntimeConfig, build_runtime_subagents, load_runtime_config
 from .context import DeepAgentContext
-from .iac_templates import provider_credential_vars
-from .prompts import (
-    PROMPT_BUNDLE,
-    build_async_infra_subagents,
-    build_context_engineering_middleware,
-)
 from .tools import build_project_tools
 
 _agents: dict[str, CompiledStateGraph] = {}
+_RUNTIME_SYSTEM_PROMPT = """
+Follow the user's request directly.
+
+Use config-backed memory, skills, and subagents progressively:
+- Do not inspect `/.agent-config/` or enumerate every skill before starting.
+- Rely on the registered skill list first and open only the minimal `SKILL.md` files that clearly match the current task.
+- Read a subagent's prompt only when you are about to delegate to that subagent.
+"""
+
+
+class _ReadOnlyFilesystemBackend(FilesystemBackend):
+    def _write_blocked(self, path: str) -> str:
+        return f"Error: '{path}' is part of the internal agent config and is read-only."
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        return WriteResult(error=self._write_blocked(file_path))
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        return self.write(file_path, content)
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        return EditResult(error=self._write_blocked(file_path))
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        return self.edit(file_path, old_string, new_string, replace_all=replace_all)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return [FileUploadResponse(path=path, error="permission_denied") for path, _ in files]
+
+
+def _runtime_backend(project_root: str, config_root: str) -> CompositeBackend:
+    return CompositeBackend(
+        default=FilesystemBackend(root_dir=project_root, virtual_mode=True),
+        routes={
+            f"{CONFIG_MOUNT_PATH}/": _ReadOnlyFilesystemBackend(
+                root_dir=config_root,
+                virtual_mode=True,
+            ),
+        },
+    )
 
 
 def invalidate_agent(project_id: str) -> None:
@@ -38,48 +84,55 @@ def clear_agent_cache() -> None:
     _agents.clear()
 
 
-def _build_runtime_subagents(settings: Settings) -> list[dict[str, Any]]:
-    if not settings.agent_async_subagents_enabled:
-        return [dict(item) for item in PROMPT_BUNDLE.infra_subagents]
-    graph_ids = settings.async_subagent_graph_ids()
-    if not graph_ids:
-        raise ValueError(
-            "AGENT_ASYNC_SUBAGENT_GRAPH_IDS is required when AGENT_ASYNC_SUBAGENTS_ENABLED is true",
-        )
+def _single_line(text: str, limit: int = 140) -> str:
+    compact = " ".join(text.split())
+    return compact if len(compact) <= limit else f"{compact[: limit - 3].rstrip()}..."
+
+
+def _catalog_lines(title: str, items: list[str]) -> list[str]:
+    if not items:
+        return []
+    return ["", title, *[f"- {item}" for item in items]]
+
+
+def _skill_lines(runtime_config: AgentRuntimeConfig | None) -> list[str]:
+    if runtime_config is None:
+        return []
+    return [f"{item['name']}: {_single_line(item['description'])}" for item in runtime_config.skills]
+
+
+def _subagent_lines(runtime_config: AgentRuntimeConfig | None) -> list[str]:
+    if runtime_config is None:
+        return []
     return [
-        dict(item)
-        for item in build_async_infra_subagents(
-            graph_ids,
-            url=settings.agent_async_subagents_url,
-            headers=settings.async_subagent_headers(),
-        )
+        f"{str(item.get('name') or '').strip()}: {_single_line(str(item.get('description') or ''))}"
+        for item in runtime_config.subagents
+        if str(item.get("name") or "").strip()
     ]
 
 
-async def _load_provider_context(project_id: str) -> str:
-    """Return a system-prompt section describing provider and variable-only credential usage."""
-    try:
-        async with db.get_session() as session:
-            result = await session.execute(select(Project).where(Project.id == project_id))
-            project = result.scalar_one_or_none()
+def _tool_lines(tools: list[Any] | None) -> list[str]:
+    if not tools:
+        return []
+    lines: list[str] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "").strip()
+        if not name:
+            continue
+        description = _single_line(str(getattr(tool, "description", "") or "Tool available in this session."))
+        lines.append(f"{name}: {description}")
+    return lines
 
-        if project is None or not project.provider:
-            return ""
 
-        provider_label = {
-            "aws": "AWS (Amazon Web Services)",
-            "gcloud": "Google Cloud Platform",
-        }.get(project.provider, project.provider)
-        lines = [f"## Cloud Provider\nProvider: {provider_label}"]
-        lines.append("Never include raw credentials in code or prompts. Use Terraform variables only.")
-        vars_by_provider = provider_credential_vars(project.provider)
-        if vars_by_provider:
-            lines.append("Credential variables to reference:")
-            lines.extend(f"  - var.{name}" for name in vars_by_provider)
-
-        return "\n".join(lines)
-    except Exception:
-        return ""
+def _runtime_system_prompt(
+    runtime_config: AgentRuntimeConfig | None = None,
+    tools: list[Any] | None = None,
+) -> str:
+    sections = [_RUNTIME_SYSTEM_PROMPT.strip(), "", "Available capabilities in this session:"]
+    sections.extend(_catalog_lines("Skills:", _skill_lines(runtime_config)))
+    sections.extend(_catalog_lines("Tools:", _tool_lines(tools)))
+    sections.extend(_catalog_lines("Subagents:", _subagent_lines(runtime_config)))
+    return "\n".join(sections).strip()
 
 
 async def get_agent(settings: Settings, project_id: str = "default") -> CompiledStateGraph:
@@ -89,11 +142,13 @@ async def get_agent(settings: Settings, project_id: str = "default") -> Compiled
     if not settings.llm_model:
         raise ValueError("LLM_MODEL is not set")
 
+    runtime_config = load_runtime_config()
     cache_key = (
         f"{settings.llm_base_url}:{settings.llm_api_key}:{settings.llm_model}:"
         f"{int(settings.opentofu_mcp_enabled)}:{settings.opentofu_mcp_url}:"
         f"{int(settings.agent_async_subagents_enabled)}:{settings.agent_async_subagents_url}:"
-        f"{settings.agent_async_subagents_graph_ids}:{settings.agent_async_subagents_headers}:{project_id}"
+        f"{settings.agent_async_subagents_graph_ids}:{settings.agent_async_subagents_headers}:"
+        f"{runtime_config.cache_token}:{project_id}"
     )
 
     if cache_key in _agents:
@@ -101,27 +156,22 @@ async def get_agent(settings: Settings, project_id: str = "default") -> Compiled
 
     model = create_chat_model(settings)
     store = await get_agent_store(settings)
-    provider_ctx = await _load_provider_context(project_id)
-    full_system_prompt = PROMPT_BUNDLE.system_prompt + (f"\n\n{provider_ctx}" if provider_ctx else "")
     pid = project_id
     project_root = project_files.ensure_project_dir(pid)
     tools, mcp_ready = await build_project_tools(settings, pid)
-    subagents = _build_runtime_subagents(settings)
-
-    def _backend_factory(_: Any) -> FilesystemBackend:
-        return FilesystemBackend(root_dir=project_root, virtual_mode=True)
+    backend = _runtime_backend(str(project_root), str(runtime_config.config_dir))
 
     agent = create_deep_agent(
         tools=tools,
-        system_prompt=full_system_prompt,
-        middleware=build_context_engineering_middleware(int(settings.incident_token_budget or 16000)),
+        system_prompt=_runtime_system_prompt(runtime_config, tools),
         model=model,
         checkpointer=db.get_checkpointer(),
         store=store,
-        memory=["/AGENT.md"],
-        subagents=subagents,
+        memory=runtime_config.memory_paths,
+        subagents=build_runtime_subagents(settings, runtime_config.subagents),
+        skills=runtime_config.skill_paths,
         context_schema=DeepAgentContext,
-        backend=_backend_factory,
+        backend=backend,
     )
 
     if settings.opentofu_mcp_enabled and not mcp_ready:

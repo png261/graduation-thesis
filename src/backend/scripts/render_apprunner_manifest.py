@@ -47,10 +47,6 @@ run:
       value: REPLACE_ME
     - name: REDIS_URL
       value: REPLACE_ME
-    - name: CELERY_BROKER_URL
-      value: REPLACE_ME
-    - name: CELERY_RESULT_BACKEND
-      value: REPLACE_ME
 """
 
 

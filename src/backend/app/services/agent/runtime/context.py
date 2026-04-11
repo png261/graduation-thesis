@@ -23,8 +23,10 @@ class CostModuleContext:
 @dataclass(frozen=True)
 class InfraCostContext:
     currency: str = "USD"
+    scope: str = "all"
     total_monthly_cost: float = 0.0
     generated_at: str = ""
+    available_modules: tuple[str, ...] = ()
     modules: tuple[CostModuleContext, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -92,14 +94,25 @@ def _cost_modules(payload: dict[str, Any]) -> tuple[CostModuleContext, ...]:
     return tuple(row for row in modules if row is not None)
 
 
+def _available_modules(payload: dict[str, Any]) -> tuple[str, ...]:
+    rows = []
+    for item in payload.get("available_modules") or []:
+        name = str(item or "").strip()
+        if name:
+            rows.append(name)
+    return tuple(rows)
+
+
 def build_infra_cost_context(payload: dict[str, Any]) -> InfraCostContext | None:
     if payload.get("status") != "ok":
         return None
     warnings = tuple(str(item) for item in payload.get("warnings") or [] if str(item).strip())
     return InfraCostContext(
         currency=str(payload.get("currency") or "USD").upper(),
+        scope=str(payload.get("scope") or "all"),
         total_monthly_cost=_money(payload.get("total_monthly_cost")),
         generated_at=str(payload.get("generated_at") or ""),
+        available_modules=_available_modules(payload),
         modules=_cost_modules(payload),
         warnings=warnings,
     )

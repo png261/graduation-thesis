@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from app.services.agent import _DEFAULT_AGENT_MD, invalidate_agent
+from app.services.agent import invalidate_agent
 from app.services.opentofu.runtime.shared import required_credential_fields as required_credential_fields_impl
 from app.services.project import credentials as project_credentials
 from app.services.project import files as project_files
 
-DEFAULT_AGENT_MD = _DEFAULT_AGENT_MD
 MoveConflictError = project_files.MoveConflictError
 
 

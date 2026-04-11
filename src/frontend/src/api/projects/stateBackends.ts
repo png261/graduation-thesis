@@ -40,13 +40,14 @@ export async function getProjectDeployDriftSummary(
 
 export async function listCloudBuckets(
   projectId: string,
-  options: { provider: string; accessKeyId: string; secretAccessKey: string },
+  options: { provider: string; credentialProfileId?: string | null; accessKeyId?: string; secretAccessKey?: string },
 ): Promise<string[]> {
   const query = new URLSearchParams({
     provider: options.provider,
-    access_key_id: options.accessKeyId,
-    secret_access_key: options.secretAccessKey,
   });
+  if (options.credentialProfileId) query.set("credential_profile_id", options.credentialProfileId);
+  if (options.accessKeyId) query.set("access_key_id", options.accessKeyId);
+  if (options.secretAccessKey) query.set("secret_access_key", options.secretAccessKey);
   const res = await apiRequest(`/api/projects/${projectId}/state-backends/import/cloud/buckets?${query.toString()}`, {
     credentials: "include",
   });
@@ -56,14 +57,22 @@ export async function listCloudBuckets(
 
 export async function listCloudObjects(
   projectId: string,
-  options: { provider: string; accessKeyId: string; secretAccessKey: string; bucket: string; prefix?: string },
+  options: {
+    provider: string;
+    credentialProfileId?: string | null;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+    bucket: string;
+    prefix?: string;
+  },
 ): Promise<Array<{ key: string; size: number; updated_at: string | null }>> {
   const query = new URLSearchParams({
     provider: options.provider,
-    access_key_id: options.accessKeyId,
-    secret_access_key: options.secretAccessKey,
     bucket: options.bucket,
   });
+  if (options.credentialProfileId) query.set("credential_profile_id", options.credentialProfileId);
+  if (options.accessKeyId) query.set("access_key_id", options.accessKeyId);
+  if (options.secretAccessKey) query.set("secret_access_key", options.secretAccessKey);
   if (options.prefix) query.set("prefix", options.prefix);
   const res = await apiRequest(`/api/projects/${projectId}/state-backends/import/cloud/objects?${query.toString()}`, {
     credentials: "include",
@@ -77,8 +86,9 @@ export async function importCloudStateBackend(
   payload: {
     provider: string;
     name?: string;
-    access_key_id: string;
-    secret_access_key: string;
+    credential_profile_id?: string | null;
+    access_key_id?: string;
+    secret_access_key?: string;
     bucket: string;
     key?: string;
     prefix?: string;

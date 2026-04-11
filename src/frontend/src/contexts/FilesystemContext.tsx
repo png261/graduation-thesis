@@ -1,7 +1,14 @@
 import { createContext, useContext, useRef } from "react";
 import type { MutableRefObject, PropsWithChildren } from "react";
 
-type RefreshCallback = (path?: string) => void;
+export interface FilesystemSyncEvent {
+  path?: string;
+  behavior?: "refresh" | "follow";
+  previewContent?: string;
+  source?: "tool.start" | "tool.result";
+}
+
+type RefreshCallback = (event?: FilesystemSyncEvent) => void;
 type PolicyCheckCallback = (event: PolicyCheckEvent) => void;
 
 export interface PolicyCheckIssue {
@@ -40,8 +47,8 @@ export type PolicyCheckEvent =
     };
 
 interface FilesystemContextValue {
-  /** Called by LocalRuntimeProvider when write_file / edit_file tool completes. */
-  notifyFileChanged: (path?: string) => void;
+  /** Called by LocalRuntimeProvider when agent file activity should reach the filesystem UI. */
+  notifyFileChanged: (event?: FilesystemSyncEvent) => void;
   /** FilesystemPanel registers itself here on mount to receive change signals. */
   registerRefreshCallback: (fn: RefreshCallback) => () => void;
   notifyPolicyCheck: (event: PolicyCheckEvent) => void;
@@ -72,7 +79,7 @@ function useCallbackRegistry<T>() {
 }
 
 export function FilesystemContextProvider({ children }: PropsWithChildren) {
-  const refreshRegistry = useCallbackRegistry<string | undefined>();
+  const refreshRegistry = useCallbackRegistry<FilesystemSyncEvent | undefined>();
   const policyRegistry = useCallbackRegistry<PolicyCheckEvent>();
   const value: FilesystemContextValue = {
     notifyFileChanged: refreshRegistry.notify as RefreshCallback,

@@ -1,11 +1,10 @@
 import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 
-import { useFilesystemContext } from "../../contexts/FilesystemContext";
+import { useFilesystemContext, type FilesystemSyncEvent } from "../../contexts/FilesystemContext";
 import { useFilesystem } from "../../hooks/useFilesystem";
 import { useCostWorkspace } from "./costs/useCostWorkspace";
 import { buildTree, detectLanguage } from "./explorer/tree";
 import { useGraphWorkspace } from "./graph/useGraphWorkspace";
-import { useJobsWorkspace } from "./jobs/useJobsWorkspace";
 import { useStateBackendsWorkspace } from "./state-backends/useStateBackendsWorkspace";
 import { useFilesystemPanelActions } from "./useFilesystemPanelActions";
 import { useFilesystemPanelEffects } from "./useFilesystemPanelEffects";
@@ -17,12 +16,12 @@ interface FilesystemPanelStateParams {
   authenticated: boolean;
 }
 
-function usePanelUiState(authenticated: boolean) {
+function usePanelUiState() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [newItemMode, setNewItemMode] = useState<"file" | "folder" | null>(null);
   const [activityLogs, setActivityLogs] = useState<string[]>([]);
-  const [workspaceTab, setWorkspaceTab] = useState<"code" | "costs" | "graph" | "jobs" | "state">("code");
+  const [workspaceTab, setWorkspaceTab] = useState<"code" | "costs" | "graph" | "state">("code");
   const pushLog = useCallback((message: string) => {
     const stamp = new Date().toLocaleTimeString([], { hour12: false });
     setActivityLogs((prev) => [`[${stamp}] ${message}`, ...prev].slice(0, 300));
@@ -59,15 +58,17 @@ function useDerivedFilesystemState(files: ReturnType<typeof useFilesystem>["file
 function buildPanelEffectsArgs(params: {
   authenticated: boolean;
   projectId: string;
-  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
-  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void;
+  workspaceTab: "code" | "costs" | "graph" | "state";
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "state") => void;
   files: ReturnType<typeof useFilesystem>["files"];
   selectedPath: string | null;
   fetchFiles: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  followFile: (path: string, previewContent?: string) => Promise<void>;
   pushLog: (message: string) => void;
   setExpandedFolders: React.Dispatch<React.SetStateAction<Set<string>>>;
-  registerRefreshCallback: ReturnType<typeof useFilesystemContext>["registerRefreshCallback"];
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>;
+  registerRefreshCallback: (callback: (event?: FilesystemSyncEvent) => void) => () => void;
   registerPolicyCheckCallback: ReturnType<typeof useFilesystemContext>["registerPolicyCheckCallback"];
   appendProblems: ReturnType<typeof useWorkflowRunner>["appendProblems"];
   resetWorkflow: ReturnType<typeof useWorkflowRunner>["resetWorkflow"];
@@ -209,27 +210,6 @@ function graphSection(graph: ReturnType<typeof useGraphWorkspace>) {
   };
 }
 
-function jobsSection(jobs: ReturnType<typeof useJobsWorkspace>) {
-  return {
-    jobs: jobs.jobs,
-    jobsLoading: jobs.jobsLoading,
-    jobsError: jobs.jobsError,
-    jobsStatusFilter: jobs.jobsStatusFilter,
-    setJobsStatusFilter: jobs.setJobsStatusFilter,
-    jobsKindFilter: jobs.jobsKindFilter,
-    setJobsKindFilter: jobs.setJobsKindFilter,
-    selectedJobId: jobs.selectedJobId,
-    setSelectedJobId: jobs.setSelectedJobId,
-    selectedJob: jobs.selectedJob,
-    selectedJobSummary: jobs.selectedJobSummary,
-    selectedJobEvents: jobs.selectedEvents,
-    jobsStreaming: jobs.streaming,
-    refreshJobs: jobs.loadJobs,
-    cancelSelectedJob: jobs.cancelSelectedJob,
-    rerunSelectedJob: jobs.rerunSelectedJob,
-  };
-}
-
 function stateBackendsOverviewSection(stateBackends: ReturnType<typeof useStateBackendsWorkspace>) {
   return {
     stateBackends: stateBackends.backends,
@@ -263,10 +243,9 @@ function stateBackendsOverviewSection(stateBackends: ReturnType<typeof useStateB
     stateConnectError: stateBackends.connectError,
     stateCloudProvider: stateBackends.cloudProvider,
     setStateCloudProvider: stateBackends.setCloudProvider,
-    stateCloudAccessKeyId: stateBackends.cloudAccessKeyId,
-    setStateCloudAccessKeyId: stateBackends.setCloudAccessKeyId,
-    stateCloudSecretAccessKey: stateBackends.cloudSecretAccessKey,
-    setStateCloudSecretAccessKey: stateBackends.setCloudSecretAccessKey,
+    stateCloudProfiles: stateBackends.cloudProfiles,
+    stateCloudCredentialProfileId: stateBackends.cloudCredentialProfileId,
+    setStateCloudCredentialProfileId: stateBackends.setCloudCredentialProfileId,
     stateCloudName: stateBackends.cloudName,
     setStateCloudName: stateBackends.setCloudName,
     stateCloudBucket: stateBackends.cloudBucket,
@@ -311,7 +290,6 @@ function buildFilesystemPanelResult(params: {
   github: ReturnType<typeof useGithubExportState>;
   costs: ReturnType<typeof useCostWorkspace>;
   graph: ReturnType<typeof useGraphWorkspace>;
-  jobs: ReturnType<typeof useJobsWorkspace>;
   stateBackends: ReturnType<typeof useStateBackendsWorkspace>;
   actions: ReturnType<typeof useFilesystemPanelActions>;
 }) {
@@ -326,7 +304,6 @@ function buildFilesystemPanelResult(params: {
     ...githubPullRequestSection(params.github),
     ...costSection(params.costs),
     ...graphSection(params.graph),
-    ...jobsSection(params.jobs),
     ...stateBackendsSection(params.stateBackends),
     ...githubActionSection(params.github),
     ...filesystemActionSection(params.actions),
@@ -383,15 +360,14 @@ function filesystemActionSection(actions: ReturnType<typeof useFilesystemPanelAc
 export function useFilesystemPanelState({ projectId, authenticated }: FilesystemPanelStateParams) {
   const filesystem = useFilesystem(projectId, { authenticated, readOnly: !authenticated });
   const context = useFilesystemContext();
-  const panel = usePanelUiState(authenticated);
+  const panel = usePanelUiState();
   const workflow = useWorkflowRunner({ projectId, authenticated, pushLog: panel.pushLog });
   const github = useGithubExportState({ projectId, authenticated, fetchFiles: filesystem.fetchFiles, openFile: filesystem.openFile, pushLog: panel.pushLog });
   const costs = useCostWorkspace(projectId, panel.pushLog);
   const graph = useGraphWorkspace(projectId, panel.pushLog);
-  const jobs = useJobsWorkspace(projectId, panel.pushLog);
   const stateBackends = useStateBackendsWorkspace(projectId, panel.pushLog);
-  useFilesystemPanelEffects(buildPanelEffectsArgs({ authenticated, projectId, workspaceTab: panel.workspaceTab, setWorkspaceTab: panel.setWorkspaceTab, files: filesystem.files, selectedPath: filesystem.selectedPath, fetchFiles: filesystem.fetchFiles, openFile: filesystem.openFile, pushLog: panel.pushLog, setExpandedFolders: panel.setExpandedFolders, registerRefreshCallback: context.registerRefreshCallback, registerPolicyCheckCallback: context.registerPolicyCheckCallback, appendProblems: workflow.appendProblems, resetWorkflow: workflow.resetWorkflow, loadCosts: costs.loadCosts, costScope: costs.costScope, loadGraph: graph.loadGraph, graphScope: graph.graphScope }));
+  useFilesystemPanelEffects(buildPanelEffectsArgs({ authenticated, projectId, workspaceTab: panel.workspaceTab, setWorkspaceTab: panel.setWorkspaceTab, files: filesystem.files, selectedPath: filesystem.selectedPath, fetchFiles: filesystem.fetchFiles, openFile: filesystem.openFile, followFile: filesystem.followFile, pushLog: panel.pushLog, setExpandedFolders: panel.setExpandedFolders, setSelectedPaths: panel.setSelectedPaths, registerRefreshCallback: context.registerRefreshCallback, registerPolicyCheckCallback: context.registerPolicyCheckCallback, appendProblems: workflow.appendProblems, resetWorkflow: workflow.resetWorkflow, loadCosts: costs.loadCosts, costScope: costs.costScope, loadGraph: graph.loadGraph, graphScope: graph.graphScope }));
   const actions = useFilesystemPanelActions(buildPanelActionsArgs({ authenticated, files: filesystem.files, selectedPath: filesystem.selectedPath, content: filesystem.content, deleteFile: filesystem.deleteFile, createFile: filesystem.createFile, saveFile: filesystem.saveFile, openFile: filesystem.openFile, fetchFiles: filesystem.fetchFiles, movePaths: filesystem.movePaths, renamePath: filesystem.renamePath, setSelectedPaths: panel.setSelectedPaths, setNewItemMode: panel.setNewItemMode, clearExportError: github.clearExportError, runWorkflow: workflow.handleRunWorkflow, pushLog: panel.pushLog }));
   const derived = useDerivedFilesystemState(filesystem.files, filesystem.selectedPath);
-  return buildFilesystemPanelResult({ authenticated, panel, filesystem, derived, workflow, github, costs, graph, jobs, stateBackends, actions });
+  return buildFilesystemPanelResult({ authenticated, panel, filesystem, derived, workflow, github, costs, graph, stateBackends, actions });
 }

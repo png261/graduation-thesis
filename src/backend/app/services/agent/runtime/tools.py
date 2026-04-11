@@ -141,6 +141,45 @@ async def _ansible_tool_run(
     )
 
 
+def _module_scope(module_scope: str | None) -> str:
+    value = str(module_scope or "all").strip()
+    return value or "all"
+
+
+async def _get_infra_costs(
+    project_id: str,
+    settings: Settings,
+    module_scope: str = "all",
+    refresh: bool = False,
+) -> dict:
+    scope = _module_scope(module_scope)
+    try:
+        result = await opentofu_deploy.get_costs(
+            project_id=project_id,
+            settings=settings,
+            module_scope=scope,
+            refresh=refresh,
+        )
+    except Exception as exc:
+        logger.warning("failed to load infra costs project_id=%s scope=%s", project_id, scope, exc_info=True)
+        return _artifact_payload(
+            "get_infra_costs",
+            {"status": "error", "message": str(exc), "scope": scope, "refresh": refresh},
+            severity="medium",
+            fix_class="plan",
+        )
+    payload = result if isinstance(result, dict) else {"status": "error", "message": "Invalid cost payload"}
+    return _artifact_payload(
+        "get_infra_costs",
+        {
+            "cache_behavior": "cached_by_default",
+            "refresh": refresh,
+            "requested_scope": scope,
+            **payload,
+        },
+    )
+
+
 def _sanitize_selected_modules(selected_modules: list[str] | None) -> list[str]:
     if not selected_modules:
         return []
@@ -502,6 +541,11 @@ async def _search_generated_iac_patterns(
 
 
 def _build_local_project_tools(settings: Settings, project_id: str) -> list[Any]:
+    @tool("get_infra_costs")
+    async def get_infra_costs(module_scope: str = "all", refresh: bool = False) -> dict:
+        """Return cached infra cost data for the project, optionally forcing a refresh."""
+        return await _get_infra_costs(project_id, settings, module_scope, refresh)
+
     @tool("opentofu_preview_deploy")
     async def opentofu_preview_deploy(intent: str = "") -> dict:
         """Preview OpenTofu deploy targets for this project."""
@@ -573,6 +617,7 @@ def _build_local_project_tools(settings: Settings, project_id: str) -> list[Any]
         return await _search_generated_iac_patterns(project_id, pattern, target, selected_modules, max_results)
 
     return [
+        get_infra_costs,
         opentofu_preview_deploy,
         opentofu_apply_deploy,
         ansible_run_config,

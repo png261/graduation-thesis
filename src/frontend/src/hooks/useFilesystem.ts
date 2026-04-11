@@ -29,6 +29,7 @@ export interface UseFilesystemReturn {
   createFile: (path: string, content?: string) => Promise<void>;
   movePaths: (sourcePaths: string[], destinationDir: string) => Promise<PathMove[]>;
   renamePath: (path: string, newName: string) => Promise<PathMove | null>;
+  followFile: (path: string, previewContent?: string) => Promise<void>;
   setContent: (content: string) => void;
 }
 
@@ -50,11 +51,6 @@ function extensionFromPath(path: string): string {
 
 function isImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.has(extensionFromPath(path));
-}
-
-function makeFileEntries(fileMap: Record<string, string>): FileEntry[] {
-  const now = new Date().toISOString();
-  return Object.keys(fileMap).sort().map((path) => ({ path, size: fileMap[path].length, modifiedAt: now, createdAt: now }));
 }
 
 function setSelectedFileState(
@@ -106,7 +102,7 @@ function useOpenFileAction(projectId: string, authenticated: boolean, state: Fil
     state.setIsLoading(true);
     try {
       if (!authenticated) {
-        setSelectedFileState(path, state.setSelectedPath, state.setContentState, state.setSavedContent);
+        setSelectedFileState(path, "", state.setSelectedPath, state.setContentState, state.setSavedContent);
         return;
       }
       if (isImagePath(path)) {
@@ -117,6 +113,27 @@ function useOpenFileAction(projectId: string, authenticated: boolean, state: Fil
       setSelectedFileState(path, data, state.setSelectedPath, state.setContentState, state.setSavedContent);
     } catch {
       // non-fatal
+    } finally {
+      state.setIsLoading(false);
+    }
+  }, [authenticated, projectId, state]);
+}
+
+function useFollowFileAction(projectId: string, authenticated: boolean, state: FilesystemState) {
+  return useCallback(async (path: string, previewContent?: string) => {
+    if (typeof previewContent === "string") {
+      setSelectedFileState(path, previewContent, state.setSelectedPath, state.setContentState, state.setSavedContent);
+      state.setIsLoading(false);
+      return;
+    }
+    state.setIsLoading(true);
+    try {
+      if (!authenticated || isImagePath(path)) {
+        setSelectedFileState(path, "", state.setSelectedPath, state.setContentState, state.setSavedContent);
+        return;
+      }
+      const data = await readProjectFile(projectId, path).catch(() => "");
+      setSelectedFileState(path, data, state.setSelectedPath, state.setContentState, state.setSavedContent);
     } finally {
       state.setIsLoading(false);
     }
@@ -203,6 +220,7 @@ export function useFilesystem(projectId: string, options: UseFilesystemOptions):
   const createFile = useCreateFileAction(projectId, options.authenticated, options.readOnly, fetchFiles, openFile, state);
   const movePaths = useMovePathsAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
   const renamePath = useRenamePathAction(projectId, options.authenticated, options.readOnly, state.selectedPath, fetchFiles, state);
+  const followFile = useFollowFileAction(projectId, options.authenticated, state);
   const setContent = useCallback((content: string) => state.setContentState(content), [state]);
-  return { files: state.files, selectedPath: state.selectedPath, content: state.content, isDirty, isLoading: state.isLoading, fetchFiles, openFile, saveFile, deleteFile, createFile, movePaths, renamePath, setContent };
+  return { files: state.files, selectedPath: state.selectedPath, content: state.content, isDirty, isLoading: state.isLoading, fetchFiles, openFile, saveFile, deleteFile, createFile, movePaths, renamePath, followFile, setContent };
 }

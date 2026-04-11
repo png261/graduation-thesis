@@ -8,9 +8,9 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app import db
+from app.core import cache as runtime_cache
 from app.core.config import Settings, get_settings
-from app.models import DriftAlert, IncidentSummary, PolicyAlert, ProjectJob, StateBackend
-from app.services.jobs import redis_bus
+from app.models import DriftAlert, IncidentSummary, PolicyAlert, StateBackend
 
 ACTION_SAFE = "safe"
 ACTION_APPROVAL_REQUIRED = "approval_required"
@@ -147,7 +147,9 @@ def _build_recommended_action(case: IncidentCase, *, confidence: float, threshol
 
 def _incident_key(backend: StateBackend, drift_alerts: list[DriftAlert], policy_alerts: list[PolicyAlert]) -> str:
     top_rules = sorted({row.rule_id for row in policy_alerts[:5] if row.rule_id})
-    top_resources = sorted({row.resource_address for row in [*drift_alerts[:5], *policy_alerts[:5]] if row.resource_address})
+    top_resources = sorted(
+        {row.resource_address for row in [*drift_alerts[:5], *policy_alerts[:5]] if row.resource_address}
+    )
     rule_part = ",".join(top_rules) or "-"
     resource_part = ",".join(top_resources) or "-"
     return f"{backend.id}:{rule_part}:{resource_part}"
@@ -170,7 +172,9 @@ def build_incident_case(
         policy_count=len(policy_alerts),
         max_severity=_severity_from_alerts(drift_alerts, policy_alerts),
         rule_ids=tuple(sorted({row.rule_id for row in policy_alerts if row.rule_id})),
-        resources=tuple(sorted({row.resource_address for row in [*drift_alerts, *policy_alerts] if row.resource_address})),
+        resources=tuple(
+            sorted({row.resource_address for row in [*drift_alerts, *policy_alerts] if row.resource_address})
+        ),
         failed_jobs=failed_jobs,
     )
 
@@ -227,10 +231,10 @@ async def should_emit_alert(
 ) -> bool:
     cfg = settings or get_settings()
     key = f"{project_id}:{incident_key}"
-    cached = await redis_bus.cache_get_json(settings=cfg, namespace="incident_notify", key=key)
+    cached = await runtime_cache.cache_get_json(settings=cfg, namespace="incident_notify", key=key)
     if cached:
         return False
-    await redis_bus.cache_set_json(
+    await runtime_cache.cache_set_json(
         settings=cfg,
         namespace="incident_notify",
         key=key,
@@ -250,7 +254,9 @@ async def build_decision(
     settings: Settings | None = None,
 ) -> tuple[IncidentDecision, list[dict[str, Any]], list[dict[str, Any]]]:
     cfg = settings or get_settings()
-    case = build_incident_case(backend=backend, drift_alerts=drift_alerts, policy_alerts=policy_alerts, recent_jobs=recent_jobs)
+    case = build_incident_case(
+        backend=backend, drift_alerts=drift_alerts, policy_alerts=policy_alerts, recent_jobs=recent_jobs
+    )
     memories = await list_relevant_memories(project_id=backend.project_id, case=case, settings=cfg)
     confidence = _score_confidence(case, len(memories))
     action, approval_required, analysis_only = _build_recommended_action(
@@ -438,24 +444,3 @@ async def get_metrics(*, project_id: str) -> IncidentMetrics:
         "action_rollback_rate": round(rollbacks / total, 4),
         "total_incidents": total,
     }
-
-
-async def recent_project_jobs(*, project_id: str, limit: int = 20) -> list[dict[str, Any]]:
-    async with db.get_session() as session:
-        rows = await session.execute(
-            select(ProjectJob)
-            .where(ProjectJob.project_id == project_id)
-            .order_by(ProjectJob.created_at.desc())
-            .limit(max(1, min(limit, 100)))
-        )
-        jobs = rows.scalars().all()
-    return [
-        {
-            "id": row.id,
-            "kind": row.kind,
-            "status": row.status,
-            "error": row.error_json if isinstance(row.error_json, dict) else None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
-        for row in jobs
-    ]

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sse_starlette import EventSourceResponse
 
+from app.routers.projects_routes.streaming import stream_project_events
 from app.shared.auth import dependencies as auth_deps
 from app.shared.contracts.project_execution import ProjectExecutionRequest
 from app.shared.http.errors import raise_http_error
@@ -10,8 +11,6 @@ from .runtime import (
     configuration_incident_service,
     identity_project_persistence,
     settings,
-    stream_enqueued_project_job,
-    workflow_service,
 )
 
 router = APIRouter()
@@ -42,16 +41,19 @@ async def ansible_run_stream(
     request: Request,
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    payload = ProjectExecutionRequest(
+    request_body = ProjectExecutionRequest(
         selected_modules=tuple(body.selected_modules),
         intent=body.intent,
         options={},
-    ).to_job_payload()
-    return stream_enqueued_project_job(
-        workflow_service=workflow_service,
-        project=project,
-        kind="ansible",
-        payload=payload,
+    )
+    return stream_project_events(
+        event_stream_factory=lambda: configuration_incident_service.run_playbook_stream(
+            project_id=project.id,
+            settings=settings,
+            selected_modules=request_body.selected_modules_list(),
+            intent=request_body.intent,
+            cancel_checker=request.is_disconnected,
+        ),
         request=request,
         fallback_error_code="config_failed",
     )

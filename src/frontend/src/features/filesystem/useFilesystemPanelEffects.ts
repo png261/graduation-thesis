@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 
 import type { FileEntry } from "../../api/projects";
-import type { PolicyCheckEvent, PolicyCheckIssue } from "../../contexts/FilesystemContext";
+import type { FilesystemSyncEvent, PolicyCheckEvent, PolicyCheckIssue } from "../../contexts/FilesystemContext";
 
 interface UseFilesystemPanelEffectsArgs {
   authenticated: boolean;
   projectId: string;
-  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
-  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void;
+  workspaceTab: "code" | "costs" | "graph" | "state";
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "state") => void;
   files: FileEntry[];
   selectedPath: string | null;
   fetchFiles: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  followFile: (path: string, previewContent?: string) => Promise<void>;
   pushLog: (message: string) => void;
   setExpandedFolders: Dispatch<SetStateAction<Set<string>>>;
-  registerRefreshCallback: (callback: (changedPath?: string) => void) => () => void;
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>;
+  registerRefreshCallback: (callback: (event?: FilesystemSyncEvent) => void) => () => void;
   registerPolicyCheckCallback: (callback: (event: PolicyCheckEvent) => void) => () => void;
   appendProblems: (
     issues: Array<{
@@ -71,14 +73,20 @@ function useAutoExpandFolders(files: FileEntry[], setExpandedFolders: Dispatch<S
   }, [files, filesKey, setExpandedFolders]);
 }
 
-function buildRefreshLog(changedPath?: string) {
-  if (!changedPath) return "Synced filesystem state";
-  return `Synced change from agent: ${changedPath}`;
+function buildRefreshLog(event?: FilesystemSyncEvent) {
+  if (!event?.path) return "Synced filesystem state";
+  if (event.behavior === "follow" && event.source === "tool.start") return `Following agent edit: ${event.path}`;
+  if (event.behavior === "follow") return `Opened agent edit: ${event.path}`;
+  return `Synced change from agent: ${event.path}`;
+}
+
+function shouldFollowFile(event?: FilesystemSyncEvent) {
+  return event?.behavior === "follow" && Boolean(event.path);
 }
 
 function shouldAutoSyncFilesystem(
   authenticated: boolean,
-  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state",
+  workspaceTab: "code" | "costs" | "graph" | "state",
 ) {
   return authenticated && workspaceTab === "code";
 }
@@ -88,34 +96,66 @@ function isDocumentHidden() {
 }
 
 async function syncFilesystemChange(args: {
-  changedPath?: string;
+  event?: FilesystemSyncEvent;
   selectedPath: string | null;
   fetchFiles: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  followFile: (path: string, previewContent?: string) => Promise<void>;
   pushLog: (message: string) => void;
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "state") => void;
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>;
 }) {
+  if (args.event?.source === "tool.start") {
+    args.pushLog(buildRefreshLog(args.event));
+    if (!shouldFollowFile(args.event)) return;
+    args.setWorkspaceTab("code");
+    args.setSelectedPaths(new Set([args.event.path!]));
+    await args.followFile(args.event.path!, args.event.previewContent);
+    return;
+  }
   await args.fetchFiles();
-  args.pushLog(buildRefreshLog(args.changedPath));
-  if (!args.changedPath || args.changedPath !== args.selectedPath) return;
-  await args.openFile(args.selectedPath);
+  args.pushLog(buildRefreshLog(args.event));
+  const followFile = shouldFollowFile(args.event);
+  if (!followFile && (!args.event?.path || args.event.path !== args.selectedPath)) return;
+  const path = args.event?.path ?? args.selectedPath;
+  if (!path) return;
+  if (followFile) {
+    args.setWorkspaceTab("code");
+    args.setSelectedPaths(new Set([path]));
+    await args.followFile(path);
+    return;
+  }
+  await args.openFile(path);
 }
 
 function useRefreshRegistration(args: {
   selectedPath: string | null;
   fetchFiles: () => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  followFile: (path: string, previewContent?: string) => Promise<void>;
   pushLog: (message: string) => void;
-  registerRefreshCallback: (callback: (changedPath?: string) => void) => () => void;
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "state") => void;
+  setSelectedPaths: Dispatch<SetStateAction<Set<string>>>;
+  registerRefreshCallback: (callback: (event?: FilesystemSyncEvent) => void) => () => void;
 }) {
-  const onRefresh = useCallback((changedPath?: string) => {
-    void syncFilesystemChange({ changedPath, selectedPath: args.selectedPath, fetchFiles: args.fetchFiles, openFile: args.openFile, pushLog: args.pushLog });
-  }, [args.fetchFiles, args.openFile, args.pushLog, args.selectedPath]);
+  const onRefresh = useCallback((event?: FilesystemSyncEvent) => {
+    void syncFilesystemChange({
+      event,
+      selectedPath: args.selectedPath,
+      fetchFiles: args.fetchFiles,
+      openFile: args.openFile,
+      followFile: args.followFile,
+      pushLog: args.pushLog,
+      setWorkspaceTab: args.setWorkspaceTab,
+      setSelectedPaths: args.setSelectedPaths,
+    });
+  }, [args.fetchFiles, args.followFile, args.openFile, args.pushLog, args.selectedPath, args.setSelectedPaths, args.setWorkspaceTab]);
   useEffect(() => args.registerRefreshCallback(onRefresh), [args.registerRefreshCallback, onRefresh]);
 }
 
 function useFilesystemAutoSync(args: {
   authenticated: boolean;
-  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
+  workspaceTab: "code" | "costs" | "graph" | "state";
   fetchFiles: () => Promise<void>;
 }) {
   const { authenticated, workspaceTab, fetchFiles } = args;
@@ -214,7 +254,7 @@ function useInitialFilesystemLoad(fetchFiles: () => Promise<void>, pushLog: (mes
 function useProjectResetEffects(
   projectId: string,
   resetWorkflow: () => void,
-  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "jobs" | "state") => void,
+  setWorkspaceTab: (tab: "code" | "costs" | "graph" | "state") => void,
 ) {
   useEffect(() => {
     resetWorkflow();
@@ -226,7 +266,7 @@ function useProjectResetEffects(
 
 function useLazyWorkspaceLoaders(args: {
   authenticated: boolean;
-  workspaceTab: "code" | "costs" | "graph" | "jobs" | "state";
+  workspaceTab: "code" | "costs" | "graph" | "state";
   loadCosts: (opts: { scope: string }) => Promise<void>;
   costScope: string;
   loadGraph: (opts: { scope: string }) => Promise<void>;
@@ -246,9 +286,12 @@ export function useFilesystemPanelEffects(args: UseFilesystemPanelEffectsArgs) {
   useAutoExpandFolders(args.files, args.setExpandedFolders);
   useRefreshRegistration({
     selectedPath: args.selectedPath,
+    setWorkspaceTab: args.setWorkspaceTab,
     fetchFiles: args.fetchFiles,
     openFile: args.openFile,
+    followFile: args.followFile,
     pushLog: args.pushLog,
+    setSelectedPaths: args.setSelectedPaths,
     registerRefreshCallback: args.registerRefreshCallback,
   });
   usePolicyRegistration({

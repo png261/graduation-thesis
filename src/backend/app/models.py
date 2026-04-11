@@ -1,10 +1,10 @@
-"""SQLAlchemy ORM models for users, projects, jobs, and state backends."""
+"""SQLAlchemy ORM models for users, projects, and state backends."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -26,7 +26,6 @@ class User(Base):
     )
 
     projects: Mapped[list[Project]] = relationship("Project", back_populates="user")
-    jobs: Mapped[list[ProjectJob]] = relationship("ProjectJob", back_populates="user")
     credential_profiles: Mapped[list[CredentialProfile]] = relationship(
         "CredentialProfile",
         back_populates="user",
@@ -37,6 +36,7 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
 
 class Project(Base):
     __tablename__ = "projects"
@@ -69,11 +69,6 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
     user: Mapped[User | None] = relationship("User", back_populates="projects")
-    jobs: Mapped[list[ProjectJob]] = relationship(
-        "ProjectJob",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
     state_backends: Mapped[list[StateBackend]] = relationship(
         "StateBackend",
         back_populates="project",
@@ -249,58 +244,6 @@ class ThreadMessage(Base):
     )
 
     thread: Mapped[Thread] = relationship("Thread", back_populates="messages")
-
-
-class ProjectJob(Base):
-    __tablename__ = "project_jobs"
-    __table_args__ = (
-        Index("ix_project_jobs_project_created_at", "project_id", "created_at"),
-        Index("ix_project_jobs_project_status_created_at", "project_id", "status", "created_at"),
-        Index("ix_project_jobs_created_at", "created_at"),
-        Index(
-            "uq_project_jobs_active_mutating_per_project",
-            "project_id",
-            unique=True,
-            postgresql_where=text(
-                "kind IN ('apply','destroy','ansible','pipeline') AND status IN ('queued','running')"
-            ),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    project_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    user_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    kind: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="queued")
-    params_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    error_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    event_tail_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
-    celery_task_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    rerun_of_job_id: Mapped[str | None] = mapped_column(
-        String,
-        ForeignKey("project_jobs.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    project: Mapped[Project] = relationship("Project", back_populates="jobs")
-    user: Mapped[User] = relationship("User", back_populates="jobs")
 
 
 class CredentialProfile(Base):

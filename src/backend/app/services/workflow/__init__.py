@@ -1,1 +1,1 @@
-"""Workflow service package."""
+"""Legacy workflow compatibility package."""

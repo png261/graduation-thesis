@@ -17,7 +17,6 @@ from app import db
 from app.core.config import Settings, get_settings
 from app.models import DriftAlert, PolicyAlert, Project, StateBackend, StateResource, StateSnapshot, StateSyncRun
 from app.services.incident import service as incident_service
-from app.services.jobs import service as jobs_service
 from app.services.opentofu.runtime.shared import discover_modules_from_project_dir
 from app.services.project import files as project_files
 
@@ -127,39 +126,16 @@ def _freshness_minutes(last_successful_refresh_at: str | None) -> int | None:
 
 
 async def get_local_runtime_drift_status(*, project_id: str, user_id: str) -> dict[str, Any]:
+    del user_id
     modules = discover_modules_from_project_dir(project_id)
     project_root = project_files.ensure_project_dir(project_id)
     state_root = project_root / ".opentofu-runtime" / "state"
     modules_without_state = [module for module in modules if not (state_root / f"{module}.tfstate").is_file()]
 
-    latest_plan = await jobs_service.list_jobs(
-        project_id=project_id,
-        user_id=user_id,
-        status=None,
-        kind="plan",
-        limit=1,
-        offset=0,
-    )
-    latest_apply = await jobs_service.list_jobs(
-        project_id=project_id,
-        user_id=user_id,
-        status=None,
-        kind="apply",
-        limit=1,
-        offset=0,
-    )
-
-    latest_plan_job = latest_plan["items"][0] if latest_plan["items"] else None
-    latest_apply_job = latest_apply["items"][0] if latest_apply["items"] else None
-
     if not modules:
         status = "no_modules"
     elif modules_without_state:
         status = "state_missing"
-    elif not latest_plan_job:
-        status = "plan_missing"
-    elif latest_apply_job and str(latest_plan_job.get("created_at", "")) < str(latest_apply_job.get("created_at", "")):
-        status = "plan_outdated"
     else:
         status = "in_sync"
 
@@ -167,8 +143,8 @@ async def get_local_runtime_drift_status(*, project_id: str, user_id: str) -> di
         "status": status,
         "module_count": len(modules),
         "modules_without_state": modules_without_state,
-        "last_plan_job": latest_plan_job,
-        "last_apply_job": latest_apply_job,
+        "last_plan_job": None,
+        "last_apply_job": None,
     }
 
 
@@ -509,16 +485,26 @@ async def browse_cloud_buckets(
     *,
     user_id: str,
     provider: str,
-    access_key_id: str,
-    secret_access_key: str,
+    credential_profile_id: str | None,
+    access_key_id: str = "",
+    secret_access_key: str = "",
     settings: Settings,
 ) -> list[str]:
     normalized = normalize_cloud_provider(provider)
-    credentials = _inline_cloud_credentials(
-        provider=normalized,
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
-    )
+    if credential_profile_id:
+        profile_provider, credentials = await resolve_profile_credentials(
+            profile_id=credential_profile_id,
+            user_id=user_id,
+            secret=settings.state_encryption_key,
+        )
+        if profile_provider != normalized:
+            raise ValueError("profile_provider_mismatch")
+    else:
+        credentials = _inline_cloud_credentials(
+            provider=normalized,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+        )
     adapter = get_cloud_adapter(normalized, credentials)
     return adapter.list_buckets()
 
@@ -527,18 +513,28 @@ async def browse_cloud_objects(
     *,
     user_id: str,
     provider: str,
-    access_key_id: str,
-    secret_access_key: str,
+    credential_profile_id: str | None,
+    access_key_id: str = "",
+    secret_access_key: str = "",
     bucket: str,
     prefix: str,
     settings: Settings,
 ) -> list[dict[str, Any]]:
     normalized = normalize_cloud_provider(provider)
-    credentials = _inline_cloud_credentials(
-        provider=normalized,
-        access_key_id=access_key_id,
-        secret_access_key=secret_access_key,
-    )
+    if credential_profile_id:
+        profile_provider, credentials = await resolve_profile_credentials(
+            profile_id=credential_profile_id,
+            user_id=user_id,
+            secret=settings.state_encryption_key,
+        )
+        if profile_provider != normalized:
+            raise ValueError("profile_provider_mismatch")
+    else:
+        credentials = _inline_cloud_credentials(
+            provider=normalized,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+        )
     adapter = get_cloud_adapter(normalized, credentials)
     objects = likely_state_objects(adapter.list_objects(bucket=bucket, prefix=prefix or ""))
     return [
@@ -963,7 +959,7 @@ async def _notify_alerts_if_needed(
     if not drift_alerts and not policy_alerts:
         return None
     correlation_id = str(uuid4())
-    recent_jobs = await incident_service.recent_project_jobs(project_id=project_id, limit=20)
+    recent_jobs: list[dict[str, Any]] = []
     decision, memories, events = await incident_service.build_decision(
         backend=backend,
         drift_alerts=drift_alerts,

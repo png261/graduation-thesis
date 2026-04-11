@@ -7,14 +7,13 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from app.core.config import Settings
 from app.schemas.chat import ChatAttachment, ChatMessage, ChatRequest, ChatRole
 from app.services.agent import get_agent
 from app.services.agent.runtime.context import DeepAgentContext, build_infra_cost_context, build_runtime_context
-from app.services.model.factory import create_chat_model
 from app.services.opentofu import deploy as opentofu_deploy
 from app.services.policy import checks as policy_checks
 
@@ -245,13 +244,11 @@ def _make_config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
-async def _load_runtime_cost_context(project_id: str, settings: Settings):
+async def _load_runtime_cost_context(project_id: str):
     try:
-        payload = await opentofu_deploy.get_costs(
+        payload = opentofu_deploy.peek_cached_costs(
             project_id=project_id,
-            settings=settings,
             module_scope="all",
-            refresh=False,
         )
     except Exception:
         logger.warning("failed to load runtime cost context project_id=%s", project_id, exc_info=True)
@@ -259,9 +256,9 @@ async def _load_runtime_cost_context(project_id: str, settings: Settings):
     return build_infra_cost_context(payload) if isinstance(payload, dict) else None
 
 
-async def _make_agent_run_payload(payload: ChatRequest, settings: Settings) -> tuple[dict, DeepAgentContext]:
+async def _make_agent_run_payload(payload: ChatRequest) -> tuple[dict, DeepAgentContext]:
     thread_id = _resolved_thread_id(payload)
-    infra_cost = await _load_runtime_cost_context(_project_id(payload), settings)
+    infra_cost = await _load_runtime_cost_context(_project_id(payload))
     return _make_config(thread_id), build_runtime_context(payload, thread_id=thread_id, infra_cost=infra_cost)
 
 
@@ -645,7 +642,7 @@ async def stream_response_events(
             **compaction,
         }
     agent = await get_agent(settings, _project_id(payload))
-    config, runtime_context = await _make_agent_run_payload(payload, settings)
+    config, runtime_context = await _make_agent_run_payload(payload)
     state = _new_stream_state(correlation_id=correlation_id)
 
     try:
@@ -694,7 +691,7 @@ async def generate_response(payload: ChatRequest, settings: Settings) -> str:
     ensure_payload(payload)
     agent = await get_agent(settings, _project_id(payload))
     messages, _ = _apply_token_budget(_to_langchain_messages(payload), int(settings.incident_token_budget or 16000))
-    config, runtime_context = await _make_agent_run_payload(payload, settings)
+    config, runtime_context = await _make_agent_run_payload(payload)
     try:
         result = await run_in_threadpool(agent.invoke, {"messages": messages}, config, context=runtime_context)
     except Exception as exc:
@@ -705,6 +702,10 @@ async def generate_response(payload: ChatRequest, settings: Settings) -> str:
         return _text_from_content(getattr(last, "content", ""))
 
     return str(result)
+
+
+async def generate_basic_response(payload: ChatRequest, settings: Settings) -> str:
+    return await generate_response(payload, settings)
 
 
 async def stream_response(

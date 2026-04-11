@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sse_starlette import EventSourceResponse
 
+from app.routers.projects_routes.streaming import stream_project_events
 from app.shared.auth import dependencies as auth_deps
 from app.shared.contracts.project_execution import ExecutionConfirmation, ProjectExecutionRequest
 
@@ -14,8 +15,6 @@ from .runtime import (
     identity_project_persistence,
     provisioning_service,
     settings,
-    stream_enqueued_project_job,
-    workflow_service,
 )
 
 router = APIRouter()
@@ -94,11 +93,7 @@ def _is_fatal_runtime_error(data: dict) -> bool:
 async def _latest_successful_plan_result(
     project: identity_project_persistence.Project,
 ) -> dict[str, Any] | None:
-    return await workflow_service.latest_successful_job_result(
-        project_id=project.id,
-        user_id=str(project.user_id or ""),
-        kind="plan",
-    )
+    return provisioning_service.load_recorded_plan_review(project.id)
 
 
 async def _resolved_review(
@@ -114,33 +109,6 @@ async def _resolved_review(
         scope_mode=request.effective_scope_mode(),
         selected_modules=request.selected_modules_list(),
     )
-
-
-def _history_item_with_post_deploy(item: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(item)
-    post_deploy_summary = normalized.get("post_deploy_summary")
-    result = normalized.get("result")
-    if post_deploy_summary is None and isinstance(result, dict):
-        post_deploy = result.get("post_deploy")
-        if isinstance(post_deploy, dict):
-            summary = post_deploy.get("summary") if isinstance(post_deploy.get("summary"), dict) else {}
-            hosts = post_deploy.get("hosts") if isinstance(post_deploy.get("hosts"), list) else []
-            skipped_hosts = (
-                post_deploy.get("skipped_hosts") if isinstance(post_deploy.get("skipped_hosts"), list) else []
-            )
-            normalized["post_deploy_summary"] = {
-                "status": str(post_deploy.get("status") or summary.get("status") or "failed"),
-                "host_count": int(summary.get("host_count") or len(hosts)),
-                "skipped_host_count": int(summary.get("skipped_host_count") or len(skipped_hosts)),
-                "service_count": int(summary.get("service_count") or 0),
-                "health_summary": str(summary.get("health_summary") or "No health checks collected."),
-                "collected_at": post_deploy.get("collected_at"),
-            }
-    if "post_deploy_hosts" not in normalized and isinstance(result, dict):
-        post_deploy = result.get("post_deploy")
-        if isinstance(post_deploy, dict) and isinstance(post_deploy.get("hosts"), list):
-            normalized["post_deploy_hosts"] = post_deploy.get("hosts")
-    return normalized
 
 
 @router.get("/api/projects/{project_id}/opentofu/status")
@@ -217,34 +185,19 @@ async def opentofu_apply_stream(
     request: Request,
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        workflow_service=workflow_service,
-        project=project,
-        kind="apply",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: provisioning_service.apply_modules_stream(
+            project_id=project.id,
+            settings=settings,
+            selected_modules=request_body.selected_modules_list(),
+            intent=request_body.intent,
+            policy_override=request_body.option_enabled("override_policy"),
+            cancel_checker=request.is_disconnected,
+        ),
         request=request,
         fallback_error_code="opentofu_apply_failed",
     )
-
-
-@router.get("/api/projects/{project_id}/runs/history")
-async def runs_history(
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    history = await workflow_service.list_jobs(
-        project_id=project.id,
-        user_id=str(project.user_id or ""),
-        status=None,
-        kind=None,
-        limit=limit,
-        offset=offset,
-    )
-    return {
-        "total": history["total"],
-        "items": [_history_item_with_post_deploy(item) for item in history["items"]],
-    }
 
 
 @router.post("/api/projects/{project_id}/opentofu/deploy/plan/stream")
@@ -253,11 +206,16 @@ async def opentofu_plan_stream(
     request: Request,
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        workflow_service=workflow_service,
-        project=project,
-        kind="plan",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: provisioning_service.plan_modules_stream(
+            project_id=project.id,
+            settings=settings,
+            selected_modules=request_body.selected_modules_list(),
+            intent=request_body.intent,
+            destroy_plan=request_body.resolved_review_target() == "destroy",
+            cancel_checker=request.is_disconnected,
+        ),
         request=request,
         fallback_error_code="opentofu_plan_failed",
     )
@@ -269,11 +227,15 @@ async def opentofu_destroy_stream(
     request: Request,
     project: identity_project_persistence.Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        workflow_service=workflow_service,
-        project=project,
-        kind="destroy",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: provisioning_service.destroy_modules_stream(
+            project_id=project.id,
+            settings=settings,
+            selected_modules=request_body.selected_modules_list(),
+            intent=request_body.intent,
+            cancel_checker=request.is_disconnected,
+        ),
         request=request,
         fallback_error_code="opentofu_destroy_failed",
     )

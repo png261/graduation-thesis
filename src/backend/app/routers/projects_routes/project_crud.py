@@ -1,22 +1,24 @@
 """Project CRUD, credentials, and threads endpoints."""
+
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
 from app import db
+from app.core.config import get_settings
 from app.models import Project, Thread, ThreadMessage, User
 from app.routers import auth_dependencies as auth_deps
 from app.services.agent import invalidate_agent
 from app.services.opentofu.runtime.shared import required_credential_fields
 from app.services.project import credentials as project_credentials
 from app.services.project import files as project_files
+from app.services.state_backends import credential_profiles
 
 from .common import mask_credentials, merge_credentials, project_to_dict, thread_to_dict
 
@@ -31,9 +33,7 @@ class ProjectCreate(BaseModel):
 @router.get("")
 async def list_projects(user: User = Depends(auth_deps.require_current_user)) -> dict:
     async with db.get_session() as session:
-        result = await session.execute(
-            select(Project).where(Project.user_id == user.id).order_by(Project.created_at)
-        )
+        result = await session.execute(select(Project).where(Project.user_id == user.id).order_by(Project.created_at))
         projects = result.scalars().all()
     return {"projects": [project_to_dict(project) for project in projects]}
 
@@ -76,7 +76,14 @@ async def delete_project(
 
 
 class CredentialsUpdate(BaseModel):
-    credentials: dict
+    credentials: dict = Field(default_factory=dict)
+    credential_profile_id: str | None = None
+
+
+def _project_provider_matches_profile(project_provider: str | None, profile_provider: str) -> bool:
+    if project_provider == "gcloud":
+        return profile_provider == "gcs"
+    return (project_provider or "") == profile_provider
 
 
 def _credentials_payload(project: Project, creds: dict[str, str]) -> dict[str, Any]:
@@ -85,6 +92,7 @@ def _credentials_payload(project: Project, creds: dict[str, str]) -> dict[str, A
     return {
         "provider": project.provider,
         "credentials": mask_credentials(creds),
+        "credential_profile_id": project_credentials.parse_selected_profile_id(project.credentials),
         "required_fields": required_fields,
         "missing_fields": missing_fields,
         "apply_ready": len(required_fields) > 0 and len(missing_fields) == 0,
@@ -102,16 +110,33 @@ async def update_credentials(
     body: CredentialsUpdate,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
+    settings = get_settings()
     async with db.get_session() as session:
         owned = await session.get(Project, project.id)
         if owned is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        existing = project_credentials.parse_credentials(owned.credentials)
-        merged = merge_credentials(existing, body.credentials)
-        owned.credentials = json.dumps(merged)
+        if body.credential_profile_id:
+            if not owned.user_id:
+                raise HTTPException(status_code=400, detail="Project owner required")
+            profile_provider, resolved = await credential_profiles.resolve_profile_credentials(
+                profile_id=body.credential_profile_id,
+                user_id=str(owned.user_id),
+                secret=settings.state_encryption_key,
+            )
+            if not _project_provider_matches_profile(owned.provider, profile_provider):
+                raise HTTPException(status_code=400, detail="Credential profile provider does not match project")
+            merged = resolved
+            owned.credentials = project_credentials.serialize_credentials(
+                merged,
+                selected_profile_id=body.credential_profile_id,
+            )
+        else:
+            existing = project_credentials.parse_credentials(owned.credentials)
+            merged = merge_credentials(existing, body.credentials)
+            owned.credentials = project_credentials.serialize_credentials(merged)
 
     invalidate_agent(project.id)
-    return _credentials_payload(project, merged)
+    return _credentials_payload(owned, merged)
 
 
 class ThreadCreate(BaseModel):
@@ -135,9 +160,7 @@ def _extract_message_id(item: dict[str, Any]) -> str:
 
 async def _load_owned_thread(project_id: str, thread_id: str) -> Thread | None:
     async with db.get_session() as session:
-        result = await session.execute(
-            select(Thread).where(Thread.id == thread_id, Thread.project_id == project_id)
-        )
+        result = await session.execute(select(Thread).where(Thread.id == thread_id, Thread.project_id == project_id))
         return result.scalar_one_or_none()
 
 
@@ -145,9 +168,7 @@ async def _load_owned_thread(project_id: str, thread_id: str) -> Thread | None:
 async def list_threads(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
     async with db.get_session() as session:
         result = await session.execute(
-            select(Thread)
-            .where(Thread.project_id == project.id)
-            .order_by(Thread.created_at)
+            select(Thread).where(Thread.project_id == project.id).order_by(Thread.created_at)
         )
         threads = result.scalars().all()
     return {"threads": [thread_to_dict(thread) for thread in threads]}
@@ -186,9 +207,7 @@ async def delete_thread(
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
     async with db.get_session() as session:
-        await session.execute(
-            delete(Thread).where(Thread.id == thread_id, Thread.project_id == project.id)
-        )
+        await session.execute(delete(Thread).where(Thread.id == thread_id, Thread.project_id == project.id))
     return {"ok": True}
 
 
@@ -202,9 +221,7 @@ async def list_thread_messages(
         raise HTTPException(status_code=404, detail="Thread not found")
     async with db.get_session() as session:
         result = await session.execute(
-            select(ThreadMessage)
-            .where(ThreadMessage.thread_id == thread_id)
-            .order_by(ThreadMessage.created_at)
+            select(ThreadMessage).where(ThreadMessage.thread_id == thread_id).order_by(ThreadMessage.created_at)
         )
         rows = result.scalars().all()
     messages = [row.payload_json for row in rows if isinstance(row.payload_json, dict)]

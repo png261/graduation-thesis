@@ -1,11 +1,11 @@
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 
 import {
-  enqueueProjectJob,
+  applyOpenTofuDeployStream,
   getOpenTofuStatus,
-  streamProjectJobEvents,
+  planOpenTofuDeployStream,
+  runAnsibleConfigStream,
   type OpenTofuStatus,
-  type ProjectJobEvent,
 } from "../../../api/projects/index";
 import { readSseJson } from "../../../lib/sse";
 import type { WorkflowProblem, WorkflowProblemMode } from "../types";
@@ -237,7 +237,7 @@ function handleWorkflowEvent(args: {
   pushProblem: PushProblemFn;
   setWorkflowError: (value: string) => void;
 }) {
-  const event = toEvent(args.rawEvent as ProjectJobEvent);
+  const event = toEvent(args.rawEvent);
   const type = asString(event.type);
   if (type === "deploy.start" || type === "plan.start" || type === "pipeline.start") return handleWorkflowStartEvent(event, args.pushLog);
   if (type === "module.start") return args.pushLog(`==> Module: ${asString(event.module)}`);
@@ -254,6 +254,42 @@ function handleWorkflowEvent(args: {
     return handleWorkflowDoneEvent({ event, mode: args.mode, actionLabel: args.actionLabel, pushLog: args.pushLog, pushProblem: args.pushProblem, setWorkflowError: args.setWorkflowError });
   }
   if (type.startsWith("job.")) return handleJobMetaEvent(event, args.pushLog);
+}
+
+function isOkStatus(status: string) {
+  return status === "ok" || status === "succeeded";
+}
+
+async function consumeWorkflowResponse(args: {
+  response: Response;
+  mode: WorkflowMode;
+  actionLabel: string;
+  pushLog: (message: string) => void;
+  pushProblem: PushProblemFn;
+  setWorkflowError: (value: string) => void;
+}) {
+  if (!args.response.ok || !args.response.body) {
+    throw new Error(`Workflow stream failed (${args.response.status})`);
+  }
+  let ok = true;
+  for await (const rawEvent of readSseJson(args.response)) {
+    const event = toEvent(rawEvent);
+    const type = asString(event.type);
+    const status = asString(event.status);
+    if (type === "error") ok = false;
+    if (["plan.done", "deploy.done", "config.done", "post_deploy.done", "pipeline.done"].includes(type) && status) {
+      ok = ok && isOkStatus(status);
+    }
+    handleWorkflowEvent({
+      rawEvent,
+      mode: args.mode,
+      actionLabel: args.actionLabel,
+      pushLog: args.pushLog,
+      pushProblem: args.pushProblem,
+      setWorkflowError: args.setWorkflowError,
+    });
+  }
+  return { ok };
 }
 
 function startWorkflowRun(
@@ -307,19 +343,9 @@ async function runWorkflowStream(args: {
   setWorkflowError: (value: string) => void;
 }) {
   const selectedModules = await getSelectedModules(args.projectId, args.mode);
-  const job = await enqueueProjectJob(args.projectId, {
-    kind: args.mode,
-    selected_modules: selectedModules,
-    intent: "",
-    options: {},
-  });
-  const response = await streamProjectJobEvents(args.projectId, job.id);
-  if (!response.ok || !response.body) {
-    throw new Error(`Workflow stream failed (${response.status})`);
-  }
-  for await (const rawEvent of readSseJson(response)) {
-    handleWorkflowEvent({
-      rawEvent,
+  if (args.mode === "plan") {
+    return consumeWorkflowResponse({
+      response: await planOpenTofuDeployStream(args.projectId, { selected_modules: selectedModules, intent: "", options: {} }),
       mode: args.mode,
       actionLabel: args.actionLabel,
       pushLog: args.pushLog,
@@ -327,6 +353,60 @@ async function runWorkflowStream(args: {
       setWorkflowError: args.setWorkflowError,
     });
   }
+  if (args.mode === "apply") {
+    return consumeWorkflowResponse({
+      response: await applyOpenTofuDeployStream(args.projectId, { selected_modules: selectedModules, intent: "", options: {} }),
+      mode: args.mode,
+      actionLabel: args.actionLabel,
+      pushLog: args.pushLog,
+      pushProblem: args.pushProblem,
+      setWorkflowError: args.setWorkflowError,
+    });
+  }
+  handleWorkflowEvent({
+    rawEvent: { type: "pipeline.start", selected_modules: selectedModules },
+    mode: args.mode,
+    actionLabel: args.actionLabel,
+    pushLog: args.pushLog,
+    pushProblem: args.pushProblem,
+    setWorkflowError: args.setWorkflowError,
+  });
+  const apply = await consumeWorkflowResponse({
+    response: await applyOpenTofuDeployStream(args.projectId, { selected_modules: selectedModules, intent: "", options: {} }),
+    mode: args.mode,
+    actionLabel: args.actionLabel,
+    pushLog: args.pushLog,
+    pushProblem: args.pushProblem,
+    setWorkflowError: args.setWorkflowError,
+  });
+  if (!apply.ok) {
+    handleWorkflowEvent({
+      rawEvent: { type: "pipeline.done", status: "failed" },
+      mode: args.mode,
+      actionLabel: args.actionLabel,
+      pushLog: args.pushLog,
+      pushProblem: args.pushProblem,
+      setWorkflowError: args.setWorkflowError,
+    });
+    return { ok: false };
+  }
+  const config = await consumeWorkflowResponse({
+    response: await runAnsibleConfigStream(args.projectId, selectedModules, ""),
+    mode: args.mode,
+    actionLabel: args.actionLabel,
+    pushLog: args.pushLog,
+    pushProblem: args.pushProblem,
+    setWorkflowError: args.setWorkflowError,
+  });
+  handleWorkflowEvent({
+    rawEvent: { type: "pipeline.done", status: config.ok ? "ok" : "failed" },
+    mode: args.mode,
+    actionLabel: args.actionLabel,
+    pushLog: args.pushLog,
+    pushProblem: args.pushProblem,
+    setWorkflowError: args.setWorkflowError,
+  });
+  return config;
 }
 
 function useRunWorkflow(args: {

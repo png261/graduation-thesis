@@ -11,7 +11,6 @@ interface ProjectConfigTabProps {
   provider: string | null | undefined;
   projectCount: number;
   onDeleteProject: () => Promise<void>;
-  onOpenRunDetails: (runId: string) => void;
 }
 
 function ProjectConfigHeader({ projectName }: { projectName: string }) {
@@ -28,13 +27,11 @@ function ProjectConfigTabs({
   provider,
   projectName,
   projectCount,
-  onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
-  onOpenRunDetails: (runId: string) => void;
 }) {
   return (
     <Tabs value={state.configTab} onValueChange={(value) => state.setConfigTab(value as ConfigTab)}>
@@ -44,7 +41,6 @@ function ProjectConfigTabs({
         provider={provider}
         projectName={projectName}
         projectCount={projectCount}
-        onOpenRunDetails={onOpenRunDetails}
       />
     </Tabs>
   );
@@ -64,13 +60,11 @@ function ProjectConfigTabsContent({
   provider,
   projectName,
   projectCount,
-  onOpenRunDetails,
 }: {
   state: ReturnType<typeof useProjectConfigState>;
   provider: string | null | undefined;
   projectName: string;
   projectCount: number;
-  onOpenRunDetails: (runId: string) => void;
 }) {
   return (
     <>
@@ -82,7 +76,6 @@ function ProjectConfigTabsContent({
           state={state}
           projectName={projectName}
           projectCount={projectCount}
-          onOpenRunDetails={onOpenRunDetails}
         />
       </TabsContent>
     </>
@@ -119,7 +112,6 @@ export function ProjectConfigTab({
   provider,
   projectCount,
   onDeleteProject,
-  onOpenRunDetails,
 }: ProjectConfigTabProps) {
   const state = useProjectConfigState({ projectId, provider, onDeleteProject });
   return (
@@ -130,7 +122,6 @@ export function ProjectConfigTab({
         provider={provider}
         projectName={projectName}
         projectCount={projectCount}
-        onOpenRunDetails={onOpenRunDetails}
       />
       <PullRequestModalGate projectId={projectId} state={state} />
     </div>

@@ -25,8 +25,6 @@ services:
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:postgres@postgres:5432/postgres}
       PROJECTS_ROOT: /data/projects
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-amqp://guest:guest@rabbitmq:5672//}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -39,76 +37,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      rabbitmq:
-        condition: service_started
-    restart: unless-stopped
-
-  celery-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: deepagents-backend:local
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://postgres:postgres@postgres:5432/postgres}
-      PROJECTS_ROOT: /data/projects
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-amqp://guest:guest@rabbitmq:5672//}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
-    command: ["celery", "-A", "app.celery_app.celery_app", "worker", "--loglevel=INFO"]
-    volumes:
-      - ${PROJECTS_HOST_PATH:-./projects-data}:/data/projects
-      - ./app:/app/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      rabbitmq:
-        condition: service_started
-    restart: unless-stopped
-
-  flower:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: deepagents-backend:local
-    env_file:
-      - .env
-    environment:
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-amqp://guest:guest@rabbitmq:5672//}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
-      FLOWER_PORT: ${FLOWER_PORT:-5555}
-    command:
-      [
-        "celery",
-        "-A",
-        "app.celery_app.celery_app",
-        "flower",
-        "--port=5555",
-        "--persistent=False",
-      ]
-    ports:
-      - "${FLOWER_PORT:-5555}:5555"
-    depends_on:
-      rabbitmq:
-        condition: service_started
-      redis:
-        condition: service_started
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    restart: unless-stopped
-
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    ports:
-      - "5672:5672"
-      - "15672:15672"
     restart: unless-stopped
 
 volumes:

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
-  getProjectRunHistory,
   getOpenTofuDeployPreflight,
   getOpenTofuStatus,
   validateOpenTofuTargetContract,
@@ -9,7 +8,6 @@ import {
   type OpenTofuDeployPreflight,
   type OpenTofuStatus,
   type ProjectPostDeploySummary,
-  type ProjectRunHistoryItem,
   type ProjectSsmReadiness,
   type ProjectTerraformTargetContract,
 } from "../../api/projects";
@@ -116,15 +114,6 @@ function orderedDeployChecklist(deployPreflight: OpenTofuDeployPreflight | null)
   );
 }
 
-function latestPostDeployItem(items: ProjectRunHistoryItem[]): ProjectRunHistoryItem | null {
-  return (
-    items.find((item) => Boolean(item.post_deploy_summary) && Boolean(item.stage_summary?.post_deploy))
-    ?? items.find((item) => Boolean(item.post_deploy_summary))
-    ?? items.find((item) => Boolean(item.stage_summary?.post_deploy))
-    ?? null
-  );
-}
-
 function applyPreflightState(
   data: OpenTofuDeployPreflight,
   setDeployPreflight: (value: OpenTofuDeployPreflight | null) => void,
@@ -172,20 +161,11 @@ function loadDeployStatus(
       setSsmReadiness(null);
       setDeployPreflightError(error instanceof Error ? error.message : "Failed to load deploy readiness");
     });
-  void getProjectRunHistory(projectId, { limit: 20, offset: 0 })
-    .then((data) => {
-      if (cancelled()) return;
-      const latest = latestPostDeployItem(data.items);
-      setLatestPostDeploy(latest?.post_deploy_summary ?? null);
-      setLatestPostDeployRunId(latest?.id ?? null);
-      setLatestPostDeployStatus(latest?.stage_summary?.post_deploy?.status ?? latest?.post_deploy_summary?.status ?? "");
-    })
-    .catch(() => {
-      if (cancelled()) return;
-      setLatestPostDeploy(null);
-      setLatestPostDeployRunId(null);
-      setLatestPostDeployStatus("");
-    });
+  if (!cancelled()) {
+    setLatestPostDeploy(null);
+    setLatestPostDeployRunId(null);
+    setLatestPostDeployStatus("");
+  }
 }
 
 export function useDeployStatus(projectId: string) {

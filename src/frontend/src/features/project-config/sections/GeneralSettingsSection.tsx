@@ -6,12 +6,10 @@ export function GeneralSettingsSection({
   state,
   projectName,
   projectCount,
-  onOpenRunDetails,
 }: {
   state: ProjectConfigState;
   projectName: string;
   projectCount: number;
-  onOpenRunDetails: (runId: string) => void;
 }) {
   return (
     <div>

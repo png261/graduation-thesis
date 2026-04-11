@@ -1,13 +1,3 @@
-import type { components as GeneratedComponents } from "../generated/openapi-types";
-
-type GeneratedSchemas = GeneratedComponents extends { schemas: infer S } ? S : never;
-type GeneratedProjectJobKind = NonNullable<
-  GeneratedSchemas extends { ProjectJobKind?: infer T } ? T : never
->;
-type GeneratedProjectJobStatus = NonNullable<
-  GeneratedSchemas extends { ProjectJobStatus?: infer T } ? T : never
->;
-
 export type CloudProvider = "aws" | "gcloud";
 
 export interface ProjectTerraformValidation {
@@ -224,23 +214,6 @@ export interface Project {
   createdAt: string;
 }
 
-export type ProjectJobKind =
-  [GeneratedProjectJobKind] extends [never]
-    ? "pipeline" | "apply" | "plan" | "destroy" | "ansible" | "graph" | "cost"
-    : GeneratedProjectJobKind;
-export type ProjectJobStatus =
-  [GeneratedProjectJobStatus] extends [never]
-    ? "queued" | "running" | "succeeded" | "failed" | "canceled"
-    : GeneratedProjectJobStatus;
-
-export interface ProjectJobEvent {
-  seq?: number;
-  type: string;
-  status?: string;
-  message?: string;
-  [key: string]: unknown;
-}
-
 export interface ProjectPostDeploySection {
   items: Array<Record<string, unknown>>;
   raw?: string | null;
@@ -273,72 +246,6 @@ export interface ProjectPostDeploySummary {
   collected_at?: string | null;
 }
 
-export interface ProjectJobStageState {
-  status: string;
-  started_at?: string | null;
-  finished_at?: string | null;
-  message?: string | null;
-}
-
-export interface ProjectJobStageSummary {
-  apply?: ProjectJobStageState;
-  ssm_readiness?: ProjectJobStageState;
-  ansible?: ProjectJobStageState;
-  post_deploy?: ProjectJobStageState;
-}
-
-export interface ProjectJob {
-  id: string;
-  project_id: string;
-  user_id: string;
-  kind: ProjectJobKind;
-  status: ProjectJobStatus;
-  params: {
-    selected_modules?: string[];
-    intent?: string | null;
-    review_session_id?: string | null;
-    review_target?: string | null;
-    scope_mode?: string | null;
-    confirmation?: {
-      project_name?: string;
-      keyword?: string;
-      selected_modules?: string[];
-    } | null;
-    options?: Record<string, unknown>;
-  };
-  result: Record<string, unknown> | null;
-  error: Record<string, unknown> | null;
-  event_tail: ProjectJobEvent[];
-  post_deploy_summary?: ProjectPostDeploySummary;
-  post_deploy_hosts?: ProjectPostDeployHost[];
-  stage_summary?: ProjectJobStageSummary;
-  celery_task_id: string | null;
-  rerun_of_job_id: string | null;
-  created_at: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  cancel_requested_at: string | null;
-}
-
-export interface ProjectJobListResult {
-  total: number;
-  items: ProjectJob[];
-}
-
-export interface EnqueueProjectJobBody {
-  kind: ProjectJobKind;
-  selected_modules?: string[];
-  intent?: string | null;
-  review_session_id?: string | null;
-  review_target?: string | null;
-  scope_mode?: string | null;
-  confirmation?: {
-    project_name?: string;
-    keyword?: string;
-    selected_modules?: string[];
-  } | null;
-  options?: Record<string, unknown>;
-}
 
 export interface Thread {
   id: string;
@@ -362,6 +269,7 @@ export interface PathMove {
 export interface CredentialsData {
   provider: string | null;
   credentials: Record<string, string>;
+  credential_profile_id?: string | null;
   required_fields: string[];
   missing_fields: string[];
   apply_ready: boolean;
@@ -549,34 +457,12 @@ export interface OpenTofuGraphResult {
   raw_dot?: Record<string, string>;
 }
 
-export interface ProjectRunHistoryItem {
-  id: string;
-  project_id: string;
-  user_id: string;
-  kind: string;
-  status: string;
-  params: Record<string, unknown>;
-  result: Record<string, unknown> | null;
-  error: Record<string, unknown> | null;
-  post_deploy_summary?: ProjectPostDeploySummary;
-  post_deploy_hosts?: ProjectPostDeployHost[];
-  stage_summary?: ProjectJobStageSummary;
-  created_at: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export interface ProjectRunHistoryResult {
-  total: number;
-  items: ProjectRunHistoryItem[];
-}
-
 export interface ProjectDriftStatus {
-  status: "no_modules" | "state_missing" | "plan_missing" | "plan_outdated" | "in_sync";
+  status: "no_modules" | "state_missing" | "in_sync";
   module_count: number;
   modules_without_state: string[];
-  last_plan_job: ProjectRunHistoryItem | null;
-  last_apply_job: ProjectRunHistoryItem | null;
+  last_plan_job: null;
+  last_apply_job: null;
 }
 
 export interface GitHubSession {

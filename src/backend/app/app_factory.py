@@ -11,10 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import cache as runtime_cache
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.persistence.runtime import ServiceDatabaseRuntime
-from app.services.jobs import redis_bus as jobs_redis_bus
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -127,7 +127,7 @@ def create_service_app(
         yield
         for runtime in reversed(service_runtimes):
             await runtime.close()
-        await jobs_redis_bus.close_redis()
+        await runtime_cache.close_redis()
         logger.info("Database closed")
 
     app = FastAPI(title=title, version="0.1.0", lifespan=service_lifespan)

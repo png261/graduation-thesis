@@ -14,13 +14,16 @@ export async function getCredentials(
 
 export async function updateCredentials(
   projectId: string,
-  credentials: Record<string, string>,
+  payload: {
+    credentials?: Record<string, string>;
+    credential_profile_id?: string | null;
+  },
 ): Promise<void> {
   const res = await apiRequest(`/api/projects/${projectId}/credentials`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ credentials }),
+    body: JSON.stringify(payload),
   });
   await apiJson(res);
 }

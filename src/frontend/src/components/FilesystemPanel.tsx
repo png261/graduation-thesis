@@ -1,5 +1,4 @@
-import { Check, Code2, Copy, DollarSign, GitBranch } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Code2, DollarSign, GitBranch } from "lucide-react";
 
 import {
   CostsWorkspaceMainPanel,
@@ -11,8 +10,6 @@ import {
   GraphSidebar,
   GraphWorkspaceMainPanel,
   ImportRepoDialog,
-  JobsWorkspaceMainPanel,
-  JobsWorkspaceSidebarPanel,
   StateBackendsConnectDialog,
   StateBackendsMainPanel,
   StateBackendsSidebarPanel,
@@ -52,20 +49,6 @@ const WORKSPACE_TABS = [
   ["costs", "Costs", DollarSign],
   ["graph", "Graph", GitBranch],
 ] as const;
-
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
-
-function extensionFromPath(path: string): string {
-  const name = path.split("/").pop() ?? path;
-  const index = name.lastIndexOf(".");
-  if (index < 0 || index === name.length - 1) return "";
-  return name.slice(index + 1).toLowerCase();
-}
-
-function isCopyableFile(path: string | null) {
-  if (!path) return false;
-  return !IMAGE_EXTENSIONS.has(extensionFromPath(path));
-}
 
 export function createFilesystemPanelActions(state: FilesystemPanelState): FilesystemPanelActions {
   return {
@@ -165,23 +148,6 @@ function GraphSidebarView({ state, actions }: { state: FilesystemPanelState; act
   );
 }
 
-function JobsSidebar({ state }: { state: FilesystemPanelState }) {
-  return (
-    <JobsWorkspaceSidebarPanel
-      jobs={state.jobs}
-      loading={state.jobsLoading}
-      error={state.jobsError}
-      statusFilter={state.jobsStatusFilter}
-      kindFilter={state.jobsKindFilter}
-      selectedJobId={state.selectedJobId}
-      onStatusFilter={state.setJobsStatusFilter}
-      onKindFilter={state.setJobsKindFilter}
-      onSelectJob={state.setSelectedJobId}
-      onRefresh={state.refreshJobs}
-    />
-  );
-}
-
 function StateBackendsSidebar({ state }: { state: FilesystemPanelState }) {
   return (
     <StateBackendsSidebarPanel
@@ -200,62 +166,23 @@ function WorkspaceSidebarContent({ state, actions }: { state: FilesystemPanelSta
   if (state.workspaceTab === "code") return <CodeSidebar state={state} actions={actions} />;
   if (state.workspaceTab === "costs") return <CostsSidebar state={state} />;
   if (state.workspaceTab === "graph") return <GraphSidebarView state={state} actions={actions} />;
-  if (state.workspaceTab === "state") return <StateBackendsSidebar state={state} />;
-  return <JobsSidebar state={state} />;
+  return <StateBackendsSidebar state={state} />;
 }
 
 function CodeMainToolbar({
   selectedPath,
-  content,
-  isLoading,
 }: {
   selectedPath: string | null;
   content: string;
   isLoading: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
-  const canCopy = Boolean(!isLoading && content && isCopyableFile(selectedPath));
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1200);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  const handleCopy = async () => {
-    if (!canCopy) return;
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  };
-
   return (
     <div className="flex h-14 items-center justify-between gap-3 border-b border-[var(--da-border)] bg-[var(--da-panel)] px-4">
       <div className="flex min-w-0 items-center gap-3">
         <span className="truncate font-mono text-sm font-medium text-[var(--da-text)]">
           {selectedPath || "No file selected"}
         </span>
-        <span className="rounded-full border border-[var(--da-border)] bg-[var(--da-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--da-muted)]">
-          v0.0.1
-        </span>
       </div>
-      <button
-        type="button"
-        onClick={() => void handleCopy()}
-        disabled={!canCopy}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold",
-          canCopy
-            ? "text-[var(--da-text)] hover:bg-[var(--da-elevated)]"
-            : "cursor-not-allowed text-[var(--da-muted)]/65",
-        )}
-      >
-        {copied ? <Check className="h-4 w-4 text-emerald-300" /> : <Copy className="h-4 w-4" />}
-        {copied ? "Copied" : "Copy code"}
-      </button>
     </div>
   );
 }
@@ -311,19 +238,6 @@ function GraphMainView({ state }: { state: FilesystemPanelState }) {
   );
 }
 
-function JobsMainView({ state }: { state: FilesystemPanelState }) {
-  return (
-    <JobsWorkspaceMainPanel
-      selectedJob={state.selectedJob}
-      selectedSummary={state.selectedJobSummary}
-      events={state.selectedJobEvents}
-      streaming={state.jobsStreaming}
-      onCancel={state.cancelSelectedJob}
-      onRerun={state.rerunSelectedJob}
-    />
-  );
-}
-
 function StateBackendsMainView({ state }: { state: FilesystemPanelState }) {
   return (
     <StateBackendsMainPanel
@@ -369,8 +283,7 @@ function WorkspaceMainContent({
   if (state.workspaceTab === "code") return <CodeMainView state={state} projectId={projectId} />;
   if (state.workspaceTab === "costs") return <CostsMainView state={state} actions={actions} />;
   if (state.workspaceTab === "graph") return <GraphMainView state={state} />;
-  if (state.workspaceTab === "state") return <StateBackendsMainView state={state} />;
-  return <JobsMainView state={state} />;
+  return <StateBackendsMainView state={state} />;
 }
 
 function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; actions: FilesystemPanelActions }) {
@@ -438,10 +351,9 @@ function FilesystemDialogs({ state, actions }: { state: FilesystemPanelState; ac
         error={state.stateConnectError}
         cloudProvider={state.stateCloudProvider}
         setCloudProvider={state.setStateCloudProvider}
-        cloudAccessKeyId={state.stateCloudAccessKeyId}
-        setCloudAccessKeyId={state.setStateCloudAccessKeyId}
-        cloudSecretAccessKey={state.stateCloudSecretAccessKey}
-        setCloudSecretAccessKey={state.setStateCloudSecretAccessKey}
+        cloudProfiles={state.stateCloudProfiles}
+        cloudCredentialProfileId={state.stateCloudCredentialProfileId}
+        setCloudCredentialProfileId={state.setStateCloudCredentialProfileId}
         cloudName={state.stateCloudName}
         setCloudName={state.setStateCloudName}
         cloudBucket={state.stateCloudBucket}
@@ -471,21 +383,6 @@ export function FilesystemPanel({ projectId, state, actions }: FilesystemPanelPr
         <WorkspaceMainContent state={state} actions={actions} projectId={projectId} />
       </section>
       <FilesystemDialogs state={state} actions={actions} />
-    </div>
-  );
-}
-
-export function FilesystemJobsPage({ state }: { state: FilesystemPanelState }) {
-  return (
-    <div className="flex h-full min-h-0 overflow-hidden border-l border-[var(--da-border)] bg-[var(--da-panel)]">
-      <aside className="flex h-full w-[352px] min-w-[304px] flex-col border-r border-[var(--da-border)] bg-[var(--da-elevated)]">
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <JobsSidebar state={state} />
-        </div>
-      </aside>
-      <section className="min-w-0 flex-1">
-        <JobsMainView state={state} />
-      </section>
     </div>
   );
 }

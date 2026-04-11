@@ -1,4 +1,5 @@
 """Project state backend endpoints."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,8 +20,9 @@ router = APIRouter()
 class CloudImportBody(BaseModel):
     provider: str
     name: str = ""
-    access_key_id: str
-    secret_access_key: str
+    credential_profile_id: str | None = None
+    access_key_id: str = ""
+    secret_access_key: str = ""
     bucket: str
     key: str = ""
     prefix: str = ""
@@ -59,8 +61,9 @@ async def deploy_drift_summary(
 @router.get("/{project_id}/state-backends/import/cloud/buckets")
 async def list_cloud_buckets(
     provider: str = Query(...),
-    access_key_id: str = Query(...),
-    secret_access_key: str = Query(...),
+    credential_profile_id: str | None = Query(default=None),
+    access_key_id: str = Query(default=""),
+    secret_access_key: str = Query(default=""),
     user: User = Depends(auth_deps.require_current_user),
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> dict:
@@ -68,6 +71,7 @@ async def list_cloud_buckets(
         buckets = await state_service.browse_cloud_buckets(
             user_id=user.id,
             provider=provider,
+            credential_profile_id=credential_profile_id,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
             settings=get_settings(),
@@ -82,8 +86,9 @@ async def list_cloud_buckets(
 @router.get("/{project_id}/state-backends/import/cloud/objects")
 async def list_cloud_objects(
     provider: str = Query(...),
-    access_key_id: str = Query(...),
-    secret_access_key: str = Query(...),
+    credential_profile_id: str | None = Query(default=None),
+    access_key_id: str = Query(default=""),
+    secret_access_key: str = Query(default=""),
     bucket: str = Query(...),
     prefix: str = Query(default=""),
     user: User = Depends(auth_deps.require_current_user),
@@ -93,6 +98,7 @@ async def list_cloud_objects(
         objects = await state_service.browse_cloud_objects(
             user_id=user.id,
             provider=provider,
+            credential_profile_id=credential_profile_id,
             access_key_id=access_key_id,
             secret_access_key=secret_access_key,
             bucket=bucket,
@@ -118,7 +124,7 @@ async def import_cloud_state_backend(
             user_id=user.id,
             provider=body.provider,
             name=body.name,
-            credential_profile_id=None,
+            credential_profile_id=body.credential_profile_id,
             access_key_id=body.access_key_id,
             secret_access_key=body.secret_access_key,
             bucket=body.bucket,

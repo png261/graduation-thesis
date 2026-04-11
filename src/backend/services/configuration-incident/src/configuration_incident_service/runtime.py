@@ -5,8 +5,6 @@ from app.core.config import get_settings
 from app.core.service_settings import build_service_settings_bundle
 from app.shared.identity import persistence as identity_project_persistence
 from app.shared.identity.runtime import runtime as identity_project_db
-from app.shared.workflow import api as workflow_service
-from app.shared.workflow.streaming import stream_enqueued_project_job
 
 from . import api as configuration_incident_service
 from .db import runtime as configuration_incident_db
@@ -29,6 +27,4 @@ __all__ = [
     "create_app",
     "identity_project_persistence",
     "settings",
-    "stream_enqueued_project_job",
-    "workflow_service",
 ]

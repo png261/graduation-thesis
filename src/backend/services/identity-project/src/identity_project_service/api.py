@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from .backend import (
-    _DEFAULT_AGENT_MD,
     invalidate_agent,
     project_credentials,
     project_files,
     required_credential_fields_impl,
 )
 
-DEFAULT_AGENT_MD = _DEFAULT_AGENT_MD
 MoveConflictError = project_files.MoveConflictError
 
 

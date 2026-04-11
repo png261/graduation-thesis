@@ -11,10 +11,9 @@ from sse_starlette import EventSourceResponse
 from app.core.config import get_settings
 from app.models import Project
 from app.routers import auth_dependencies as auth_deps
-from app.routers.projects_routes.streaming import stream_enqueued_project_job
+from app.routers.projects_routes.streaming import stream_project_events
 from app.services.ansible.runtime import status as ansible_status_service
 from app.services.ansible.runtime.ssm_readiness import get_ssm_readiness
-from app.services.jobs import service as jobs_service
 from app.services.opentofu import deploy as opentofu_deploy
 from app.services.opentofu.runtime import review_gate
 from app.services.opentofu.runtime import target_contract as target_contract_service
@@ -96,17 +95,7 @@ def _is_fatal_runtime_error(data: dict) -> bool:
 
 
 async def _latest_successful_plan_result(project: Project) -> dict[str, Any] | None:
-    history = await jobs_service.list_jobs(
-        project_id=project.id,
-        user_id=str(project.user_id or ""),
-        status="succeeded",
-        kind="plan",
-        limit=1,
-        offset=0,
-    )
-    latest = history["items"][0] if history["items"] else None
-    result = latest.get("result") if isinstance(latest, dict) else None
-    return result if isinstance(result, dict) else None
+    return review_gate.load_recorded_plan_review(project.id)
 
 
 async def _resolved_review(
@@ -124,31 +113,144 @@ async def _resolved_review(
     )
 
 
-def _history_item_with_post_deploy(item: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(item)
-    post_deploy_summary = normalized.get("post_deploy_summary")
-    result = normalized.get("result")
-    if post_deploy_summary is None and isinstance(result, dict):
-        post_deploy = result.get("post_deploy")
-        if isinstance(post_deploy, dict):
-            summary = post_deploy.get("summary") if isinstance(post_deploy.get("summary"), dict) else {}
-            hosts = post_deploy.get("hosts") if isinstance(post_deploy.get("hosts"), list) else []
-            skipped_hosts = (
-                post_deploy.get("skipped_hosts") if isinstance(post_deploy.get("skipped_hosts"), list) else []
-            )
-            normalized["post_deploy_summary"] = {
-                "status": str(post_deploy.get("status") or summary.get("status") or "failed"),
-                "host_count": int(summary.get("host_count") or len(hosts)),
-                "skipped_host_count": int(summary.get("skipped_host_count") or len(skipped_hosts)),
-                "service_count": int(summary.get("service_count") or 0),
-                "health_summary": str(summary.get("health_summary") or "No health checks collected."),
-                "collected_at": post_deploy.get("collected_at"),
-            }
-    if "post_deploy_hosts" not in normalized and isinstance(result, dict):
-        post_deploy = result.get("post_deploy")
-        if isinstance(post_deploy, dict) and isinstance(post_deploy.get("hosts"), list):
-            normalized["post_deploy_hosts"] = post_deploy.get("hosts")
-    return normalized
+async def _apply_error_event(
+    *,
+    project: Project,
+    request: ProjectExecutionRequest,
+    settings,
+) -> dict[str, Any] | None:
+    opentofu_status = await opentofu_deploy.get_opentofu_status(project.id)
+    ansible_status = await ansible_status_service.get_ansible_status(project.id, settings)
+    drift_refresh = await state_backends_service.get_project_deploy_drift_summary(project.id)
+    target_contract = target_contract_service.get_target_contract_status(project.id)
+    ssm_readiness = await get_ssm_readiness(
+        project.id,
+        settings,
+        request.selected_modules_list() if request.effective_scope_mode() == "partial" else [],
+    )
+    preflight = execution_policy.build_deploy_preflight_state(
+        request=request,
+        opentofu_status=opentofu_status,
+        ansible_status=ansible_status,
+        target_contract=target_contract,
+        resolved_review=await _resolved_review(project=project, request=request),
+        drift_refresh=drift_refresh,
+        ssm_readiness=ssm_readiness,
+    )
+    if not preflight.primary_blocker_code:
+        return None
+    return {"type": "error", "code": preflight.primary_blocker_code, "message": preflight.primary_blocker_message}
+
+
+async def _destroy_error_event(
+    *,
+    project: Project,
+    request: ProjectExecutionRequest,
+    settings,
+) -> dict[str, Any] | None:
+    opentofu_status = await opentofu_deploy.get_opentofu_status(project.id)
+    credential_gate = execution_policy.build_credential_gate(opentofu_status)
+    if credential_gate["blocking"]:
+        return execution_policy.gate_error(
+            "saved_credentials_incomplete",
+            "Saved AWS credentials are incomplete.",
+            missing_fields=list(credential_gate["missing_fields"]),
+        )
+    review_payload = execution_policy.build_review_gate_payload(
+        resolved_review=await _resolved_review(project=project, request=request),
+        request=request,
+        review_target="destroy",
+    )
+    review_error = execution_policy.resolve_review_gate_error(review_payload, review_target="destroy")
+    if review_error is not None:
+        return review_error
+    confirmation_error = execution_policy.resolve_destroy_confirmation_error(
+        project_name=str(project.name or ""),
+        request=request,
+    )
+    if confirmation_error is not None:
+        return confirmation_error
+    return None
+
+
+async def _apply_event_stream(
+    *,
+    project: Project,
+    request_body: ProjectExecutionRequest,
+    settings,
+    request: Request,
+):
+    error_event = await _apply_error_event(project=project, request=request_body, settings=settings)
+    if error_event is not None:
+        yield error_event
+        yield {"type": "deploy.done", "status": "failed", "results": []}
+        return
+    async for event in opentofu_deploy.apply_modules_stream(
+        project_id=project.id,
+        settings=settings,
+        selected_modules=request_body.selected_modules_list(),
+        intent=request_body.intent,
+        policy_override=request_body.option_enabled("override_policy"),
+        cancel_checker=request.is_disconnected,
+    ):
+        yield event
+
+
+async def _plan_event_stream(
+    *,
+    project: Project,
+    request_body: ProjectExecutionRequest,
+    settings,
+    request: Request,
+):
+    final_status = "failed"
+    final_results: list[dict[str, Any]] = []
+    async for event in opentofu_deploy.plan_modules_stream(
+        project_id=project.id,
+        settings=settings,
+        selected_modules=request_body.selected_modules_list(),
+        intent=request_body.intent,
+        destroy_plan=request_body.resolved_review_target() == "destroy",
+        cancel_checker=request.is_disconnected,
+    ):
+        if event.get("type") == "plan.done":
+            final_status = str(event.get("status") or "failed")
+            final_results = event.get("results") if isinstance(event.get("results"), list) else []
+        yield event
+    if final_status == "ok":
+        review_gate.save_recorded_plan_review(
+            project_id=project.id,
+            payload=review_gate.record_plan_review_metadata(
+                project_id=project.id,
+                result={"status": final_status, "results": final_results},
+                review_session_id=request_body.review_session_id,
+                review_target=request_body.review_target,
+                scope_mode=request_body.scope_mode,
+                selected_modules=request_body.selected_modules_list(),
+            ),
+        )
+
+
+async def _destroy_event_stream(
+    *,
+    project: Project,
+    request_body: ProjectExecutionRequest,
+    settings,
+    request: Request,
+):
+    error_event = await _destroy_error_event(project=project, request=request_body, settings=settings)
+    if error_event is not None:
+        yield error_event
+        yield {"type": "destroy.done", "status": "failed", "results": []}
+        return
+    async for event in opentofu_deploy.destroy_modules_stream(
+        project_id=project.id,
+        settings=settings,
+        selected_modules=request_body.selected_modules_list(),
+        intent=request_body.intent,
+        cancel_checker=request.is_disconnected,
+    ):
+        yield event
 
 
 @router.get("/{project_id}/opentofu/status")
@@ -226,34 +328,18 @@ async def opentofu_apply_stream(
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        jobs_service=jobs_service,
-        project=project,
-        kind="apply",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    settings = get_settings()
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: _apply_event_stream(
+            project=project,
+            request_body=request_body,
+            settings=settings,
+            request=request,
+        ),
         request=request,
         fallback_error_code="opentofu_apply_failed",
     )
-
-
-@router.get("/{project_id}/runs/history")
-async def runs_history(
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    project: Project = Depends(auth_deps.get_owned_project_or_404),
-) -> dict:
-    history = await jobs_service.list_jobs(
-        project_id=project.id,
-        user_id=str(project.user_id or ""),
-        status=None,
-        kind=None,
-        limit=limit,
-        offset=offset,
-    )
-    return {
-        "total": history["total"],
-        "items": [_history_item_with_post_deploy(item) for item in history["items"]],
-    }
 
 
 @router.get("/{project_id}/drift/status")
@@ -270,11 +356,15 @@ async def opentofu_plan_stream(
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        jobs_service=jobs_service,
-        project=project,
-        kind="plan",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    settings = get_settings()
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: _plan_event_stream(
+            project=project,
+            request_body=request_body,
+            settings=settings,
+            request=request,
+        ),
         request=request,
         fallback_error_code="opentofu_plan_failed",
     )
@@ -286,11 +376,15 @@ async def opentofu_destroy_stream(
     request: Request,
     project: Project = Depends(auth_deps.get_owned_project_or_404),
 ) -> EventSourceResponse:
-    return stream_enqueued_project_job(
-        jobs_service=jobs_service,
-        project=project,
-        kind="destroy",
-        payload=_execution_request_from_body(body).to_job_payload(),
+    settings = get_settings()
+    request_body = _execution_request_from_body(body)
+    return stream_project_events(
+        event_stream_factory=lambda: _destroy_event_stream(
+            project=project,
+            request_body=request_body,
+            settings=settings,
+            request=request,
+        ),
         request=request,
         fallback_error_code="opentofu_destroy_failed",
     )

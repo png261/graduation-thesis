@@ -12,7 +12,6 @@ from app.routers.projects_routes.project_ansible import router as project_ansibl
 from app.routers.projects_routes.project_crud import router as project_crud_router
 from app.routers.projects_routes.project_github import router as project_github_router
 from app.routers.projects_routes.project_incidents import router as project_incidents_router
-from app.routers.projects_routes.project_jobs import router as project_jobs_router
 from app.routers.projects_routes.project_opentofu import router as project_opentofu_router
 from app.routers.projects_routes.project_state_backends import router as project_state_backends_router
 from app.routers.projects_routes.project_workspace import router as project_workspace_router
@@ -21,7 +20,6 @@ router = APIRouter()
 router.include_router(project_crud_router, prefix="/api/projects", tags=["projects"])
 router.include_router(project_github_router, prefix="/api/projects", tags=["projects"])
 router.include_router(project_incidents_router, prefix="/api/projects", tags=["projects"])
-router.include_router(project_jobs_router, prefix="/api/projects", tags=["projects"])
 router.include_router(project_ansible_router, prefix="/api/projects", tags=["projects"])
 router.include_router(project_opentofu_router, prefix="/api/projects", tags=["projects"])
 router.include_router(project_state_backends_router, prefix="/api/projects", tags=["projects"])

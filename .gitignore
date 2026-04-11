@@ -38,3 +38,5 @@ skills-lock.json
 .omx/
 .claude/
 CLAUDE.md
+!src/backend/app/services/agent/config/
+!src/backend/app/services/agent/config/**

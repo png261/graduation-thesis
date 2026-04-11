@@ -1,7 +1,9 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
-import { ArrowUpRight, CheckCircle2 } from "lucide-react";
-import { useMemo } from "react";
+import { CheckCircle2, LoaderCircle } from "lucide-react";
+import { useMemo, useState } from "react";
 
+import { DataTable } from "../tool-ui/data-table";
+import { safeParseSerializableDataTable } from "../tool-ui/data-table/schema";
 import { Terminal } from "../tool-ui";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -13,6 +15,12 @@ const FILE_ACTION_TITLES: Record<string, string> = {
   edit_file: "Edited file",
   read_file: "Read file",
   write_file: "Created file",
+};
+const FILE_ACTION_RUNNING_TITLES: Record<string, string> = {
+  delete_file: "Deleting file",
+  edit_file: "Editing file",
+  read_file: "Reading file",
+  write_file: "Creating file",
 };
 const COLLECTION_KEYS = ["documents", "files", "items", "paths", "resources", "results", "targets"];
 
@@ -28,6 +36,33 @@ type ToolBriefRow = {
   label: string;
   meta?: string;
   tone?: "default" | "success";
+};
+
+type InfraCostModule = {
+  name: string;
+  monthly_cost: number;
+};
+
+type InfraCostResource = {
+  id: string;
+  module: string;
+  resource_name: string;
+  resource_type: string;
+  quantity: number;
+  unit: string;
+  monthly_cost: number;
+};
+
+type InfraCostPayload = {
+  status: "ok" | "error";
+  message?: string;
+  scope?: string;
+  currency?: string;
+  total_monthly_cost?: number;
+  modules?: InfraCostModule[];
+  resources?: InfraCostResource[];
+  warnings?: string[];
+  available_modules?: string[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,6 +114,20 @@ function readNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readInfraCostPayload(value: unknown): InfraCostPayload | null {
+  if (!isRecord(value)) return null;
+  return value.status === "ok" || value.status === "error" ? (value as InfraCostPayload) : null;
+}
+
+function formatMoney(amount: number, currency: string) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency || "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount || 0);
+}
+
 function readMetadata(props: ToolCallMessagePartProps) {
   const structured = props as StructuredToolCallProps;
   return {
@@ -110,6 +159,12 @@ function toBriefTitle(toolName: string) {
   return toTitleCase(toolName);
 }
 
+function fileActionTitle(toolName: string, status: string) {
+  if (status === "running" && FILE_ACTION_RUNNING_TITLES[toolName]) {
+    return FILE_ACTION_RUNNING_TITLES[toolName];
+  }
+  return toBriefTitle(toolName);
+}
 function buildTerminalResult(props: ToolCallMessagePartProps, resultText: string) {
   if (looksLikeTerminalResult(props.result)) {
     const result = props.result as Record<string, unknown>;
@@ -224,11 +279,44 @@ function fileRows(props: ToolCallMessagePartProps): ToolBriefRow[] {
 
 function buildToolBrief(props: ToolCallMessagePartProps) {
   const toolName = resolveToolKey(props);
-  const title = toBriefTitle(toolName);
+  const title = fileActionTitle(toolName, getToolCallStatus(props));
   if (FILE_ACTION_TITLES[toolName]) return { title, rows: fileRows(props) };
   const docRows = isDocumentationTool(toolName) ? collectionRows(props.result, props.args) : [];
   if (docRows.length > 0) return { title, rows: docRows };
   return { title, rows: collectionRows(props.result, props.args) };
+}
+
+function buildInfraCostTablePayload(payload: InfraCostPayload, toolCallId: string) {
+  return {
+    id: `${toolCallId}-infra-costs`,
+    columns: [
+      { key: "module", label: "Module", priority: "primary" as const },
+      { key: "resource", label: "Resource", priority: "primary" as const },
+      { key: "quantity", label: "Quantity", align: "right" as const, format: { kind: "number", decimals: 2 } },
+      { key: "unit", label: "Units" },
+      { key: "monthlyCost", label: "Monthly Cost", align: "right" as const, format: { kind: "currency", currency: payload.currency || "USD" } },
+    ],
+    data: (payload.resources ?? []).map((resource) => ({
+      id: resource.id,
+      module: resource.module,
+      resource: `${resource.resource_type}.${resource.resource_name}`,
+      quantity: resource.quantity,
+      unit: resource.unit || "-",
+      monthlyCost: resource.monthly_cost,
+    })),
+    rowIdKey: "id",
+    defaultSort: { by: "monthlyCost", direction: "desc" as const },
+    emptyMessage: "No cost data yet.",
+    maxHeight: "24rem",
+    locale: "en-US",
+  };
+}
+
+function buildInfraCostSummaryRows(payload: InfraCostPayload): ToolBriefRow[] {
+  return (payload.modules ?? []).map((module) => ({
+    label: module.name,
+    meta: formatMoney(module.monthly_cost, payload.currency || "USD"),
+  }));
 }
 
 function ToolCallSection({ label, value }: { label: string; value: string }) {
@@ -262,14 +350,31 @@ function ToolBriefRows({ rows }: { rows: ToolBriefRow[] }) {
   );
 }
 
-function CompactFileActionCard({ title, row }: { title: string; row: ToolBriefRow }) {
+function CompactFileActionCard({
+  title,
+  row,
+  status,
+}: {
+  title: string;
+  row: ToolBriefRow;
+  status: string;
+}) {
+  const isRunning = status === "running";
   return (
     <div className="rounded-2xl border border-[var(--da-border)] bg-[var(--da-elevated)] px-4 py-3">
       <div className="flex items-center gap-3 text-sm">
-        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
-        <span className="font-semibold text-[var(--da-text)]">{title}:</span>
-        <span className="min-w-0 flex-1 truncate text-[var(--da-text)]">{row.label}</span>
-        <ArrowUpRight className="h-4 w-4 shrink-0 text-[var(--da-muted)]" />
+        {isRunning ? (
+          <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-[var(--da-accent)]" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-[var(--da-text)]">{title}</span>
+            {isRunning ? <span className="text-xs text-[var(--da-muted)]">Streaming…</span> : null}
+          </div>
+          <div className="truncate text-[var(--da-text)]">{row.label}</div>
+        </div>
       </div>
     </div>
   );
@@ -325,12 +430,83 @@ function DetailedToolHeader({
   );
 }
 
+function InfraCostToolCard(props: ToolCallMessagePartProps) {
+  const status = getToolCallStatus(props);
+  const payload = readInfraCostPayload(props.result);
+  const [sort, setSort] = useState<{ by?: string; direction?: "asc" | "desc" }>({
+    by: "monthlyCost",
+    direction: "desc",
+  });
+  const table = useMemo(
+    () =>
+      payload
+        ? safeParseSerializableDataTable(buildInfraCostTablePayload(payload, props.toolCallId ?? "infra-costs"))
+        : null,
+    [payload, props.toolCallId],
+  );
+  if (!payload) {
+    return (
+      <Card className="overflow-hidden border-[var(--da-border)] bg-[var(--da-elevated)]">
+        <DetailedToolHeader title="Infra Costs" status={status} />
+        <CardContent className="space-y-4 pt-5">
+          <p className="text-sm text-[var(--da-muted)]">
+            {status === "running" ? "Fetching infrastructure cost breakdown…" : "Waiting for cost data…"}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+  const warnings = (payload.warnings ?? []).filter(Boolean);
+  const availableModules = (payload.available_modules ?? []).filter(Boolean);
+  return (
+    <Card className="overflow-hidden border-[var(--da-border)] bg-[var(--da-elevated)]">
+      <DetailedToolHeader title="Infra Costs" status={status} />
+      <CardContent className="space-y-4 pt-5">
+        <div className="rounded-xl border border-[var(--da-border)] bg-[var(--da-bg)] px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--da-muted)]">Estimated monthly cost</p>
+              <p className="text-2xl font-semibold text-[var(--da-text)]">
+                {formatMoney(readNumber(payload.total_monthly_cost) ?? 0, payload.currency || "USD")}/mo
+              </p>
+            </div>
+            <Badge variant="outline">Scope {readString(payload.scope) || "all"}</Badge>
+          </div>
+        </div>
+        {payload.status === "error" ? (
+          <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700">
+            {readString(payload.message) || "Failed to load infra costs."}
+          </div>
+        ) : null}
+        <ToolBriefRows rows={buildInfraCostSummaryRows(payload)} />
+        {payload.status === "ok" && table ? (
+          <DataTable
+            {...table}
+            sort={sort}
+            onSortChange={(next) => setSort({ by: next.by, direction: next.direction })}
+          />
+        ) : null}
+        {warnings.length > 0 ? (
+          <div className="space-y-1 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-xs text-amber-700">
+            {warnings.map((warning) => <p key={warning}>{warning}</p>)}
+          </div>
+        ) : null}
+        {availableModules.length > 0 ? (
+          <p className="text-xs text-[var(--da-muted)]">Available modules: {availableModules.join(", ")}</p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ToolCallCard(props: ToolCallMessagePartProps) {
   const status = getToolCallStatus(props);
   const metadata = readMetadata(props);
   const toolName = resolveToolKey(props);
   const artifactPreview = useArtifactPreview(props.artifact);
+  if (toolName === "get_infra_costs") return <InfraCostToolCard {...props} />;
   const brief = buildToolBrief(props);
+  const title = brief.title;
   const resultText = props.result ? formatValue(props.result) : "";
   const terminalResult = buildTerminalResult(props, resultText);
   const compactBrief = isCompactBrief(
@@ -343,15 +519,15 @@ export function ToolCallCard(props: ToolCallMessagePartProps) {
   const showResult = !terminalResult && (props.isError || (!compactBrief && brief.rows.length < 1));
 
   if (FILE_ACTION_TITLES[toolName] && compactBrief && brief.rows.length === 1) {
-    return <CompactFileActionCard title={brief.title} row={brief.rows[0]} />;
+    return <CompactFileActionCard title={title} row={brief.rows[0]} status={status} />;
   }
 
   return (
     <Card className="overflow-hidden border-[var(--da-border)] bg-[var(--da-elevated)]">
       {compactBrief ? (
-        <CompactToolHeader title={brief.title} status={status} />
+        <CompactToolHeader title={title} status={status} />
       ) : (
-        <DetailedToolHeader title={brief.title} status={status} severity={metadata.severity} fixClass={metadata.fixClass} />
+        <DetailedToolHeader title={title} status={status} severity={metadata.severity} fixClass={metadata.fixClass} />
       )}
       <CardContent className="space-y-4 pt-5">
         <ToolBriefRows rows={brief.rows} />

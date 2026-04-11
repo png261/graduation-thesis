@@ -55,11 +55,6 @@ class Settings(BaseSettings):
         alias="ZIP_IMPORT_MAX_UNCOMPRESSED_BYTES",
     )
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
-    celery_broker_url: str = Field(default="amqp://guest:guest@localhost:5672//", alias="CELERY_BROKER_URL")
-    celery_result_backend: str = Field(default="redis://localhost:6379/1", alias="CELERY_RESULT_BACKEND")
-    jobs_event_ttl_seconds: int = Field(default=86400, alias="JOBS_EVENT_TTL_SECONDS")
-    jobs_event_tail_limit: int = Field(default=200, alias="JOBS_EVENT_TAIL_LIMIT")
-    jobs_history_retention_days: int = Field(default=90, alias="JOBS_HISTORY_RETENTION_DAYS")
     runtime_cache_ttl_seconds: int = Field(default=300, alias="RUNTIME_CACHE_TTL_SECONDS")
     opentofu_mcp_enabled: bool = Field(default=True, alias="OPENTOFU_MCP_ENABLED")
     opentofu_mcp_url: str = Field(default="https://mcp.opentofu.org/sse", alias="OPENTOFU_MCP_URL")

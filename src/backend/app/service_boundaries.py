@@ -58,22 +58,13 @@ SERVICE_BOUNDARIES: tuple[ServiceBoundary, ...] = (
     ),
     ServiceBoundary(
         name="workflow",
-        owned_data=("project_jobs", "job_event_tails", "job_cancellation_state"),
+        owned_data=(),
         current_references=(
             "app.workflow_main",
             "app.workflow_routes",
-            "app.services.workflow",
-            "app.celery_app",
-            "app.services.jobs",
-            "app.routers.projects_routes.project_jobs",
         ),
-        sync_contracts=("gateway.jobs",),
-        async_contracts=(
-            "provisioning.run-command",
-            "configuration-incident.run-command",
-            "conversation-agent.run-command",
-            "workflow.progress-event",
-        ),
+        sync_contracts=(),
+        async_contracts=(),
     ),
     ServiceBoundary(
         name="provisioning",

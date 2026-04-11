@@ -52,6 +52,10 @@ def resolve_plan_review(
     )
 
 
+def load_recorded_plan_review(project_id: str) -> dict[str, Any] | None:
+    return review_gate.load_recorded_plan_review(project_id)
+
+
 async def preview_deploy(*, project_id: str, settings: Settings, intent: str | None) -> dict[str, Any]:
     return await opentofu_deploy.preview_deploy(project_id=project_id, settings=settings, intent=intent)
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import hashlib
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -11,6 +12,7 @@ from app.services.project import files as project_files
 
 REVIEW_SESSION_MAX_AGE_MINUTES = 30
 WORKSPACE_FINGERPRINT_EXCLUDES = {".git", ".opentofu-runtime", ".agents", ".claude", "AGENTS.md"}
+_LATEST_REVIEW_METADATA_PATH = "/.opentofu-runtime/latest-plan-review.json"
 
 
 def _is_excluded_path(relative_path: Path) -> bool:
@@ -80,6 +82,26 @@ def record_plan_review_metadata(
         "workspace_fingerprint": build_workspace_fingerprint(project_id),
         "reviewed_at": timestamp.isoformat(),
     }
+
+
+def save_recorded_plan_review(*, project_id: str, payload: dict[str, Any]) -> None:
+    project_files.write_text(
+        project_id,
+        _LATEST_REVIEW_METADATA_PATH,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def load_recorded_plan_review(project_id: str) -> dict[str, Any] | None:
+    try:
+        raw = project_files.read_text(project_id, _LATEST_REVIEW_METADATA_PATH)
+    except FileNotFoundError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _parse_reviewed_at(value: Any) -> datetime | None:

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from app.core.config import get_settings
 from app.models import Project
 from app.routers import auth_dependencies as auth_deps
-from app.services.agent import _DEFAULT_AGENT_MD, invalidate_agent
+from app.services.agent import invalidate_agent
 from app.services.project import files as project_files
 
 router = APIRouter()
@@ -145,15 +145,6 @@ def _file_url_signature(project_id: str, virtual_path: str, expires: int) -> str
 def _verify_file_url_signature(project_id: str, virtual_path: str, expires: int, sig: str) -> bool:
     expected = _file_url_signature(project_id, virtual_path, expires)
     return hmac.compare_digest(expected, sig)
-
-
-@router.get("/{project_id}/memory")
-async def get_memory(project: Project = Depends(auth_deps.get_owned_project_or_404)) -> dict:
-    try:
-        content = project_files.read_text(project.id, "/AGENT.md")
-    except FileNotFoundError:
-        content = _DEFAULT_AGENT_MD
-    return {"content": content}
 
 
 class MemoryUpdate(BaseModel):

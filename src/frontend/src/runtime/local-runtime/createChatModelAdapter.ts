@@ -4,10 +4,10 @@ import type {
   ToolCallMessagePart,
 } from "@assistant-ui/react";
 
-import { cancelProjectJob, persistThread } from "../../api/projects";
+import { persistThread } from "../../api/projects";
 import { apiJson, apiRequest } from "../../api/client";
 import { parseEvidenceBundleText, type EvidenceBundlePayload } from "../../components/assistant-ui/evidence-bundle";
-import type { PolicyCheckEvent } from "../../contexts/FilesystemContext";
+import type { FilesystemSyncEvent, PolicyCheckEvent } from "../../contexts/FilesystemContext";
 import { readSseJson } from "../../lib/sse";
 import {
   dispatchAttachmentError,
@@ -29,13 +29,24 @@ const MUTATING_TOOL_NAMES = new Set([
   "copy_path",
   "delete_path",
 ]);
+const FOLLOWABLE_FILE_TOOL_NAMES = new Set(["write_file", "edit_file"]);
+const FILE_CONTENT_KEYS = [
+  "content",
+  "contents",
+  "file_content",
+  "fileContent",
+  "new_content",
+  "newContent",
+  "updated_content",
+  "updatedContent",
+];
 
 type SyntheticToolName = "evidence_bundle";
 
 interface AdapterDeps {
   getProjectId: () => string;
   authenticated: boolean;
-  notifyFileChanged: (path?: string) => void;
+  notifyFileChanged: (event?: FilesystemSyncEvent) => void;
   notifyPolicyCheck: (event: PolicyCheckEvent) => void;
   userScope?: string;
   notifyIncident?: (event: unknown) => void;
@@ -91,7 +102,19 @@ function addArrayChangedPaths(candidates: string[], values: unknown[]) {
 }
 
 function addKeyChangedPaths(candidates: string[], payload: Record<string, unknown>) {
-  for (const key of ["path", "source_path", "destination_path"] as const) {
+  for (const key of [
+    "path",
+    "file",
+    "filename",
+    "filepath",
+    "file_path",
+    "filePath",
+    "target",
+    "target_path",
+    "targetPath",
+    "source_path",
+    "destination_path",
+  ] as const) {
     const normalized = normalizeChangedPath(payload[key]);
     if (normalized) candidates.push(normalized);
   }
@@ -109,6 +132,28 @@ function extractChangedPaths(result: unknown): string[] {
   if (!result || typeof result !== "object") return [];
   const payload = result as Record<string, unknown>;
   return [...new Set(collectChangedPathCandidates(payload))];
+}
+
+function firstChangedPath(value: unknown) {
+  return extractChangedPaths(value)[0];
+}
+
+function extractPreviewContent(args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const payload = args as Record<string, unknown>;
+  for (const key of FILE_CONTENT_KEYS) {
+    const value = readStringValue(payload[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function buildSyncEvent(event: StreamEvent, behavior: "refresh" | "follow", source: "tool.start" | "tool.result") {
+  const path = firstChangedPath(source === "tool.start" ? event.args : event.result) ?? firstChangedPath(event.args);
+  if (!path) return undefined;
+  const syncEvent: FilesystemSyncEvent = { path, behavior, source };
+  if (source === "tool.start") syncEvent.previewContent = extractPreviewContent(event.args);
+  return syncEvent;
 }
 
 function asJsonObject(value: unknown): Record<string, unknown> {
@@ -311,17 +356,19 @@ function mergeToolCallPart(
   };
 }
 
-function handleToolStart(state: StreamState, event: StreamEvent): HandlerResult {
+function handleToolStart(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
   const part = buildToolCallPart(event);
   if (!part.toolCallId) return {};
   const existingIndex = state.toolCallIndex.get(part.toolCallId);
   if (existingIndex !== undefined) {
     const existing = state.parts[existingIndex] as StructuredToolCallMessagePart;
     state.parts[existingIndex] = mergeToolCallPart(existing, part);
+    handleMutatingToolStartEffects(deps, event);
     return { output: emitState(state) };
   }
   state.toolCallIndex.set(part.toolCallId, state.parts.length);
   state.parts.push(part);
+  handleMutatingToolStartEffects(deps, event);
   return { output: emitState(state) };
 }
 
@@ -348,12 +395,26 @@ function upsertToolResult(state: StreamState, updated: StructuredToolCallMessage
 
 function notifyChangedPaths(deps: AdapterDeps, paths: string[]) {
   if (paths.length < 1) return deps.notifyFileChanged();
-  for (const path of paths) deps.notifyFileChanged(path);
+  for (const path of paths) deps.notifyFileChanged({ path, behavior: "refresh", source: "tool.result" });
+}
+
+function notifyFilesystemEvent(deps: AdapterDeps, event: FilesystemSyncEvent | undefined) {
+  deps.notifyFileChanged(event);
+}
+
+function handleMutatingToolStartEffects(deps: AdapterDeps, event: StreamEvent) {
+  const toolName = String(event.toolName ?? "");
+  if (!FOLLOWABLE_FILE_TOOL_NAMES.has(toolName)) return;
+  notifyFilesystemEvent(deps, buildSyncEvent(event, "follow", "tool.start"));
 }
 
 function handleMutatingToolEffects(deps: AdapterDeps, event: StreamEvent) {
   const toolName = String(event.toolName ?? "");
   if (!MUTATING_TOOL_NAMES.has(toolName)) return;
+  if (FOLLOWABLE_FILE_TOOL_NAMES.has(toolName)) {
+    notifyFilesystemEvent(deps, buildSyncEvent(event, "follow", "tool.result"));
+    return;
+  }
   notifyChangedPaths(deps, extractChangedPaths(event.result));
 }
 
@@ -461,18 +522,39 @@ function buildCompletion(state: StreamState): ChatRunResult {
   };
 }
 
+function appendAssistantText(state: StreamState, text: string) {
+  const value = text.trim();
+  if (!value) return;
+  state.parts.push({ type: "text", text: value });
+}
+
+function buildErrorCompletion(state: StreamState, message: string): ChatRunResult {
+  appendAssistantText(state, message);
+  return buildCompletion(state);
+}
+
+function streamErrorMessage(event: StreamEvent) {
+  const message = readStringValue(event.message);
+  if (message === "stream_failed") {
+    return "The chat stream failed before a response arrived. Please retry.";
+  }
+  return message ?? "The chat request failed before a response arrived. Please retry.";
+}
+
 function handleDone(state: StreamState): HandlerResult {
   return { done: true, completion: buildCompletion(state) };
 }
 
 function handleStreamEvent(state: StreamState, deps: AdapterDeps, event: StreamEvent): HandlerResult {
   const type = resolveEventType(event);
-  if (type === "error") throw new Error((event.message as string | undefined) ?? "stream_failed");
+  if (type === "error") {
+    return { done: true, completion: buildErrorCompletion(state, streamErrorMessage(event)) };
+  }
   if (type === "chat.job") return handleChatJob(state, event);
   if (type === "source") return handleSource(state, event);
   if (type === "text.delta") return handleTextDelta(state, event);
   if (type === "reasoning.delta") return handleReasoningDelta(state, event);
-  if (type === "tool.start") return handleToolStart(state, event);
+  if (type === "tool.start") return handleToolStart(state, deps, event);
   if (type === "tool.result") return handleToolResult(state, deps, event);
   if (type === "file") return handleFile(state, event);
   if (type === "evidence.bundle") return handleEvidenceBundle(state, deps, event);
@@ -487,14 +569,25 @@ async function* streamChatEvents(
   deps: AdapterDeps,
   state: StreamState,
 ): AsyncGenerator<ChatRunResult, void, unknown> {
+  let sawEvent = false;
   for await (const rawEvent of readSseJson<StreamEvent>(response)) {
+    sawEvent = true;
     const handled = handleStreamEvent(state, deps, toStreamEvent(rawEvent));
     if (handled.output) yield handled.output;
     if (!handled.done) continue;
     if (handled.completion) yield handled.completion;
     return;
   }
-  yield buildCompletion(state);
+  if (state.parts.length > 0) {
+    yield buildCompletion(state);
+    return;
+  }
+  yield buildErrorCompletion(
+    state,
+    sawEvent
+      ? "The chat stream ended without any response content. Please retry."
+      : "The chat stream returned no events. Please retry.",
+  );
 }
 
 function isCancelledError(error: unknown) {
@@ -512,14 +605,7 @@ function shouldTreatAbortAsUserStop(signal: AbortSignal | undefined) {
   return !reason || reason.name === "AbortError";
 }
 
-async function cancelActiveJob(state: StreamState, deps: AdapterDeps) {
-  if (!deps.authenticated || !state.jobId) return;
-  try {
-    await cancelProjectJob(deps.getProjectId(), state.jobId);
-  } catch {
-    return;
-  }
-}
+async function cancelActiveJob(_state: StreamState, _deps: AdapterDeps) {}
 
 async function* runChatAdapter(deps: AdapterDeps, input: AdapterRunInput): AsyncGenerator<ChatRunResult, void, unknown> {
   const backendThreadId = resolveBackendThreadId(input.unstable_threadId ?? undefined);

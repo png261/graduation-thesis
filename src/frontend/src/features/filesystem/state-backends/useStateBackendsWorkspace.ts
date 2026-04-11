@@ -5,18 +5,21 @@ import {
   createFixAllPlan,
   deleteStateBackend,
   getDriftAlerts,
+  getCredentials,
   getPolicyAlerts,
   getProjectDeployDriftSummary,
   getStateBackendSettings,
   getStateHistory,
   getStateResources,
   importCloudStateBackend,
+  listCredentialProfiles,
   listCloudBuckets,
   listCloudObjects,
   listStateBackends,
   setPrimaryStateBackend,
   syncStateBackend,
   updateStateBackendSettings,
+  type CredentialProfile,
   type DriftAlert,
   type PolicyAlert,
   type ProjectDeployDriftSummary,
@@ -90,8 +93,8 @@ function useBackendState() {
 
 function useCloudConnectState() {
   const [cloudProvider, setCloudProvider] = useState<"aws" | "gcs">("aws");
-  const [cloudAccessKeyId, setCloudAccessKeyId] = useState("");
-  const [cloudSecretAccessKey, setCloudSecretAccessKey] = useState("");
+  const [cloudProfiles, setCloudProfiles] = useState<CredentialProfile[]>([]);
+  const [cloudCredentialProfileId, setCloudCredentialProfileId] = useState("");
   const [cloudName, setCloudName] = useState("");
   const [cloudBucket, setCloudBucket] = useState("");
   const [cloudPrefix, setCloudPrefix] = useState("");
@@ -102,10 +105,10 @@ function useCloudConnectState() {
   return {
     cloudProvider,
     setCloudProvider,
-    cloudAccessKeyId,
-    setCloudAccessKeyId,
-    cloudSecretAccessKey,
-    setCloudSecretAccessKey,
+    cloudProfiles,
+    setCloudProfiles,
+    cloudCredentialProfileId,
+    setCloudCredentialProfileId,
     cloudName,
     setCloudName,
     cloudBucket,
@@ -234,8 +237,35 @@ function useBackendLoaders(projectId: string, backend: ReturnType<typeof useBack
 }
 
 function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnectState>) {
+  const loadCredentialProfiles = useCallback(async () => {
+    try {
+      const [credentials, profiles] = await Promise.all([
+        getCredentials(projectId),
+        listCredentialProfiles(),
+      ]);
+      const matching = profiles.filter((profile) => profile.provider === connect.cloudProvider);
+      connect.setCloudProfiles(matching);
+      connect.setCloudCredentialProfileId((previous) => {
+        if (previous && matching.some((profile) => profile.id === previous)) return previous;
+        const applied = credentials.credential_profile_id ?? "";
+        if (applied && matching.some((profile) => profile.id === applied)) return applied;
+        return matching[0]?.id ?? "";
+      });
+    } catch (error: unknown) {
+      connect.setConnectError(toErrorMessage(error, "Failed to load credential profiles"));
+      connect.setCloudProfiles([]);
+      connect.setCloudCredentialProfileId("");
+    }
+  }, [
+    connect.cloudProvider,
+    connect.setCloudCredentialProfileId,
+    connect.setCloudProfiles,
+    connect.setConnectError,
+    projectId,
+  ]);
+
   const loadCloudBuckets = useCallback(async () => {
-    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey) {
+    if (!connect.cloudCredentialProfileId) {
       connect.setCloudBuckets([]);
       return;
     }
@@ -243,8 +273,7 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
     try {
       const buckets = await listCloudBuckets(projectId, {
         provider: connect.cloudProvider,
-        accessKeyId: connect.cloudAccessKeyId,
-        secretAccessKey: connect.cloudSecretAccessKey,
+        credentialProfileId: connect.cloudCredentialProfileId,
       });
       connect.setCloudBuckets(buckets);
       connect.setCloudBucket((prev) => (prev && buckets.includes(prev) ? prev : buckets[0] || ""));
@@ -255,9 +284,8 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
       connect.setCloudLoading(false);
     }
   }, [
-    connect.cloudAccessKeyId,
+    connect.cloudCredentialProfileId,
     connect.cloudProvider,
-    connect.cloudSecretAccessKey,
     connect.setCloudBucket,
     connect.setCloudBuckets,
     connect.setCloudLoading,
@@ -266,7 +294,7 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
   ]);
 
   const loadCloudObjects = useCallback(async () => {
-    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey || !connect.cloudBucket) {
+    if (!connect.cloudCredentialProfileId || !connect.cloudBucket) {
       connect.setCloudObjects([]);
       return;
     }
@@ -274,8 +302,7 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
     try {
       const objects = await listCloudObjects(projectId, {
         provider: connect.cloudProvider,
-        accessKeyId: connect.cloudAccessKeyId,
-        secretAccessKey: connect.cloudSecretAccessKey,
+        credentialProfileId: connect.cloudCredentialProfileId,
         bucket: connect.cloudBucket,
         prefix: connect.cloudPrefix,
       });
@@ -289,10 +316,9 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
     }
   }, [
     connect.cloudBucket,
+    connect.cloudCredentialProfileId,
     connect.cloudPrefix,
-    connect.cloudAccessKeyId,
     connect.cloudProvider,
-    connect.cloudSecretAccessKey,
     connect.setCloudKey,
     connect.setCloudLoading,
     connect.setCloudObjects,
@@ -300,7 +326,7 @@ function useCloudLoaders(projectId: string, connect: ReturnType<typeof useConnec
     projectId,
   ]);
 
-  return { loadCloudBuckets, loadCloudObjects };
+  return { loadCredentialProfiles, loadCloudBuckets, loadCloudObjects };
 }
 
 function useConnectLoaders(projectId: string, connect: ReturnType<typeof useConnectState>) {
@@ -315,8 +341,8 @@ function useConnectActions(
   loadDeployDrift: () => Promise<void>,
 ) {
   const runCloudImport = useCallback(async () => {
-    if (!connect.cloudAccessKeyId || !connect.cloudSecretAccessKey || !connect.cloudBucket) {
-      connect.setConnectError("Provide access key ID, secret key, and bucket");
+    if (!connect.cloudCredentialProfileId || !connect.cloudBucket) {
+      connect.setConnectError("Select a saved credential profile and bucket");
       return;
     }
     connect.setConnectBusy(true);
@@ -325,8 +351,7 @@ function useConnectActions(
       await importCloudStateBackend(projectId, {
         provider: connect.cloudProvider,
         name: connect.cloudName,
-        access_key_id: connect.cloudAccessKeyId,
-        secret_access_key: connect.cloudSecretAccessKey,
+        credential_profile_id: connect.cloudCredentialProfileId,
         bucket: connect.cloudBucket,
         key: connect.cloudKey,
         prefix: connect.cloudPrefix,
@@ -342,12 +367,11 @@ function useConnectActions(
     }
   }, [
     connect.cloudBucket,
+    connect.cloudCredentialProfileId,
     connect.cloudKey,
     connect.cloudName,
     connect.cloudPrefix,
-    connect.cloudAccessKeyId,
     connect.cloudProvider,
-    connect.cloudSecretAccessKey,
     connect.setConnectBusy,
     connect.setConnectError,
     connect.setConnectOpen,
@@ -440,6 +464,7 @@ function useStateBackendsEffects(args: {
   loadBackends: () => Promise<void>;
   loadDetails: () => Promise<void>;
   loadDeployDrift: () => Promise<void>;
+  loadCredentialProfiles: () => Promise<void>;
   loadCloudBuckets: () => Promise<void>;
   loadCloudObjects: () => Promise<void>;
 }) {
@@ -458,18 +483,23 @@ function useStateBackendsEffects(args: {
   useEffect(() => {
     if (!args.connect.connectOpen) return;
     args.connect.setConnectError("");
-    void args.loadCloudBuckets();
-  }, [args.connect.connectOpen, args.connect.setConnectError, args.loadCloudBuckets]);
+    void args.loadCredentialProfiles();
+  }, [args.connect.connectOpen, args.connect.setConnectError, args.loadCredentialProfiles]);
 
   useEffect(() => {
     if (!args.connect.connectOpen) return;
-    void args.loadCloudBuckets();
-  }, [args.connect.cloudAccessKeyId, args.connect.cloudProvider, args.connect.cloudSecretAccessKey, args.connect.connectOpen, args.loadCloudBuckets]);
+    void args.loadCredentialProfiles();
+  }, [args.connect.cloudProvider, args.connect.connectOpen, args.loadCredentialProfiles]);
 
   useEffect(() => {
     if (!args.connect.connectOpen) return;
     void args.loadCloudObjects();
-  }, [args.connect.cloudAccessKeyId, args.connect.cloudBucket, args.connect.cloudPrefix, args.connect.cloudSecretAccessKey, args.connect.connectOpen, args.loadCloudObjects]);
+  }, [args.connect.cloudBucket, args.connect.cloudCredentialProfileId, args.connect.cloudPrefix, args.connect.connectOpen, args.loadCloudObjects]);
+
+  useEffect(() => {
+    if (!args.connect.connectOpen) return;
+    void args.loadCloudBuckets();
+  }, [args.connect.cloudCredentialProfileId, args.connect.cloudProvider, args.connect.connectOpen, args.loadCloudBuckets]);
 
   useEffect(() => {
     args.backend.setResources([]);
@@ -549,10 +579,9 @@ function buildConnectWorkspaceResult(args: {
     connectError: args.connect.connectError,
     cloudProvider: args.connect.cloudProvider,
     setCloudProvider: args.connect.setCloudProvider,
-    cloudAccessKeyId: args.connect.cloudAccessKeyId,
-    setCloudAccessKeyId: args.connect.setCloudAccessKeyId,
-    cloudSecretAccessKey: args.connect.cloudSecretAccessKey,
-    setCloudSecretAccessKey: args.connect.setCloudSecretAccessKey,
+    cloudProfiles: args.connect.cloudProfiles,
+    cloudCredentialProfileId: args.connect.cloudCredentialProfileId,
+    setCloudCredentialProfileId: args.connect.setCloudCredentialProfileId,
     cloudName: args.connect.cloudName,
     setCloudName: args.connect.setCloudName,
     cloudBucket: args.connect.cloudBucket,
@@ -615,7 +644,7 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     [backend.backends, backend.selectedBackendId],
   );
   const { loadBackends, loadDetails, loadDeployDrift } = useBackendLoaders(projectId, backend);
-  const { loadCloudBuckets, loadCloudObjects } = useConnectLoaders(projectId, connect);
+  const { loadCredentialProfiles, loadCloudBuckets, loadCloudObjects } = useConnectLoaders(projectId, connect);
   const { runCloudImport } = useConnectActions(projectId, pushLog, connect, loadBackends, loadDeployDrift);
   const {
     syncSelectedBackend,
@@ -633,6 +662,7 @@ export function useStateBackendsWorkspace(projectId: string, pushLog: (message: 
     loadBackends,
     loadDetails,
     loadDeployDrift,
+    loadCredentialProfiles,
     loadCloudBuckets,
     loadCloudObjects,
   });

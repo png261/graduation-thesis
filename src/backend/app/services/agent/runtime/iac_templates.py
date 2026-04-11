@@ -52,7 +52,10 @@ _CANONICAL_TARGET_OUTPUT_ANCHOR_RE = re.compile(
 _SAFE_MODULE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _ROLE_ITEM_RE = re.compile(r"^\s*-\s*role:\s*([A-Za-z0-9_.-]+)\s*$")
 _ROLE_SHORT_RE = re.compile(r"^\s*-\s*([A-Za-z0-9_.-]+)\s*$")
-_ROLES_HEADER_RE = re.compile(r"^\s*roles:\s*$")
+_ROLES_HEADER_RE = re.compile(r"^\s*roles:\s*$", re.MULTILINE)
+_HOSTS_HEADER_RE = re.compile(r"^\s*-?\s*hosts\s*:\s*\S+", re.MULTILINE)
+_TASK_NAME_RE = re.compile(r"^\s*-\s+name:\s+\S+", re.MULTILINE)
+_MODULE_EXAMPLE_SOURCE_RE = re.compile(r'^\s*source\s*=\s*["\']\.\./\.\./["\']\s*$', re.MULTILINE)
 
 
 def provider_credential_vars(provider: str | None) -> tuple[str, ...]:
@@ -76,8 +79,18 @@ def build_template_contract_markdown() -> str:
             f"- The stack must declare output `{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}`.",
             f"- Ansible entrypoint required only when configuration targets exist: `{ANSIBLE_PLAYBOOK_PATH}`.",
             f"- Ansible role required files per configured module: {ansible_files}",
+            '- Every `examples/basic/main.tf` must reference the module with `source = "../../"`.',
             "- Module-to-role mapping is 1:1 only for modules that require configuration (`modules/<module>` -> `roles/<module>`).",
+            f"- Output `{ANSIBLE_HOSTS_OUTPUT_NAME}` must expose at least `name` and `address` fields.",
+            (
+                f"- Output `{CONFIGURATION_TARGETS_OUTPUT_NAME}` must expose "
+                "`execution_id`, `role`, and `source_modules`."
+            ),
+            "- Output blocks for host and target contracts must define a `value = ...` assignment.",
+            "- `playbooks/site.yml` must declare at least one `hosts:` entry when Ansible is required.",
+            "- Each `roles/<module>/tasks/main.yml` must contain at least one named task item.",
             "- If no modules require configuration, skip playbooks/roles and validate with `require_ansible=false`.",
+            "- `validate_iac_structure()` automatically enforces target-contract outputs when `require_ansible=true`.",
         )
     )
 
@@ -130,8 +143,10 @@ def _missing_output_contract(project_root: Path, module: str) -> str | None:
     content = _read_text(outputs_path)
     if not content:
         return f"modules/{module}/outputs.tf missing readable content"
-    if _ANSIBLE_OUTPUT_ANCHOR_RE.search(content):
+    if _output_has_value(content, ANSIBLE_HOSTS_OUTPUT_NAME):
         return None
+    if _ANSIBLE_OUTPUT_ANCHOR_RE.search(content):
+        return f'modules/{module}/outputs.tf output "{ANSIBLE_HOSTS_OUTPUT_NAME}" missing value assignment'
     return f'modules/{module}/outputs.tf missing output "{ANSIBLE_HOSTS_OUTPUT_NAME}"'
 
 
@@ -140,8 +155,10 @@ def _missing_target_contract_output(project_root: Path, module: str) -> str | No
     content = _read_text(outputs_path)
     if not content:
         return f"modules/{module}/outputs.tf missing readable content"
-    if _CONFIGURATION_TARGETS_OUTPUT_ANCHOR_RE.search(content):
+    if _output_has_value(content, CONFIGURATION_TARGETS_OUTPUT_NAME):
         return None
+    if _CONFIGURATION_TARGETS_OUTPUT_ANCHOR_RE.search(content):
+        return f'modules/{module}/outputs.tf output "{CONFIGURATION_TARGETS_OUTPUT_NAME}" missing value assignment'
     return f'modules/{module}/outputs.tf missing output "{CONFIGURATION_TARGETS_OUTPUT_NAME}"'
 
 
@@ -150,8 +167,10 @@ def _missing_canonical_target_contract(project_root: Path) -> str | None:
     content = _read_text(outputs_path)
     if not content:
         return "stacks/main/outputs.tf missing readable content"
-    if _CANONICAL_TARGET_OUTPUT_ANCHOR_RE.search(content):
+    if _output_has_value(content, CANONICAL_TARGET_CONTRACT_OUTPUT_NAME):
         return None
+    if _CANONICAL_TARGET_OUTPUT_ANCHOR_RE.search(content):
+        return f'stacks/main/outputs.tf output "{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}" missing value assignment'
     return f'stacks/main/outputs.tf missing output "{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}"'
 
 
@@ -165,6 +184,99 @@ def _missing_role_files(project_root: Path, module: str) -> list[str]:
         if not (project_root / relative).is_file():
             missing.append(relative)
     return missing
+
+
+def _example_contract_issue(project_root: Path, module: str) -> str | None:
+    content = _read_text(project_root / "modules" / module / "examples" / "basic" / "main.tf")
+    if not content:
+        return f"modules/{module}/examples/basic/main.tf missing readable content"
+    if _MODULE_EXAMPLE_SOURCE_RE.search(content):
+        return None
+    return f'modules/{module}/examples/basic/main.tf must reference the module with source = "../../"'
+
+
+def _output_has_value(content: str, output_name: str) -> bool:
+    anchor = f'output "{output_name}"'
+    start = content.find(anchor)
+    if start < 0:
+        return False
+    brace_start = content.find("{", start)
+    if brace_start < 0:
+        return False
+    depth = 0
+    for raw in content[brace_start:].splitlines():
+        depth += raw.count("{")
+        if depth > 0 and re.match(r"^\s*value\s*=", raw):
+            return True
+        depth -= raw.count("}")
+        if depth <= 0:
+            return False
+    return False
+
+
+def _extract_output_block(content: str, output_name: str) -> str | None:
+    anchor = f'output "{output_name}"'
+    start = content.find(anchor)
+    if start < 0:
+        return None
+    brace_start = content.find("{", start)
+    if brace_start < 0:
+        return content[start:]
+    depth = 0
+    for index in range(brace_start, len(content)):
+        if content[index] == "{":
+            depth += 1
+        elif content[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start : index + 1]
+    return content[start:]
+
+
+def _missing_output_fields(content: str, output_name: str, fields: tuple[str, ...]) -> list[str]:
+    block = _extract_output_block(content, output_name)
+    if block is None:
+        return []
+    missing: list[str] = []
+    for field in fields:
+        if not re.search(rf"\b{re.escape(field)}\s*=", block):
+            missing.append(field)
+    return missing
+
+
+def _output_field_violations(project_root: Path, module: str, *, require_target_contract: bool) -> list[str]:
+    content = _read_text(project_root / "modules" / module / "outputs.tf")
+    if not content:
+        return []
+    violations: list[str] = []
+    host_fields = _missing_output_fields(content, ANSIBLE_HOSTS_OUTPUT_NAME, ("name", "address"))
+    if host_fields:
+        violations.append(
+            f'modules/{module}/outputs.tf output "{ANSIBLE_HOSTS_OUTPUT_NAME}" missing fields: {", ".join(host_fields)}'
+        )
+    if require_target_contract:
+        target_fields = _missing_output_fields(
+            content, CONFIGURATION_TARGETS_OUTPUT_NAME, TARGET_CONTRACT_REQUIRED_FIELDS
+        )
+        if target_fields:
+            violations.append(
+                f'modules/{module}/outputs.tf output "{CONFIGURATION_TARGETS_OUTPUT_NAME}" missing fields: '
+                f'{", ".join(target_fields)}'
+            )
+    return violations
+
+
+def _canonical_target_contract_issue(project_root: Path) -> str | None:
+    content = _read_text(project_root / "stacks" / "main" / "outputs.tf")
+    if not content:
+        return "stacks/main/outputs.tf missing readable content"
+    block = _extract_output_block(content, CANONICAL_TARGET_CONTRACT_OUTPUT_NAME)
+    if block is None or CONFIGURATION_TARGETS_OUTPUT_NAME in block:
+        return None
+    return (
+        f'stacks/main/outputs.tf output "{CANONICAL_TARGET_CONTRACT_OUTPUT_NAME}" must reference '
+        f'"{CONFIGURATION_TARGETS_OUTPUT_NAME}"'
+    )
 
 
 def _playbook_role_names(content: str) -> set[str]:
@@ -209,9 +321,19 @@ def _validate_modules(
     violations: list[str] = []
     for module in modules:
         missing.extend(_missing_module_files(project_root, module))
+        example_issue = _example_contract_issue(project_root, module)
+        if example_issue:
+            violations.append(example_issue)
         output_issue = _missing_output_contract(project_root, module)
         if output_issue:
             violations.append(output_issue)
+        violations.extend(
+            _output_field_violations(
+                project_root,
+                module,
+                require_target_contract=require_target_contract,
+            )
+        )
         if require_target_contract:
             target_issue = _missing_target_contract_output(project_root, module)
             if target_issue:
@@ -222,6 +344,9 @@ def _validate_modules(
         stack_issue = _missing_canonical_target_contract(project_root)
         if stack_issue:
             violations.append(stack_issue)
+        canonical_issue = _canonical_target_contract_issue(project_root)
+        if canonical_issue:
+            violations.append(canonical_issue)
     return missing, violations
 
 
@@ -232,11 +357,27 @@ def _validate_playbook_roles(project_root: Path, modules: list[str]) -> tuple[li
     if not playbook.is_file():
         missing.append(ANSIBLE_PLAYBOOK_PATH)
         return missing, violations
-    roles = _playbook_role_names(_read_text(playbook))
+    content = _read_text(playbook)
+    if not _HOSTS_HEADER_RE.search(content):
+        violations.append(f"{ANSIBLE_PLAYBOOK_PATH} missing a hosts entry")
+    if not _ROLES_HEADER_RE.search(content):
+        violations.append(f"{ANSIBLE_PLAYBOOK_PATH} missing roles section")
+    roles = _playbook_role_names(content)
     for module in modules:
         if module not in roles:
             violations.append(f"{ANSIBLE_PLAYBOOK_PATH} missing role entry for module '{module}'")
     return missing, violations
+
+
+def _validate_role_task_files(project_root: Path, modules: list[str]) -> list[str]:
+    violations: list[str] = []
+    for module in modules:
+        task_file = project_root / "roles" / module / "tasks" / "main.yml"
+        if not task_file.is_file():
+            continue
+        if not _TASK_NAME_RE.search(_read_text(task_file)):
+            violations.append(f"roles/{module}/tasks/main.yml must define at least one named task list item")
+    return violations
 
 
 def validate_iac_structure(
@@ -244,20 +385,22 @@ def validate_iac_structure(
     selected_modules: list[str] | None = None,
     *,
     require_ansible: bool = True,
-    require_target_contract: bool = False,
+    require_target_contract: bool | None = None,
 ) -> dict[str, Any]:
+    target_contract_required = require_ansible if require_target_contract is None else require_target_contract
     requested = _sanitize_module_list(selected_modules)
     modules, unknown = _module_targets(project_root, requested)
     missing, violations = _validate_modules(
         project_root,
         modules,
         require_ansible=require_ansible,
-        require_target_contract=require_target_contract,
+        require_target_contract=target_contract_required,
     )
     if require_ansible:
         playbook_missing, playbook_violations = _validate_playbook_roles(project_root, modules)
         missing.extend(playbook_missing)
         violations.extend(playbook_violations)
+        violations.extend(_validate_role_task_files(project_root, modules))
     if not modules:
         violations.append("No Terraform modules found under modules/.")
     for module in unknown:
@@ -268,7 +411,7 @@ def validate_iac_structure(
         "missing": sorted(set(missing)),
         "violations": violations,
         "require_ansible": require_ansible,
-        "require_target_contract": require_target_contract,
+        "require_target_contract": target_contract_required,
         "required": {
             "terraform_files": list(TERRAFORM_REQUIRED_FILES),
             "optional_terraform_files": list(TERRAFORM_OPTIONAL_FILES),

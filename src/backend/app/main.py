@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -16,20 +16,19 @@ from sse_starlette import EventSourceResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
+from app.core import cache as runtime_cache
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.core.sse import normalize_sse_item, sse_json, sse_response
+from app.core.sse import sse_json, sse_response
 from app.models import Project, Thread, User
 from app.routers import auth_dependencies as auth_deps
 from app.routers import github as github_router
 from app.routers import projects as projects_router
 from app.routers import state as state_router
-from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse
 from app.services.chat import service as chat_service
-from app.services.jobs import redis_bus as jobs_redis_bus
-from app.services.jobs import service as jobs_service
-from app.services.jobs.errors import JobsError
 from app.services.model.factory import close_agent_store
+from app.services.state_backends import service as state_backends_service
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -126,34 +125,45 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _error_response(status_code=500, code="internal_error", message="Internal server error")
 
 
-def _is_chat_queue_unavailable(exc: JobsError | None) -> bool:
-    if exc is None:
-        return False
-    return exc.status_code == 503 or exc.code in {"job_queue_unavailable", "chat_queue_unavailable"}
+async def _run_periodic_task(
+    *,
+    interval_seconds: int,
+    action,
+    task_name: str,
+) -> None:
+    while True:
+        try:
+            await action()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("background task failed: %s", task_name)
+        await asyncio.sleep(max(1, interval_seconds))
 
 
-def _chat_message_payload(message: ChatMessage) -> dict[str, Any]:
-    payload: dict[str, Any] = {"role": message.role.value, "content": message.content}
-    if not message.attachments:
-        return payload
-    payload["attachments"] = [
-        {
-            "name": attachment.name,
-            "content": attachment.content,
-            "content_type": attachment.content_type,
-            "size_bytes": attachment.size_bytes,
-        }
-        for attachment in message.attachments
-    ]
-    return payload
+async def _run_state_sync_tick() -> None:
+    await state_backends_service.sync_due_backends(settings=settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db(settings.database_url)
     logger.info("Database initialised")
+    background_tasks = [
+        asyncio.create_task(
+            _run_periodic_task(
+                interval_seconds=max(300, settings.state_sync_scan_interval_minutes * 60),
+                action=_run_state_sync_tick,
+                task_name="state-sync",
+            )
+        ),
+    ]
     yield
-    await jobs_redis_bus.close_redis()
+    for task in background_tasks:
+        task.cancel()
+    if background_tasks:
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+    await runtime_cache.close_redis()
     await close_agent_store()
     await db.close_db()
     logger.info("Database closed")
@@ -201,38 +211,6 @@ async def chat_stream(
     chat_service.ensure_payload(payload)
     resolved_thread_id = payload.thread_id or str(uuid.uuid4())
     await _ensure_project_thread(project.id, resolved_thread_id)
-    enqueued_job_id: str | None = None
-    enqueue_error: JobsError | None = None
-    try:
-        job = await jobs_service.enqueue_project_job(
-            project=project,
-            kind="chat",
-            payload={
-                "project_id": project.id,
-                "thread_id": resolved_thread_id,
-                "messages": [_chat_message_payload(msg) for msg in payload.messages],
-            },
-        )
-        enqueued_job_id = str(job["id"])
-    except JobsError as exc:
-        enqueue_error = exc
-    except Exception as exc:
-        logger.exception("failed to enqueue chat job", exc_info=exc)
-        enqueue_error = JobsError(
-            "Chat queue is unavailable",
-            code="chat_queue_unavailable",
-            status_code=503,
-        )
-
-    def _decode_stream_event(raw: str) -> dict[str, Any] | None:
-        normalized = normalize_sse_item(raw)
-        try:
-            parsed = json.loads(normalized)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(parsed, dict):
-            return parsed
-        return None
 
     async def _stream_inline_chat_events() -> AsyncIterator[str]:
         inline_payload = payload.model_copy(update={"thread_id": resolved_thread_id})
@@ -247,34 +225,8 @@ async def chat_stream(
 
     async def event_stream():
         try:
-            if _is_chat_queue_unavailable(enqueue_error):
-                async for event in _stream_inline_chat_events():
-                    yield event
-                return
-            if enqueue_error is not None:
-                raise enqueue_error
-            if enqueued_job_id is None:
-                raise RuntimeError("chat job enqueue failed")
-            yield sse_json({"type": "chat.job", "jobId": enqueued_job_id, "threadId": resolved_thread_id})
-            async for raw in jobs_service.stream_job_events(
-                project_id=project.id,
-                user_id=str(project.user_id or ""),
-                job_id=enqueued_job_id,
-                request=request,
-            ):
-                event = _decode_stream_event(raw)
-                if not event:
-                    continue
-                event_type = str(event.get("type") or "")
-                if event_type in {"job.queued", "job.running", "job.cancel_requested", "job.canceled"}:
-                    continue
-                if event_type == "job.terminal":
-                    break
-                yield sse_json(event)
-                if await request.is_disconnected():
-                    break
-        except JobsError as exc:
-            yield sse_json({"type": "error", "code": exc.code, "message": exc.message})
+            async for event in _stream_inline_chat_events():
+                yield event
         except Exception:
             logger.exception("streaming error")
             yield sse_json({"type": "error", "message": "stream_failed"})

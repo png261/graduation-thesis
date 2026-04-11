@@ -31,7 +31,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - PostgreSQL 14+
 - OpenTofu CLI (`tofu`) for infrastructure workflows
 - Ansible CLI (`ansible-playbook`) for post-provision configuration workflows
-- Optional: Docker (for local Postgres/Redis/RabbitMQ orchestration)
+- Optional: Docker (for local Postgres/Redis orchestration)
 
 ## Environment
 
@@ -47,11 +47,7 @@ Copy `.env.example` to `.env` and set required values:
 - `ANSIBLE_PLAYBOOK_PATH` (optional, default `playbooks/site.yml`)
 - `ANSIBLE_SSH_COMMON_ARGS` (optional)
 - `ANSIBLE_HOST_KEY_CHECKING` (optional, default `True`)
-- `REDIS_URL` (Redis cache + jobs events/result backend)
-- `CELERY_BROKER_URL` (RabbitMQ broker URL)
-- `CELERY_RESULT_BACKEND` (Celery result backend, Redis recommended)
-- `JOBS_EVENT_TTL_SECONDS` (Redis replay buffer TTL, default `86400`)
-- `JOBS_HISTORY_RETENTION_DAYS` (DB job retention, default `90`)
+- `REDIS_URL` (Redis cache)
 - `RUNTIME_CACHE_TTL_SECONDS` (Graph/cost cache TTL, default `300`)
 - `ZIP_IMPORT_MAX_BYTES` (optional max upload bytes for `/files/import-zip`, default 20MB)
 - `ZIP_IMPORT_MAX_FILES` (optional max file count for ZIP import, default 2000)
@@ -60,7 +56,6 @@ Copy `.env.example` to `.env` and set required values:
 - `STATE_ENCRYPTION_KEY` (required for encrypting credential profiles and Git provider OAuth tokens)
 - `STATE_SYNC_SCAN_INTERVAL_MINUTES` (optional scheduler interval for background state sync)
 - `STATE_SYNC_MAX_BACKENDS_PER_TICK` (optional scheduler batch size)
-- `FLOWER_PORT` (optional Flower UI port in compose, default `5555`)
 
 ## Install
 
@@ -79,30 +74,14 @@ source .venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Run worker:
-
-```bash
-cd src/backend
-source .venv/bin/activate
-celery -A app.celery_app.celery_app worker --loglevel=INFO
-```
-
-Run Flower monitor:
-
-```bash
-cd src/backend
-source .venv/bin/activate
-celery -A app.celery_app.celery_app flower --port=5555
-```
-
 ## Docker Persisted Project Files
 
 When running with `src/backend/docker-compose.yml`, project files are stored outside container:
 - host path: `src/backend/projects-data` (default)
 - container path: `/data/projects`
 
-Compose also includes `postgres`, `redis`, and `rabbitmq` services by default. `backend`, `celery-worker`, and `flower`
-use `DATABASE_URL_DOCKER` (or default `postgresql://postgres:postgres@postgres:5432/postgres`).
+Compose includes `postgres`, `redis`, and `backend` by default. `backend` uses
+`DATABASE_URL_DOCKER` (or default `postgresql://postgres:postgres@postgres:5432/postgres`).
 
 To change host path:
 
@@ -137,8 +116,6 @@ ruff check \
   app/services/opentofu/runtime/runner.py \
   app/services/opentofu/runtime/shared.py \
   app/services/ansible/runtime/runner.py \
-  app/services/jobs/tasks.py \
-  app/services/jobs/service.py \
   app/services/agent/runtime/tools.py
 black --check \
   app/schemas/chat.py \
@@ -150,8 +127,6 @@ black --check \
   app/services/opentofu/runtime/runner.py \
   app/services/opentofu/runtime/shared.py \
   app/services/ansible/runtime/runner.py \
-  app/services/jobs/tasks.py \
-  app/services/jobs/service.py \
   app/services/agent/runtime/tools.py
 ```
 
@@ -170,8 +145,6 @@ ruff check --fix \
   app/services/opentofu/runtime/runner.py \
   app/services/opentofu/runtime/shared.py \
   app/services/ansible/runtime/runner.py \
-  app/services/jobs/tasks.py \
-  app/services/jobs/service.py \
   app/services/agent/runtime/tools.py
 black \
   app/schemas/chat.py \
@@ -183,8 +156,6 @@ black \
   app/services/opentofu/runtime/runner.py \
   app/services/opentofu/runtime/shared.py \
   app/services/ansible/runtime/runner.py \
-  app/services/jobs/tasks.py \
-  app/services/jobs/service.py \
   app/services/agent/runtime/tools.py
 ```
 
