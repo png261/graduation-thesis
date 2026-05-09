@@ -1,35 +1,37 @@
-import path from "node:path";
-
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-
-const DEFAULT_API_PROXY_TARGET = "http://localhost:8000";
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
+import path from "path"
 
 export default defineConfig({
   plugins: [react()],
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": {
-        target: process.env.VITE_API_PROXY_TARGET ?? DEFAULT_API_PROXY_TARGET,
-        changeOrigin: true,
-      },
-    },
-  },
+
   build: {
+    outDir: "build",
+    sourcemap: true,
     rollupOptions: {
       output: {
         manualChunks: {
-          editor: ["@monaco-editor/react"],
-          graph: ["@xyflow/react"],
-          tree: ["react-complex-tree"],
+          "react-vendor": ["react", "react-dom", "react-router-dom"],
+          "ui-vendor": [
+            "@radix-ui/react-dialog",
+            "@radix-ui/react-select",
+            "@radix-ui/react-alert-dialog",
+            "@radix-ui/react-progress",
+          ],
+          "auth-vendor": ["react-oidc-context", "aws-amplify"],
         },
       },
     },
   },
-});
+
+  server: {
+    port: 3000,
+    open: true,
+  },
+})

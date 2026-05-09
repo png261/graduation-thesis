@@ -1,1 +1,0 @@
-"""Identity/project service package."""
