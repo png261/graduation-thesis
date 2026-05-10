@@ -18,7 +18,7 @@ describe("Configuration Verification Tests", () => {
   describe("vite.config.ts", () => {
     it('should have correct outDir set to "build"', () => {
       const viteConfig = readFileSync(resolve(__dirname, "../../vite.config.ts"), "utf-8")
-      expect(viteConfig).toContain("outDir: 'build'")
+      expect(viteConfig).toMatch(/outDir:\s*["']build["']/)
     })
 
     it("should have correct server port set to 3000", () => {
@@ -48,6 +48,8 @@ describe("Configuration Verification Tests", () => {
       expect(viteConfig).toContain("react-vendor")
       expect(viteConfig).toContain("ui-vendor")
       expect(viteConfig).toContain("auth-vendor")
+      expect(viteConfig).toContain("filesystem-vendor")
+      expect(viteConfig).toContain("monaco-vendor")
     })
   })
 

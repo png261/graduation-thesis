@@ -1,0 +1,56 @@
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  listFiles(prefix: String): [FileEntry!]! @aws_cognito_user_pools
+  getFileContent(key: String!): FileContent @aws_cognito_user_pools
+}
+
+type Mutation {
+  publishFileEvent(input: FileEventInput!): FileEvent @aws_iam
+}
+
+type Subscription {
+  onFileEvent: FileEvent
+    @aws_subscribe(mutations: ["publishFileEvent"])
+    @aws_cognito_user_pools
+}
+
+type FileEvent @aws_iam @aws_cognito_user_pools {
+  bucket: String!
+  key: String!
+  eventName: String!
+  eventTime: AWSDateTime!
+  size: AWSTimestamp
+  eTag: String
+  sequencer: String
+}
+
+type FileEntry @aws_cognito_user_pools {
+  key: String!
+  size: AWSTimestamp
+  lastModified: AWSDateTime
+  eTag: String
+}
+
+type FileContent @aws_cognito_user_pools {
+  key: String!
+  content: String!
+  contentType: String
+  encoding: String!
+  size: AWSTimestamp
+  lastModified: AWSDateTime
+}
+
+input FileEventInput {
+  bucket: String!
+  key: String!
+  eventName: String!
+  eventTime: AWSDateTime!
+  size: AWSTimestamp
+  eTag: String
+  sequencer: String
+}

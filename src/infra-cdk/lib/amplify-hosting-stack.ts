@@ -86,6 +86,13 @@ export class AmplifyHostingStack extends cdk.NestedStack {
       appName: `${props.config.stack_name_base}-frontend`,
       description: `${props.config.stack_name_base} - React Frontend`,
       platform: amplify.Platform.WEB,
+      customRules: [
+        {
+          source: "</^[^.]+$|\\.(?!(css|gif|ico|jpg|js|png|svg|txt|webp|woff|woff2|ttf|map|json)$)([^.]+$)/>",
+          target: "/index.html",
+          status: amplify.RedirectStatus.REWRITE,
+        },
+      ],
     })
 
     // Create main branch for the Amplify app

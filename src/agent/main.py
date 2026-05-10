@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import stat
 
 from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
@@ -13,9 +14,20 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from strands import Agent
-from strands.models import BedrockModel
+from strands.models import OpenAIModel
+from openai import AsyncOpenAI
+from strands_tools import file_read, file_write
 from tools.gateway import create_gateway_mcp_client
-from utils.auth import extract_user_id_from_context
+from utils.auth import extract_user_id_from_context, get_openai_credentials
+from utils.github_app import (
+    create_pull_request,
+    get_file_diff,
+    list_installed_repositories,
+    list_pull_requests,
+    preview_pull_request,
+    scratch_workspace_path,
+    setup_repository_workspace,
+)
 
 from tools.code_interpreter import StrandsCodeInterpreterTools
 
@@ -24,9 +36,51 @@ logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to tools via the Gateway and Code Interpreter. "
+    "You are a helpful assistant with access to tools via the Gateway, Code Interpreter, "
+    "and session-scoped S3-backed files mounted at /mnt/s3. "
+    "Use the Strands file_write tool for creating or updating files, and file_read for "
+    "reading, searching, or listing files. Your working directory is a dedicated folder for "
+    "this chat session, so relative file paths are isolated from other chats and sync to "
+    "the frontend file browser. "
     "When asked about your tools, list them and explain what they do."
 )
+
+
+def _repo_prompt(repository: dict | None) -> str:
+    if not repository:
+        return SYSTEM_PROMPT
+    full_name = repository.get("fullName") or repository.get("full_name")
+    return (
+        f"{SYSTEM_PROMPT} You are working inside the cloned GitHub repository {full_name}. "
+        "Only read and write files inside the current repository working directory. "
+        "Do not use absolute paths outside the repository."
+    )
+
+
+def _use_shared_files_workdir(repository: dict | None = None, session_id: str | None = None) -> str:
+    if repository:
+        repo_path = setup_repository_workspace(repository, session_id or "agentcore")
+        os.chdir(repo_path)
+        return str(repo_path)
+
+    mount_path = str(scratch_workspace_path(session_id or "agentcore"))
+    try:
+        os.chdir(mount_path)
+    except FileNotFoundError:
+        logger.warning("Shared files mount path does not exist yet: %s", mount_path)
+    except PermissionError:
+        logger.warning("Cannot use shared files mount path as working directory: %s", mount_path)
+    return mount_path
+
+
+class OpenRouterModel(OpenAIModel):
+    """OpenAI-compatible model adapter that omits token-limit request fields."""
+
+    def format_request(self, *args, **kwargs):
+        request = super().format_request(*args, **kwargs)
+        request.pop("max_tokens", None)
+        request.pop("max_completion_tokens", None)
+        return request
 
 
 def _create_session_manager(
@@ -81,11 +135,25 @@ def _create_session_manager(
     )
 
 
-def create_strands_agent(user_id: str, session_id: str) -> Agent:
+def create_strands_agent(user_id: str, session_id: str, repository: dict | None = None) -> Agent:
     """Create a Strands agent with Gateway tools, memory, and Code Interpreter."""
 
-    bedrock_model = BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", temperature=0.1
+    _use_shared_files_workdir(repository, session_id)
+
+    # Get OpenAI credentials from AgentCore Identity
+    openai_creds = get_openai_credentials()
+
+    # Create OpenAI client with custom base_url and api_key
+    openai_client = AsyncOpenAI(
+        api_key=openai_creds["api_key"],
+        base_url=openai_creds["base_url"],
+    )
+
+    # Create OpenAI model with the custom client and model_id from credentials
+    openai_model = OpenRouterModel(
+        client=openai_client,
+        model_id=openai_creds["model_id"],
+        params={"temperature": 0.1},
     )
 
     session_manager = _create_session_manager(user_id, session_id)
@@ -97,9 +165,14 @@ def create_strands_agent(user_id: str, session_id: str) -> Agent:
 
     return Agent(
         name="strands_agent",
-        system_prompt=SYSTEM_PROMPT,
-        tools=[gateway_client, code_tools.execute_python_securely],
-        model=bedrock_model,
+        system_prompt=_repo_prompt(repository),
+        tools=[
+            gateway_client,
+            code_tools.execute_python_securely,
+            file_read,
+            file_write,
+        ],
+        model=openai_model,
         session_manager=session_manager,
         trace_attributes={"user.id": user_id, "session.id": session_id},
     )
@@ -114,6 +187,7 @@ async def invocations(payload, context: RequestContext):
     """
     user_query = payload.get("prompt")
     session_id = payload.get("runtimeSessionId")
+    repository = payload.get("repository")
 
     if not all([user_query, session_id]):
         yield {
@@ -124,7 +198,109 @@ async def invocations(payload, context: RequestContext):
 
     try:
         user_id = extract_user_id_from_context(context)
-        agent = create_strands_agent(user_id, session_id)
+        github_action = payload.get("githubAction")
+        if github_action == "listInstalledRepositories":
+            yield {"status": "ok", **list_installed_repositories()}
+            return
+        if github_action == "previewPullRequest":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            yield {"status": "ok", "preview": preview_pull_request(repository, session_id)}
+            return
+        if github_action == "getFileDiff":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            file_path = str(payload.get("filePath") or "").strip()
+            if not file_path:
+                yield {"status": "error", "error": "filePath is required"}
+                return
+            yield {"status": "ok", "fileDiff": get_file_diff(repository, session_id, file_path)}
+            return
+        if github_action == "createPullRequest":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            pr_info = payload.get("pullRequest") or {}
+            yield {
+                "status": "ok",
+                "pullRequest": create_pull_request(
+                    repository,
+                    session_id,
+                    pr_info.get("title") or "AgentCore changes",
+                    pr_info.get("body") or "Created by AgentCore.",
+                ),
+            }
+            return
+        if github_action == "listPullRequests":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            yield {
+                "status": "ok",
+                "pullRequests": list_pull_requests(repository, payload.get("pullRequestState") or "open"),
+            }
+            return
+
+        if payload.get("filesystemSmokeTest") is True:
+            mount_path = os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3")
+            readme_path = os.path.join(mount_path, "README.md")
+            with open(readme_path, "r", encoding="utf-8") as readme:
+                content = readme.read()
+            yield {
+                "status": "ok",
+                "userId": user_id,
+                "mountPath": mount_path,
+                "readme": content,
+            }
+            return
+
+        if payload.get("filesystemDiagnostic") is True:
+            mount_path = os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3")
+            paths = ["/mnt", mount_path]
+            diagnostics = []
+            for path in paths:
+                try:
+                    item_stat = os.stat(path)
+                    diagnostics.append(
+                        {
+                            "path": path,
+                            "exists": True,
+                            "mode": stat.filemode(item_stat.st_mode),
+                            "uid": item_stat.st_uid,
+                            "gid": item_stat.st_gid,
+                            "writable": os.access(path, os.W_OK),
+                            "executable": os.access(path, os.X_OK),
+                        }
+                    )
+                except Exception as exc:
+                    diagnostics.append({"path": path, "exists": False, "error": str(exc)})
+
+            write_tests = []
+            for path in [mount_path, os.path.join(mount_path, "repos")]:
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    probe_path = os.path.join(path, ".agentcore-write-probe")
+                    with open(probe_path, "w", encoding="utf-8") as probe:
+                        probe.write("ok")
+                    os.remove(probe_path)
+                    write_tests.append({"path": path, "ok": True})
+                except Exception as exc:
+                    write_tests.append({"path": path, "ok": False, "error": str(exc)})
+
+            yield {
+                "status": "ok",
+                "uid": os.getuid(),
+                "gid": os.getgid(),
+                "cwd": os.getcwd(),
+                "mountPath": mount_path,
+                "paths": diagnostics,
+                "writeTests": write_tests,
+            }
+            return
+
+        agent = create_strands_agent(user_id, session_id, repository)
 
         async for event in agent.stream_async(user_query):
             yield json.loads(json.dumps(dict(event), default=str))

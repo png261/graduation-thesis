@@ -6,11 +6,14 @@ import * as ssm from "aws-cdk-lib/aws-ssm"
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager"
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
+import * as codebuild from "aws-cdk-lib/aws-codebuild"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
+import * as s3n from "aws-cdk-lib/aws-s3-notifications"
+import * as s3files from "aws-cdk-lib/aws-s3files"
+import * as appsync from "aws-cdk-lib/aws-appsync"
 import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
-import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as ecr_assets from "aws-cdk-lib/aws-ecr-assets"
 import * as cr from "aws-cdk-lib/custom-resources"
@@ -33,14 +36,27 @@ export class BackendStack extends cdk.NestedStack {
   public readonly userPoolClientId: string
   public readonly userPoolDomain: cognito.UserPoolDomain
   public feedbackApiUrl: string
+  public resourcesApiUrl: string
   public runtimeArn: string
   public memoryArn: string
+  public sharedBucketName?: string
+  public fileEventsApiUrl?: string
+  public fileEventsApiId?: string
+  public githubAppInstallUrl?: string
   private agentName: cdk.CfnParameter
   private userPool: cognito.IUserPool
   private machineClient: cognito.UserPoolClient
   private machineClientSecret: secretsmanager.Secret
   private runtimeCredentialProvider: cdk.CustomResource
   private agentRuntime: agentcore.Runtime
+  private agentCodeBucket?: s3.Bucket
+  private runtimeVpcResources?: {
+    vpc: ec2.IVpc
+    subnets: ec2.ISubnet[]
+    securityGroups: ec2.ISecurityGroup[]
+    subnetIds: string[]
+    securityGroupIds: string[]
+  }
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props)
@@ -79,6 +95,10 @@ export class BackendStack extends cdk.NestedStack {
     // Create AgentCore Gateway (before Runtime)
     this.createAgentCoreGateway(props.config)
 
+    // Create OpenAI API Key Credential Provider
+    this.createOpenAICredentialProvider(props.config)
+    this.createGitHubCredentialProvider(props.config)
+
     // Create AgentCore Runtime resources
     this.createAgentCoreRuntime(props.config)
 
@@ -93,6 +113,10 @@ export class BackendStack extends cdk.NestedStack {
 
     // Create API Gateway Feedback API resources
     this.createFeedbackApi(props.config, props.frontendUrl, feedbackTable)
+
+    const resourcesTable = this.createResourcesTable(props.config)
+    const driftProject = this.createCloudriftCodeBuildProject(props.config, resourcesTable)
+    this.createResourcesApi(props.config, props.frontendUrl, resourcesTable, driftProject)
   }
 
   private createAgentCoreRuntime(config: AppConfig): void {
@@ -109,6 +133,7 @@ export class BackendStack extends cdk.NestedStack {
     // Create the agent runtime artifact based on deployment type
     let agentRuntimeArtifact: agentcore.AgentRuntimeArtifact
     let zipPackagerResource: cdk.CustomResource | undefined
+    let runtimeArtifactVersion: string = deploymentType
 
     if (deploymentType === "zip") {
       // ZIP DEPLOYMENT: Use Lambda to package and upload to S3 (no Docker required)
@@ -122,6 +147,7 @@ export class BackendStack extends cdk.NestedStack {
         versioned: true,
         blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       })
+      this.agentCodeBucket = agentCodeBucket
 
       // Lambda to package agent code
       const packagerLambda = new lambda.Function(this, "ZipPackagerLambda", {
@@ -175,6 +201,8 @@ export class BackendStack extends cdk.NestedStack {
       // Create hash for change detection
       // We use this to trigger update when content changes
       const contentHash = this.hashContent(JSON.stringify({ requirements, agentCode }))
+      runtimeArtifactVersion = contentHash
+      const deploymentPackageKey = `deployment_package-${contentHash}.zip`
 
       // Custom Resource to trigger packaging
       const provider = new cr.Provider(this, "ZipPackagerProvider", {
@@ -185,7 +213,7 @@ export class BackendStack extends cdk.NestedStack {
         serviceToken: provider.serviceToken,
         properties: {
           BucketName: agentCodeBucket.bucketName,
-          ObjectKey: "deployment_package.zip",
+          ObjectKey: deploymentPackageKey,
           Requirements: requirements,
           AgentCode: agentCode,
           ContentHash: contentHash,
@@ -202,10 +230,10 @@ export class BackendStack extends cdk.NestedStack {
       agentRuntimeArtifact = agentcore.AgentRuntimeArtifact.fromS3(
         {
           bucketName: agentCodeBucket.bucketName,
-          objectKey: "deployment_package.zip",
+          objectKey: deploymentPackageKey,
         },
         agentcore.AgentCoreRuntime.PYTHON_3_12,
-        ["opentelemetry-instrument", "basic_agent.py"]
+        ["opentelemetry-instrument", "main.py"]
       )
     } else {
       // DOCKER DEPLOYMENT: Use container-based deployment
@@ -266,7 +294,7 @@ export class BackendStack extends cdk.NestedStack {
     this.memoryArn = memoryArn
 
     // Add memory-specific permissions to agent role
-    agentRole.addToPolicy(
+    agentRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         sid: "MemoryResourceAccess",
         effect: iam.Effect.ALLOW,
@@ -281,7 +309,7 @@ export class BackendStack extends cdk.NestedStack {
     )
 
     // Add SSM permissions for AgentCore Gateway URL lookup
-    agentRole.addToPolicy(
+    agentRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         sid: "SSMParameterAccess",
         effect: iam.Effect.ALLOW,
@@ -326,6 +354,26 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Add API Key Credential Provider access for AgentCore Runtime
+    // The @requires_api_key decorator performs a two-stage process:
+    // 1. GetApiKeyCredentialProvider - Looks up provider metadata (ARN, api key, additional fields)
+    // 2. GetResourceApiKey - Uses metadata to fetch the actual API key from Token Vault
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ApiKeyCredentialProviderAccess",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-agentcore:GetApiKeyCredentialProvider",
+          "bedrock-agentcore:GetResourceApiKey",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:api-key-credential-provider/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/*`,
+        ],
+      })
+    )
+
     // Add Secrets Manager access for OAuth2
     // AgentCore Runtime needs to read two secrets:
     // 1. Machine client secret (created by CDK)
@@ -338,9 +386,13 @@ export class BackendStack extends cdk.NestedStack {
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/machine_client_secret*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/${config.stack_name_base}-runtime-gateway-auth*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/apikey/${config.stack_name_base}-openai-credentials*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/apikey/${config.backend.github?.credential_provider_name || `${config.stack_name_base}-github-app`}*`,
         ],
       })
     )
+
+    const sharedStorage = this.createSharedS3FilesStorage(config, agentRole)
 
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
@@ -349,6 +401,13 @@ export class BackendStack extends cdk.NestedStack {
       MEMORY_ID: memoryId,
       STACK_NAME: config.stack_name_base,
       GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
+      OPENAI_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-openai-credentials`, // Used by @requires_api_key decorator to look up OpenAI credentials
+      OPENAI_BASE_URL: config.backend.openai?.base_url || "https://api.openai.com/v1",
+      OPENAI_MODEL_ID: config.backend.openai?.model_id || "gpt-4o",
+      GITHUB_CREDENTIAL_PROVIDER_NAME:
+        config.backend.github?.credential_provider_name || `${config.stack_name_base}-github-app`,
+      GITHUB_APP_ID: config.backend.github?.app_id || "",
+      GITHUB_APP_SLUG: config.backend.github?.app_slug || "",
       // Controls whether the agent activates long-term semantic memory retrieval.
       // The memory resource always includes the SemanticMemoryStrategy (no cost to define it),
       // but retrieval is only performed when this is "true". See config.yaml: use_long_term_memory.
@@ -357,6 +416,8 @@ export class BackendStack extends cdk.NestedStack {
       // See config.yaml: ltm_top_k and ltm_relevance_score.
       LTM_TOP_K: String(config.backend.ltm_top_k),
       LTM_RELEVANCE_SCORE: String(config.backend.ltm_relevance_score),
+      SHARED_FILES_MOUNT_PATH: config.backend.s3_files.mount_path,
+      BYPASS_TOOL_CONSENT: "true",
     }
 
     // Create the runtime using L2 construct
@@ -376,6 +437,20 @@ export class BackendStack extends cdk.NestedStack {
       },
       description: `Strands single agent runtime for ${config.stack_name_base}`,
     })
+
+    if (sharedStorage) {
+      const attachment = this.createS3FilesRuntimeAttachment(
+        config,
+        sharedStorage.accessPoint,
+        runtimeArtifactVersion
+      )
+      attachment.node.addDependency(this.agentRuntime)
+      this.agentRuntime.node.addDependency(sharedStorage.accessPoint)
+      for (const mountTarget of sharedStorage.mountTargets) {
+        this.agentRuntime.node.addDependency(mountTarget)
+        attachment.node.addDependency(mountTarget)
+      }
+    }
 
     // Make sure that ZIP is uploaded before Runtime is created
     if (zipPackagerResource) {
@@ -406,6 +481,320 @@ export class BackendStack extends cdk.NestedStack {
     new cdk.CfnOutput(this, "MemoryArn", {
       description: "ARN of the agent memory resource",
       value: memoryArn,
+    })
+  }
+
+  private createSharedS3FilesStorage(
+    config: AppConfig,
+    agentRole: iam.IRole
+  ):
+    | {
+        bucket: s3.Bucket
+        accessPoint: s3files.CfnAccessPoint
+        fileSystem: s3files.CfnFileSystem
+        mountTargets: s3files.CfnMountTarget[]
+      }
+    | undefined {
+    const s3FilesConfig = config.backend.s3_files
+    if (!s3FilesConfig.enabled) {
+      return undefined
+    }
+
+    const vpcResources = this.getRuntimeVpcResources(config)
+
+    const sharedBucket = new s3.Bucket(this, "SharedBrainBucket", {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      versioned: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    })
+    this.sharedBucketName = sharedBucket.bucketName
+
+    const syncRole = new iam.Role(this, "S3FilesSyncRole", {
+      assumedBy: new iam.ServicePrincipal("elasticfilesystem.amazonaws.com"),
+      description: "Allows Amazon S3 Files to synchronize with the shared brain S3 bucket.",
+    })
+    syncRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "S3FilesBucketAccess",
+        effect: iam.Effect.ALLOW,
+        actions: ["s3:ListBucket*"],
+        resources: [sharedBucket.bucketArn],
+      })
+    )
+    syncRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "S3FilesObjectAccess",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "s3:AbortMultipartUpload",
+          "s3:DeleteObject",
+          "s3:GetObject*",
+          "s3:List*",
+          "s3:PutObject*",
+        ],
+        resources: [sharedBucket.arnForObjects("*")],
+      })
+    )
+    syncRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "S3FilesEventBridgeSyncRules",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "events:DeleteRule",
+          "events:DisableRule",
+          "events:EnableRule",
+          "events:PutRule",
+          "events:PutTargets",
+          "events:RemoveTargets",
+        ],
+        resources: [
+          `arn:${cdk.Aws.PARTITION}:events:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:rule/DO-NOT-DELETE-S3-Files*`,
+        ],
+        conditions: {
+          StringEquals: {
+            "events:ManagedBy": "elasticfilesystem.amazonaws.com",
+          },
+        },
+      })
+    )
+
+    const fileSystem = new s3files.CfnFileSystem(this, "SharedBrainS3Files", {
+      bucket: sharedBucket.bucketArn,
+      prefix: s3FilesConfig.prefix,
+      roleArn: syncRole.roleArn,
+      acceptBucketWarning: true,
+    })
+
+    const accessPoint = new s3files.CfnAccessPoint(this, "SharedBrainS3FilesAccessPoint", {
+      fileSystemId: fileSystem.attrFileSystemId,
+      posixUser: {
+        uid: s3FilesConfig.uid,
+        gid: s3FilesConfig.gid,
+      },
+      rootDirectory: {
+        path: s3FilesConfig.root_directory,
+        creationPermissions: {
+          ownerUid: s3FilesConfig.uid,
+          ownerGid: s3FilesConfig.gid,
+          permissions: "777",
+        },
+      },
+    })
+
+    const mountTargets = vpcResources.subnetIds.map(
+      (subnetId, index) =>
+        new s3files.CfnMountTarget(this, `SharedBrainS3FilesMountTarget${index}`, {
+          fileSystemId: fileSystem.attrFileSystemId,
+          subnetId,
+          securityGroups: vpcResources.securityGroupIds,
+        })
+    )
+
+    agentRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: "S3FilesMountAccess",
+        effect: iam.Effect.ALLOW,
+        actions: ["s3files:ClientMount", "s3files:ClientWrite", "s3files:GetAccessPoint"],
+        resources: [fileSystem.attrFileSystemArn],
+        conditions: {
+          ArnEquals: {
+            "s3files:AccessPointArn": accessPoint.attrAccessPointArn,
+          },
+        },
+      })
+    )
+    agentRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: "S3FilesAccessPointRead",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "s3files:GetAccessPoint",
+          "s3files:GetMountTarget",
+          "s3files:ListAccessPoints",
+          "s3files:ListMountTargets",
+        ],
+        resources: ["*"],
+      })
+    )
+    this.createFileEventsApi(config, sharedBucket)
+
+    const githubAppSlug = config.backend.github?.app_slug || ""
+    if (githubAppSlug) {
+      this.githubAppInstallUrl = `https://github.com/apps/${githubAppSlug}/installations/new`
+      new cdk.CfnOutput(this, "GitHubAppInstallUrl", {
+        value: this.githubAppInstallUrl,
+        description: "GitHub App installation URL",
+      })
+    }
+
+    new cdk.CfnOutput(this, "SharedBrainBucketName", {
+      value: sharedBucket.bucketName,
+      description: "S3 bucket backing the shared AgentCore file system",
+    })
+    new cdk.CfnOutput(this, "SharedBrainMountPath", {
+      value: s3FilesConfig.mount_path,
+      description: "AgentCore runtime mount path for shared files",
+    })
+    new cdk.CfnOutput(this, "SharedBrainS3FilesAccessPointArn", {
+      value: accessPoint.attrAccessPointArn,
+      description: "S3 Files access point mounted into AgentCore Runtime",
+    })
+
+    return { bucket: sharedBucket, accessPoint, fileSystem, mountTargets }
+  }
+
+  private createS3FilesRuntimeAttachment(
+    config: AppConfig,
+    accessPoint: s3files.CfnAccessPoint,
+    runtimeArtifactVersion: string
+  ): cdk.CustomResource {
+    const attachLambda = new lambda.Function(this, "AgentCoreS3FilesAttachLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "agentcore-s3files-attach")),
+      timeout: cdk.Duration.minutes(2),
+      logGroup: new logs.LogGroup(this, "AgentCoreS3FilesAttachLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-agentcore-s3files-attach`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    this.agentCodeBucket?.grantRead(attachLambda)
+
+    attachLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:UpdateAgentRuntime"],
+        resources: [this.agentRuntime.agentRuntimeArn],
+      })
+    )
+    attachLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["iam:PassRole"],
+        resources: [this.agentRuntime.role.roleArn],
+      })
+    )
+
+    const provider = new cr.Provider(this, "AgentCoreS3FilesAttachProvider", {
+      onEventHandler: attachLambda,
+    })
+
+    return new cdk.CustomResource(this, "AgentCoreS3FilesAttachment", {
+      serviceToken: provider.serviceToken,
+      properties: {
+        RuntimeArn: this.agentRuntime.agentRuntimeArn,
+        AccessPointArn: accessPoint.attrAccessPointArn,
+        MountPath: config.backend.s3_files.mount_path,
+        RuntimeArtifactVersion: runtimeArtifactVersion,
+        ProviderImplementationVersion: "raw-s3files-access-point-v1",
+      },
+    })
+  }
+
+  private createFileEventsApi(config: AppConfig, sharedBucket: s3.Bucket): void {
+    const api = new appsync.GraphqlApi(this, "FileEventsApi", {
+      name: `${config.stack_name_base}-file-events`,
+      definition: appsync.Definition.fromFile(
+        path.join(__dirname, "..", "graphql", "file-events.graphql")
+      ),
+      authorizationConfig: {
+        defaultAuthorization: {
+          authorizationType: appsync.AuthorizationType.USER_POOL,
+          userPoolConfig: {
+            userPool: this.userPool,
+          },
+        },
+        additionalAuthorizationModes: [
+          {
+            authorizationType: appsync.AuthorizationType.IAM,
+          },
+        ],
+      },
+      logConfig: {
+        fieldLogLevel: appsync.FieldLogLevel.ERROR,
+      },
+      xrayEnabled: true,
+    })
+
+    const none = api.addNoneDataSource("FileEventsNoneDataSource")
+    none.createResolver("PublishFileEventResolver", {
+      typeName: "Mutation",
+      fieldName: "publishFileEvent",
+      requestMappingTemplate: appsync.MappingTemplate.fromString(
+        [
+          "{",
+          '  "version": "2017-02-28",',
+          '  "payload": $util.toJson($context.arguments.input)',
+          "}",
+        ].join("\n")
+      ),
+      responseMappingTemplate: appsync.MappingTemplate.fromString("$util.toJson($context.result)"),
+    })
+
+    const browser = new lambda.Function(this, "FileBrowser", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "file-browser")),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        BUCKET_NAME: sharedBucket.bucketName,
+      },
+      logGroup: new logs.LogGroup(this, "FileBrowserLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-file-browser`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    sharedBucket.grantRead(browser)
+    const browserDataSource = api.addLambdaDataSource("FileBrowserDataSource", browser)
+    browserDataSource.createResolver("ListFilesResolver", {
+      typeName: "Query",
+      fieldName: "listFiles",
+    })
+    browserDataSource.createResolver("GetFileContentResolver", {
+      typeName: "Query",
+      fieldName: "getFileContent",
+    })
+
+    const publisher = new lambda.Function(this, "S3FileEventPublisher", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "s3-file-events")),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        APPSYNC_API_URL: api.graphqlUrl,
+      },
+      logGroup: new logs.LogGroup(this, "S3FileEventPublisherLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-s3-file-events`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    api.grantMutation(publisher)
+    sharedBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(publisher))
+    sharedBucket.addEventNotification(s3.EventType.OBJECT_REMOVED, new s3n.LambdaDestination(publisher))
+
+    this.fileEventsApiUrl = api.graphqlUrl
+    this.fileEventsApiId = api.apiId
+
+    new ssm.StringParameter(this, "FileEventsApiUrlParam", {
+      parameterName: `/${config.stack_name_base}/file-events-api-url`,
+      stringValue: api.graphqlUrl,
+      description: "AppSync GraphQL API URL for real-time file events",
+    })
+
+    new cdk.CfnOutput(this, "FileEventsApiUrl", {
+      value: api.graphqlUrl,
+      description: "AppSync GraphQL API URL for real-time S3 file events",
+    })
+    new cdk.CfnOutput(this, "FileEventsApiId", {
+      value: api.apiId,
+      description: "AppSync GraphQL API ID for real-time S3 file events",
     })
   }
 
@@ -508,26 +897,17 @@ export class BackendStack extends cdk.NestedStack {
   ): void {
     // Create Lambda function for feedback using Python
     // ARM_64 required — matches Powertools ARM64 layer and avoids cross-platform
-    const feedbackLambda = new PythonFunction(this, "FeedbackLambda", {
+    const feedbackLambda = new lambda.Function(this, "FeedbackLambda", {
       functionName: `${config.stack_name_base}-feedback`,
       runtime: lambda.Runtime.PYTHON_3_13,
       architecture: lambda.Architecture.ARM_64,
-      entry: path.join(__dirname, "..", "lambdas", "feedback"), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      handler: "handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "feedback")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      handler: "index.handler",
       environment: {
         TABLE_NAME: feedbackTable.tableName,
         CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
       },
       timeout: cdk.Duration.seconds(30),
-      layers: [
-        lambda.LayerVersion.fromLayerVersionArn(
-          this,
-          "PowertoolsLayer",
-          `arn:aws:lambda:${
-            cdk.Stack.of(this).region
-          }:017000801446:layer:AWSLambdaPowertoolsPythonV3-python313-arm64:18`
-        ),
-      ],
       logGroup: new logs.LogGroup(this, "FeedbackLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-feedback`,
         retention: logs.RetentionDays.ONE_WEEK,
@@ -607,6 +987,640 @@ export class BackendStack extends cdk.NestedStack {
       parameterName: `/${config.stack_name_base}/feedback-api-url`,
       stringValue: api.url,
       description: "Feedback API Gateway URL",
+    })
+  }
+
+  private createResourcesTable(config: AppConfig): dynamodb.Table {
+    const resourcesTable = new dynamodb.Table(this, "ResourcesTable", {
+      tableName: `${config.stack_name_base}-resources`,
+      partitionKey: {
+        name: "pk",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "sk",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: true,
+      },
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+    })
+
+    resourcesTable.addGlobalSecondaryIndex({
+      indexName: "type-updatedAt-index",
+      partitionKey: {
+        name: "type",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "updatedAt",
+        type: dynamodb.AttributeType.STRING,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    })
+
+    return resourcesTable
+  }
+
+  private createCloudriftCodeBuildProject(
+    config: AppConfig,
+    resourcesTable: dynamodb.Table
+  ): codebuild.Project {
+    const cloudriftImage = codebuild.LinuxBuildImage.fromAsset(this, "CloudriftBuildImage", {
+      directory: path.join(__dirname, "..", "codebuild", "cloudrift-image"),
+      platform: ecr_assets.Platform.LINUX_AMD64,
+    })
+    const cloudriftLogGroup = logs.LogGroup.fromLogGroupName(
+      this,
+      "CloudriftDriftProjectLogGroup",
+      `/aws/codebuild/${config.stack_name_base}-cloudrift-drift`
+    )
+
+    const project = new codebuild.Project(this, "CloudriftDriftProject", {
+      projectName: `${config.stack_name_base}-cloudrift-drift`,
+      description: "Runs Cloudrift drift scans for user configured S3 Terraform state backends.",
+      logging: {
+        cloudWatch: {
+          enabled: true,
+          logGroup: cloudriftLogGroup,
+          prefix: "build",
+        },
+      },
+      environment: {
+        buildImage: cloudriftImage,
+        computeType: codebuild.ComputeType.SMALL,
+        privileged: false,
+        environmentVariables: {
+          RESOURCES_TABLE_NAME: {
+            value: resourcesTable.tableName,
+          },
+        },
+      },
+      timeout: cdk.Duration.minutes(20),
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        phases: {
+          build: {
+            commands: [
+              `python - <<'PY'
+import json
+import os
+import subprocess
+import time
+import traceback
+
+import boto3
+
+control_sm = boto3.client("secretsmanager")
+control_sns = boto3.client("sns")
+control_ddb = boto3.resource("dynamodb")
+table = control_ddb.Table(os.environ["RESOURCES_TABLE_NAME"])
+
+user_id = os.environ["USER_ID"]
+job_mode = os.environ.get("JOB_MODE", "scan")
+scan_id = os.environ.get("SCAN_ID", "")
+backend_id = os.environ["BACKEND_ID"]
+backend_name = os.environ.get("BACKEND_NAME", "")
+state_bucket = os.environ.get("STATE_BUCKET", "")
+state_key = os.environ.get("STATE_KEY", "")
+state_region = os.environ.get("STATE_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
+scan_service = (os.environ.get("SCAN_SERVICE") or "s3").lower()
+drift_guard_id = os.environ.get("DRIFT_GUARD_ID", "")
+alert_topic_arn = os.environ.get("ALERT_TOPIC_ARN", "")
+started_at = os.environ.get("SCAN_STARTED_AT") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def normalize_list(value):
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
+
+def pick_scan_sections(payload):
+    if isinstance(payload, list):
+        return [], [], payload
+    if not isinstance(payload, dict):
+        return [], [], []
+
+    drift = normalize_list(payload.get("drifts") or payload.get("drift") or payload.get("drift_alerts"))
+    policies = []
+    policy_result = payload.get("policy_result")
+    if isinstance(policy_result, dict):
+        policies.extend(normalize_list(policy_result.get("violations")))
+        policies.extend(normalize_list(policy_result.get("warnings")))
+    policies.extend(normalize_list(payload.get("policy_alerts") or payload.get("policy_violations")))
+    resources = normalize_list(
+        payload.get("resources") or payload.get("current_resources") or payload.get("inventory")
+    )
+    for key, value in payload.items():
+        lowered = key.lower()
+        if key in ("drifts", "drift", "drift_alerts"):
+            continue
+        if key in ("policy_result", "policy_alerts", "policy_violations"):
+            continue
+        if key in ("resources", "current_resources", "inventory"):
+            continue
+        if "drift" in lowered:
+            drift.extend(normalize_list(value))
+        elif "policy" in lowered or "issue" in lowered or "alert" in lowered or "violation" in lowered:
+            policies.extend(normalize_list(value))
+        elif "resource" in lowered or "current" in lowered or "inventory" in lowered:
+            resources.extend(normalize_list(value))
+
+    if not drift and not policies and not resources:
+        resources = [payload]
+    return drift, policies, resources
+
+def parse_cloudrift_json(stdout):
+    text = stdout or "{}"
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    marker = text.rfind("\\n{")
+    if marker >= 0:
+        candidate = text[marker + 1 :]
+    else:
+        marker = text.find("{")
+        candidate = text[marker:] if marker >= 0 else "{}"
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return {"output": text}
+
+def store(status, drift=None, policies=None, resources=None, raw=None, error=None):
+    existing = table.get_item(Key={"pk": user_id, "sk": "SCAN#" + scan_id}).get("Item", {})
+    item = {
+        "pk": user_id,
+        "sk": "SCAN#" + scan_id,
+        "type": "scan",
+        "scanId": scan_id,
+        "backendId": backend_id,
+        "backendName": backend_name,
+        "stateBucket": state_bucket,
+        "stateKey": state_key,
+        "stateRegion": state_region,
+        "service": scan_service,
+        "status": status,
+        "startedAt": started_at,
+        "updatedAt": now(),
+        "driftAlerts": drift or [],
+        "policyAlerts": policies or [],
+        "currentResources": resources or [],
+    }
+    if raw is not None:
+        item["rawResult"] = raw
+    if error:
+        item["error"] = str(error)[:4000]
+    if existing.get("codeBuildBuildId"):
+        item["codeBuildBuildId"] = existing["codeBuildBuildId"]
+    if drift_guard_id:
+        item["guardId"] = drift_guard_id
+    table.put_item(Item=item)
+
+def publish_drift_alert(drift, policies):
+    if not alert_topic_arn or not drift:
+        return
+    subject = "Cloudrift drift detected: {}".format(backend_name or backend_id)
+    message = {
+        "backendName": backend_name,
+        "backendId": backend_id,
+        "scanId": scan_id,
+        "state": "s3://{}/{}".format(state_bucket, state_key),
+        "region": state_region,
+        "service": scan_service,
+        "driftCount": len(drift or []),
+        "policyCount": len(policies or []),
+        "startedAt": started_at,
+        "updatedAt": now(),
+    }
+    control_sns.publish(
+        TopicArn=alert_topic_arn,
+        Subject=subject[:100],
+        Message=json.dumps(message, indent=2, default=str),
+    )
+
+def store_tf_job(status, phase, error=None):
+    job_id = os.environ["PLAN_JOB_ID"]
+    expression = "SET #status = :status, phase = :phase, updatedAt = :updatedAt"
+    names = {"#status": "status"}
+    values = {
+        ":status": status,
+        ":phase": phase,
+        ":updatedAt": now(),
+    }
+    if error:
+        expression += ", #error = :error"
+        names["#error"] = "error"
+        values[":error"] = str(error)[:4000]
+    table.update_item(
+        Key={"pk": user_id, "sk": "TFJOB#" + job_id},
+        UpdateExpression=expression,
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+def run_checked(command, phase, env):
+    store_tf_job("RUNNING", phase)
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=900,
+    )
+    if completed.returncode != 0:
+        message = completed.stderr or completed.stdout or "{} failed".format(phase)
+        store_tf_job("FAILED", phase, message)
+        raise RuntimeError(message)
+    return completed
+
+def state_to_plan(state_payload):
+    if isinstance(state_payload, dict) and isinstance(state_payload.get("resource_changes"), list):
+        return state_payload
+    if not isinstance(state_payload, dict):
+        return {"resource_changes": []}
+
+    changes = []
+    for resource in state_payload.get("resources", []):
+        if not isinstance(resource, dict):
+            continue
+        if resource.get("mode") != "managed":
+            continue
+        resource_type = resource.get("type")
+        if scan_service == "s3" and resource_type != "aws_s3_bucket":
+            continue
+        if scan_service == "ec2" and resource_type != "aws_instance":
+            continue
+        if scan_service == "iam" and not str(resource_type or "").startswith("aws_iam_"):
+            continue
+        for index, instance in enumerate(resource.get("instances", [])):
+            if not isinstance(instance, dict):
+                continue
+            attributes = instance.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            address = resource.get("address")
+            if not address:
+                address = "{}.{}".format(resource.get("type", "resource"), resource.get("name", index))
+            changes.append(
+                {
+                    "address": address,
+                    "type": resource.get("type"),
+                    "name": resource.get("name", str(index)),
+                    "change": {
+                        "actions": ["no-op"],
+                        "after": attributes,
+                    },
+                }
+            )
+    return {"resource_changes": changes}
+
+try:
+    secret_value = control_sm.get_secret_value(SecretId=os.environ["AWS_CREDENTIAL_SECRET_ID"])
+    credential_store = json.loads(secret_value.get("SecretString") or "{}")
+    if isinstance(credential_store.get("credentials"), dict):
+        credential_id = os.environ.get("AWS_CREDENTIAL_ID") or credential_store.get("activeCredentialId")
+        secret = credential_store["credentials"].get(credential_id) or {}
+    else:
+        secret = credential_store
+    if not secret.get("accessKeyId") or not secret.get("secretAccessKey"):
+        raise RuntimeError("Selected AWS credential was not found")
+    env = os.environ.copy()
+    env["AWS_ACCESS_KEY_ID"] = secret["accessKeyId"]
+    env["AWS_SECRET_ACCESS_KEY"] = secret["secretAccessKey"]
+    if secret.get("sessionToken"):
+        env["AWS_SESSION_TOKEN"] = secret["sessionToken"]
+    env["AWS_DEFAULT_REGION"] = state_region
+    env["AWS_REGION"] = state_region
+    env["TF_STATE_BUCKET"] = state_bucket
+    env["TF_STATE_KEY"] = state_key
+
+    session_kwargs = {
+        "aws_access_key_id": secret["accessKeyId"],
+        "aws_secret_access_key": secret["secretAccessKey"],
+        "region_name": state_region,
+    }
+    if secret.get("sessionToken"):
+        session_kwargs["aws_session_token"] = secret["sessionToken"]
+    target_session = boto3.Session(**session_kwargs)
+    if job_mode == "terraform_plan":
+        s3_client = target_session.client("s3")
+        source_prefix = os.environ["SOURCE_PREFIX"].rstrip("/") + "/"
+        os.makedirs("terraform-src", exist_ok=True)
+        paginator = s3_client.get_paginator("list_objects_v2")
+        found = False
+        for page in paginator.paginate(Bucket=state_bucket, Prefix=source_prefix):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                if key.endswith("/"):
+                    continue
+                name = key.rsplit("/", 1)[-1]
+                if not (name.endswith(".tf") or name.endswith(".tfvars")):
+                    continue
+                s3_client.download_file(state_bucket, key, os.path.join("terraform-src", name))
+                found = True
+        if not found:
+            store_tf_job("FAILED", "download", "No Terraform files found")
+            raise RuntimeError("No Terraform files found")
+        run_checked(["terraform", "-chdir=terraform-src", "init", "-input=false"], "init", env)
+        run_checked(["terraform", "-chdir=terraform-src", "plan", "-input=false", "-out=tfplan"], "plan", env)
+        show = run_checked(["terraform", "-chdir=terraform-src", "show", "-json", "tfplan"], "show", env)
+        json.loads(show.stdout)
+        s3_client.put_object(
+            Bucket=state_bucket,
+            Key=state_key,
+            Body=show.stdout.encode("utf-8"),
+            ContentType="application/json",
+        )
+        timestamp = now()
+        table.update_item(
+            Key={"pk": user_id, "sk": "BACKEND#" + backend_id},
+            UpdateExpression="SET updatedAt = :updatedAt, planUpdatedAt = :planUpdatedAt",
+            ExpressionAttributeValues={":updatedAt": timestamp, ":planUpdatedAt": timestamp},
+        )
+        store_tf_job("SUCCEEDED", "show")
+        raise SystemExit(0)
+
+    target_session.client("s3").download_file(state_bucket, state_key, "terraform-state.json")
+    with open("terraform-state.json", "r", encoding="utf-8") as state_file:
+        state_payload = json.load(state_file)
+    plan_payload = state_to_plan(state_payload)
+    with open("plan.json", "w", encoding="utf-8") as plan_file:
+        json.dump(plan_payload, plan_file)
+    with open("cloudrift.yml", "w", encoding="utf-8") as config_file:
+        config_file.write("region: {}\\n".format(state_region))
+        config_file.write("plan_path: ./plan.json\\n")
+
+    completed = subprocess.run(
+        ["cloudrift", "scan", "--config=cloudrift.yml", "--service=" + scan_service, "--format=json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=900,
+    )
+    if completed.returncode != 0:
+        store("FAILED", error=(completed.stderr or completed.stdout or "Cloudrift scan failed"))
+        raise SystemExit(completed.returncode)
+
+    payload = parse_cloudrift_json(completed.stdout)
+
+    drift, policies, resources = pick_scan_sections(payload)
+    if not resources:
+        resources = normalize_list(plan_payload.get("resource_changes"))
+    store("SUCCEEDED", drift=drift, policies=policies, resources=resources, raw=payload)
+    publish_drift_alert(drift, policies)
+except Exception as exc:
+    store("FAILED", error="{}\\n{}".format(exc, traceback.format_exc()))
+    raise
+PY`,
+            ],
+          },
+        },
+      }),
+    })
+
+    resourcesTable.grantReadWriteData(project)
+    cloudriftLogGroup.grantWrite(project)
+    project.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ReadUserAwsCredentialSecrets",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/user-aws-credentials/*`,
+        ],
+      })
+    )
+    project.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "PublishDriftGuardAlerts",
+        effect: iam.Effect.ALLOW,
+        actions: ["sns:Publish"],
+        resources: [`arn:aws:sns:${this.region}:${this.account}:${config.stack_name_base}-drift-guard-*`],
+      })
+    )
+
+    return project
+  }
+
+  private createResourcesApi(
+    config: AppConfig,
+    frontendUrl: string,
+    resourcesTable: dynamodb.Table,
+    driftProject: codebuild.Project
+  ): void {
+    const resourcesLambdaName = `${config.stack_name_base}-resources`
+    const resourcesLambdaArn = `arn:aws:lambda:${this.region}:${this.account}:function:${resourcesLambdaName}`
+    const schedulerRoleName = `${config.stack_name_base}-drift-guard-scheduler`
+    const schedulerRoleArn = `arn:aws:iam::${this.account}:role/${schedulerRoleName}`
+    const driftGuardSchedulerRole = new iam.Role(this, "DriftGuardSchedulerRole", {
+      roleName: schedulerRoleName,
+      assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+      description: "Allows EventBridge Scheduler to invoke the Resources Lambda for Drift Guard scans.",
+    })
+    driftGuardSchedulerRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "InvokeResourcesLambda",
+        effect: iam.Effect.ALLOW,
+        actions: ["lambda:InvokeFunction"],
+        resources: [resourcesLambdaArn],
+      })
+    )
+
+    const resourcesLambda = new lambda.Function(this, "ResourcesLambda", {
+      functionName: resourcesLambdaName,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      architecture: lambda.Architecture.ARM_64,
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "resources")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      handler: "index.handler",
+      environment: {
+        TABLE_NAME: resourcesTable.tableName,
+        CODEBUILD_PROJECT_NAME: driftProject.projectName,
+        STACK_NAME_BASE: config.stack_name_base,
+        DRIFT_GUARD_SCHEDULER_ROLE_ARN: schedulerRoleArn,
+        RESOURCES_LAMBDA_ARN: resourcesLambdaArn,
+        GITHUB_APP_SECRET_NAME: `/${config.stack_name_base}/github_app`,
+        CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
+      },
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "ResourcesLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-resources`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    resourcesTable.grantReadWriteData(resourcesLambda)
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "StartCloudriftBuild",
+        effect: iam.Effect.ALLOW,
+        actions: ["codebuild:BatchGetBuilds", "codebuild:StartBuild"],
+        resources: [driftProject.projectArn],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ReadCloudriftBuildLogs",
+        effect: iam.Effect.ALLOW,
+        actions: ["logs:GetLogEvents"],
+        resources: [
+          `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/${config.stack_name_base}-cloudrift-drift:log-stream:*`,
+        ],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ManageUserAwsCredentialSecrets",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:TagResource",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/user-aws-credentials/*`,
+        ],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ManageDriftGuardSchedules",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "scheduler:CreateSchedule",
+          "scheduler:DeleteSchedule",
+          "scheduler:GetSchedule",
+          "scheduler:UpdateSchedule",
+        ],
+        resources: [
+          `arn:aws:scheduler:${this.region}:${this.account}:schedule/default/${config.stack_name_base}-drift-guard-*`,
+        ],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "PassDriftGuardSchedulerRole",
+        effect: iam.Effect.ALLOW,
+        actions: ["iam:PassRole"],
+        resources: [driftGuardSchedulerRole.roleArn],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ManageDriftGuardAlertTopics",
+        effect: iam.Effect.ALLOW,
+        actions: ["sns:CreateTopic", "sns:ListSubscriptionsByTopic", "sns:Subscribe"],
+        resources: [`arn:aws:sns:${this.region}:${this.account}:${config.stack_name_base}-drift-guard-*`],
+      })
+    )
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ReadGitHubAppSecretForWebhooks",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/github_app*`,
+        ],
+      })
+    )
+
+    const api = new apigateway.RestApi(this, "ResourcesApi", {
+      restApiName: `${config.stack_name_base}-resources-api`,
+      description: "API for AWS credentials, state backends, and Cloudrift scan results",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [frontendUrl, "http://localhost:3000"],
+        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Authorization"],
+      },
+      deployOptions: {
+        stageName: "prod",
+        throttlingRateLimit: 50,
+        throttlingBurstLimit: 100,
+        loggingLevel: apigateway.MethodLoggingLevel.INFO,
+        dataTraceEnabled: false,
+        metricsEnabled: true,
+        accessLogDestination: new apigateway.LogGroupLogDestination(
+          new logs.LogGroup(this, "ResourcesApiAccessLogGroup", {
+            logGroupName: `/aws/apigateway/${config.stack_name_base}-resources-api-access`,
+            retention: logs.RetentionDays.ONE_WEEK,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          })
+        ),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
+        tracingEnabled: true,
+      },
+    })
+
+    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, "ResourcesApiAuthorizer", {
+      cognitoUserPools: [this.userPool],
+      identitySource: "method.request.header.Authorization",
+      authorizerName: `${config.stack_name_base}-resources-authorizer`,
+    })
+    const integration = new apigateway.LambdaIntegration(resourcesLambda)
+    const methodOptions = {
+      authorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    }
+
+    const credentialResource = api.root.addResource("aws-credential")
+    credentialResource.addMethod("GET", integration, methodOptions)
+    credentialResource.addMethod("POST", integration, methodOptions)
+    const credentialsResource = api.root.addResource("aws-credentials")
+    credentialsResource.addMethod("GET", integration, methodOptions)
+    credentialsResource.addMethod("POST", integration, methodOptions)
+
+    const resourcesRoot = api.root.addResource("resources")
+    const backendsResource = resourcesRoot.addResource("state-backends")
+    backendsResource.addMethod("GET", integration, methodOptions)
+    backendsResource.addMethod("POST", integration, methodOptions)
+    const terraformPlansResource = resourcesRoot.addResource("terraform-plans")
+    terraformPlansResource.addMethod("GET", integration, methodOptions)
+    terraformPlansResource.addMethod("POST", integration, methodOptions)
+    const backendResource = backendsResource.addResource("{backendId}")
+    const backendPlanResource = backendResource.addResource("plan")
+    backendPlanResource.addMethod("POST", integration, methodOptions)
+
+    const scansResource = resourcesRoot.addResource("scans")
+    scansResource.addMethod("GET", integration, methodOptions)
+    scansResource.addMethod("POST", integration, methodOptions)
+    const driftGuardsResource = resourcesRoot.addResource("drift-guards")
+    driftGuardsResource.addMethod("GET", integration, methodOptions)
+    driftGuardsResource.addMethod("POST", integration, methodOptions)
+    const driftGuardResource = driftGuardsResource.addResource("{guardId}")
+    const driftGuardRunResource = driftGuardResource.addResource("run")
+    driftGuardRunResource.addMethod("POST", integration, methodOptions)
+    const scanResource = scansResource.addResource("{scanId}")
+    const scanLogsResource = scanResource.addResource("logs")
+    scanLogsResource.addMethod("GET", integration, methodOptions)
+
+    const githubResource = api.root.addResource("github")
+    const githubWebhookResource = githubResource.addResource("webhook")
+    githubWebhookResource.addMethod("POST", integration)
+    const githubWebhookSecretResource = githubResource.addResource("webhook-secret")
+    githubWebhookSecretResource.addMethod("GET", integration, methodOptions)
+    githubWebhookSecretResource.addMethod("POST", integration, methodOptions)
+    const githubPullRequestsResource = githubResource.addResource("pull-requests")
+    githubPullRequestsResource.addMethod("GET", integration, methodOptions)
+
+    this.resourcesApiUrl = api.url
+
+    new ssm.StringParameter(this, "ResourcesApiUrlParam", {
+      parameterName: `/${config.stack_name_base}/resources-api-url`,
+      stringValue: api.url,
+      description: "Resources API Gateway URL",
     })
   }
 
@@ -735,8 +1749,7 @@ export class BackendStack extends cdk.NestedStack {
           "bedrock-agentcore:DeleteTokenVault",
         ],
         resources: [
-          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default`,
-          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default/*`,
+          "*",
         ],
       })
     )
@@ -861,6 +1874,195 @@ export class BackendStack extends cdk.NestedStack {
     })
   }
 
+  private createOpenAICredentialProvider(config: AppConfig): void {
+    // Create secret for OpenAI API key with JSON structure
+    const placeholderCredentials = JSON.stringify({
+      api_key: "PLACEHOLDER_REPLACE_ME",
+      base_url: config.backend.openai?.base_url || "https://api.openai.com/v1",
+      model_id: config.backend.openai?.model_id || "gpt-4o",
+    })
+
+    const openaiApiKeySecret = new secretsmanager.Secret(this, "OpenAIApiKeySecret", {
+      secretName: `/${config.stack_name_base}/openai_api_key`,
+      description: "OpenAI API credentials (JSON: api_key, base_url, model_id)",
+      secretStringValue: cdk.SecretValue.unsafePlainText(placeholderCredentials),
+    })
+
+    // Create Lambda for OpenAI Credential Provider management
+    const openaiProviderLambda = new lambda.Function(this, "OpenAIProviderLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../lambdas/openai-credential-provider")
+      ),
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "OpenAIProviderLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-openai-provider`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // Grant Lambda permissions for API Key Credential Provider
+    openaiProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateApiKeyCredentialProvider",
+          "bedrock-agentcore:GetApiKeyCredentialProvider",
+          "bedrock-agentcore:UpdateApiKeyCredentialProvider",
+          "bedrock-agentcore:DeleteApiKeyCredentialProvider",
+        ],
+        resources: ["*"],
+      })
+    )
+
+    // Grant Lambda permissions for Token Vault
+    openaiProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateTokenVault",
+          "bedrock-agentcore:GetTokenVault",
+          "bedrock-agentcore:DeleteTokenVault",
+        ],
+        resources: [
+          "*",
+        ],
+      })
+    )
+
+    openaiProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:PutSecretValue",
+        ],
+        resources: ["*"],
+      })
+    )
+
+    // Grant Lambda permissions to read the API key secret
+    openaiApiKeySecret.grantRead(openaiProviderLambda)
+
+    // Create Custom Resource Provider
+    const openaiProvider = new cr.Provider(this, "OpenAIProviderProvider", {
+      onEventHandler: openaiProviderLambda,
+    })
+
+    const providerName = `${config.stack_name_base}-openai-credentials`
+
+    // Create Custom Resource
+    new cdk.CustomResource(this, "OpenAICredentialProvider", {
+      serviceToken: openaiProvider.serviceToken,
+      properties: {
+        ProviderName: providerName,
+        ApiKeySecretArn: openaiApiKeySecret.secretArn,
+        BaseUrl: config.backend.openai?.base_url || "https://api.openai.com/v1",
+        ModelId: config.backend.openai?.model_id || "gpt-4o",
+        ProviderImplementationVersion: "control-plane-client-v1",
+      },
+    })
+
+    // Output instructions for setting the API key
+    new cdk.CfnOutput(this, "OpenAIApiKeySecretArn", {
+      value: openaiApiKeySecret.secretArn,
+      description: "OpenAI API Key Secret ARN - Update this secret with your credentials (JSON format)",
+    })
+
+    new cdk.CfnOutput(this, "OpenAIApiKeyUpdateCommand", {
+      value: `aws secretsmanager put-secret-value --secret-id ${openaiApiKeySecret.secretArn} --secret-string '{"api_key":"sk-your-key","base_url":"https://api.openai.com/v1","model_id":"gpt-4o"}'`,
+      description: "Command to update OpenAI credentials (replace with your values)",
+    })
+  }
+
+  private createGitHubCredentialProvider(config: AppConfig): void {
+    const providerName =
+      config.backend.github?.credential_provider_name || `${config.stack_name_base}-github-app`
+    const placeholderCredentials = JSON.stringify({
+      api_key: "PLACEHOLDER_REPLACE_WITH_GITHUB_APP_PRIVATE_KEY",
+      app_id: config.backend.github?.app_id || "",
+      app_slug: config.backend.github?.app_slug || "",
+    })
+
+    const githubSecret = new secretsmanager.Secret(this, "GitHubAppSecret", {
+      secretName: `/${config.stack_name_base}/github_app`,
+      description: "GitHub App credentials (JSON: api_key private key PEM, app_id, app_slug)",
+      secretStringValue: cdk.SecretValue.unsafePlainText(placeholderCredentials),
+    })
+
+    const githubProviderLambda = new lambda.Function(this, "GitHubProviderLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../lambdas/openai-credential-provider")
+      ),
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "GitHubProviderLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-github-provider`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    githubProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateApiKeyCredentialProvider",
+          "bedrock-agentcore:GetApiKeyCredentialProvider",
+          "bedrock-agentcore:UpdateApiKeyCredentialProvider",
+          "bedrock-agentcore:DeleteApiKeyCredentialProvider",
+        ],
+        resources: ["*"],
+      })
+    )
+    githubProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateTokenVault",
+          "bedrock-agentcore:GetTokenVault",
+          "bedrock-agentcore:DeleteTokenVault",
+        ],
+        resources: [
+          "*",
+        ],
+      })
+    )
+    githubProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:PutSecretValue",
+        ],
+        resources: ["*"],
+      })
+    )
+    githubSecret.grantRead(githubProviderLambda)
+
+    const provider = new cr.Provider(this, "GitHubProviderProvider", {
+      onEventHandler: githubProviderLambda,
+    })
+
+    new cdk.CustomResource(this, "GitHubCredentialProvider", {
+      serviceToken: provider.serviceToken,
+      properties: {
+        ProviderName: providerName,
+        ApiKeySecretArn: githubSecret.secretArn,
+        BaseUrl: "https://api.github.com",
+        ModelId: "github-app",
+        ApiKeyFormat: "raw_json",
+        ProviderImplementationVersion: "github-app-v6",
+      },
+    })
+
+    new cdk.CfnOutput(this, "GitHubAppSecretArn", {
+      value: githubSecret.secretArn,
+      description: "GitHub App Secret ARN - update JSON with api_key private key PEM, app_id, app_slug",
+    })
+  }
+
   private createMachineAuthentication(config: AppConfig): void {
     // Create Resource Server for Machine-to-Machine (M2M) authentication
     // This defines the API scopes that machine clients can request access to
@@ -951,40 +2153,14 @@ export class BackendStack extends cdk.NestedStack {
    * @returns A RuntimeNetworkConfiguration for the AgentCore Runtime.
    */
   private buildNetworkConfiguration(config: AppConfig): agentcore.RuntimeNetworkConfiguration {
-    if (config.backend.network_mode === "VPC") {
-      const vpcConfig = config.backend.vpc
-      // vpc config is validated in ConfigManager, but guard here for type safety
-      if (!vpcConfig) {
-        throw new Error("backend.vpc configuration is required when network_mode is 'VPC'.")
-      }
-
-      // Import the user's existing VPC by ID.
-      // This performs a context lookup at synth time to resolve VPC attributes.
-      const vpc = ec2.Vpc.fromLookup(this, "ImportedVpc", {
-        vpcId: vpcConfig.vpc_id,
-      })
-
-      // Import the user-specified subnets by their IDs.
-      // These subnets must exist within the VPC specified above.
-      const subnets: ec2.ISubnet[] = vpcConfig.subnet_ids.map((subnetId: string, index: number) =>
-        ec2.Subnet.fromSubnetId(this, `ImportedSubnet${index}`, subnetId)
-      )
-
-      // Build the VPC config props for the AgentCore L2 construct.
-      // Security groups are optional — if not provided, the construct creates a default one.
-      const securityGroups =
-        vpcConfig.security_group_ids && vpcConfig.security_group_ids.length > 0
-          ? vpcConfig.security_group_ids.map((sgId: string, index: number) =>
-              ec2.SecurityGroup.fromSecurityGroupId(this, `ImportedSG${index}`, sgId)
-            )
-          : undefined
-
+    if (config.backend.network_mode === "VPC" || config.backend.s3_files.enabled) {
+      const vpcResources = this.getRuntimeVpcResources(config)
       const vpcConfigProps: agentcore.VpcConfigProps = {
-        vpc: vpc,
+        vpc: vpcResources.vpc,
         vpcSubnets: {
-          subnets: subnets,
+          subnets: vpcResources.subnets,
         },
-        securityGroups: securityGroups,
+        securityGroups: vpcResources.securityGroups,
       }
 
       return agentcore.RuntimeNetworkConfiguration.usingVpc(this, vpcConfigProps)
@@ -992,6 +2168,87 @@ export class BackendStack extends cdk.NestedStack {
 
     // Default: public network mode
     return agentcore.RuntimeNetworkConfiguration.usingPublicNetwork()
+  }
+
+  private getRuntimeVpcResources(config: AppConfig): {
+    vpc: ec2.IVpc
+    subnets: ec2.ISubnet[]
+    securityGroups: ec2.ISecurityGroup[]
+    subnetIds: string[]
+    securityGroupIds: string[]
+  } {
+    if (this.runtimeVpcResources) {
+      return this.runtimeVpcResources
+    }
+
+    const providedVpc = config.backend.vpc
+    let vpc: ec2.IVpc
+    let subnets: ec2.ISubnet[]
+    let securityGroups: ec2.ISecurityGroup[]
+
+    if (providedVpc?.vpc_id && providedVpc.subnet_ids?.length) {
+      vpc = ec2.Vpc.fromLookup(this, "ImportedVpc", {
+        vpcId: providedVpc.vpc_id,
+      })
+      subnets = providedVpc.subnet_ids.map((subnetId: string, index: number) =>
+        ec2.Subnet.fromSubnetId(this, `ImportedSubnet${index}`, subnetId)
+      )
+      securityGroups =
+        providedVpc.security_group_ids && providedVpc.security_group_ids.length > 0
+          ? providedVpc.security_group_ids.map((sgId: string, index: number) =>
+              ec2.SecurityGroup.fromSecurityGroupId(this, `ImportedSG${index}`, sgId)
+            )
+          : [
+              new ec2.SecurityGroup(this, "AgentCoreRuntimeSecurityGroup", {
+                vpc,
+                allowAllOutbound: true,
+                description: "Security group for AgentCore Runtime and S3 Files mounts.",
+              }),
+            ]
+    } else {
+      const managedVpc = new ec2.Vpc(this, "AgentCoreRuntimeVpc", {
+        maxAzs: 2,
+        natGateways: 1,
+        subnetConfiguration: [
+          {
+            name: "public",
+            subnetType: ec2.SubnetType.PUBLIC,
+            cidrMask: 24,
+          },
+          {
+            name: "private",
+            subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+            cidrMask: 24,
+          },
+        ],
+      })
+      vpc = managedVpc
+      subnets = managedVpc.privateSubnets
+      securityGroups = [
+        new ec2.SecurityGroup(this, "AgentCoreRuntimeSecurityGroup", {
+          vpc,
+          allowAllOutbound: true,
+          description: "Security group for AgentCore Runtime and S3 Files mounts.",
+        }),
+      ]
+    }
+
+    for (const securityGroup of securityGroups) {
+      securityGroup.addIngressRule(
+        securityGroup,
+        ec2.Port.tcp(2049),
+        "Allow AgentCore Runtime to mount S3 Files"
+      )
+    }
+
+    this.runtimeVpcResources = {
+      vpc,
+      subnets,
+      securityGroups,
+      subnetIds: subnets.map(subnet => subnet.subnetId),
+      securityGroupIds: securityGroups.map(securityGroup => securityGroup.securityGroupId),
+    }
+    return this.runtimeVpcResources
   }
 
   /**

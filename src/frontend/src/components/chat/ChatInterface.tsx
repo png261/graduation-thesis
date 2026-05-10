@@ -1,10 +1,10 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { ChatHeader } from "./ChatHeader"
 import { ChatInput } from "./ChatInput"
 import { ChatMessages } from "./ChatMessages"
-import { Message, MessageSegment, ToolCall } from "./types"
+import { ChatSession, Message, MessageSegment, ToolCall } from "./types"
 
 import { useGlobal } from "@/app/context/GlobalContext"
 import { AgentCoreClient } from "@/lib/agentcore-client"
@@ -12,19 +12,73 @@ import { submitFeedback } from "@/services/feedbackService"
 import { useAuth } from "react-oidc-context"
 import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
+import { FileSystemPanel } from "@/components/files/FileSystemPanel"
+import type { SelectedRepository } from "@/lib/agentcore-client/types"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+
+const CHAT_SESSIONS_STORAGE_KEY = "agentcore:chatSessions"
+const ACTIVE_CHAT_SESSION_STORAGE_KEY = "agentcore:activeChatSessionId"
+
+function createChatSession(repository: SelectedRepository | null = null, id = crypto.randomUUID()): ChatSession {
+  const now = new Date().toISOString()
+  return {
+    id,
+    name: "New chat",
+    history: [],
+    startDate: now,
+    endDate: now,
+    repository,
+  }
+}
+
+function loadStoredSessions(): ChatSession[] {
+  try {
+    const saved = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY)
+    if (!saved) return []
+    const parsed = JSON.parse(saved) as ChatSession[]
+    return Array.isArray(parsed) ? parsed.filter(session => Boolean(session.repository)) : []
+  } catch {
+    return []
+  }
+}
 
 export default function ChatInterface() {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    const stored = loadStoredSessions()
+    return stored.length > 0 ? stored : [createChatSession()]
+  })
+  const [sessionId, setSessionId] = useState(() => {
+    const stored = loadStoredSessions()
+    const activeId = localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY)
+    return stored.find(session => session.id === activeId)?.id ?? stored[0]?.id ?? crypto.randomUUID()
+  })
+  const initialSession = sessions.find(session => session.id === sessionId) ?? sessions[0]
+  const [messages, setMessages] = useState<Message[]>(() => initialSession?.history ?? [])
   const [input, setInput] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [client, setClient] = useState<AgentCoreClient | null>(null)
-  const [sessionId, setSessionId] = useState(() => crypto.randomUUID())
+  const [repository, setRepository] = useState<SelectedRepository | null>(() => initialSession?.repository ?? null)
+  const [isSetupOpen, setIsSetupOpen] = useState(false)
+  const [installedRepositories, setInstalledRepositories] = useState<SelectedRepository[]>([])
+  const [selectedInstalledRepository, setSelectedInstalledRepository] = useState("")
+  const [isLoadingInstalledRepositories, setIsLoadingInstalledRepositories] = useState(false)
+  const [isSettingUpSession, setIsSettingUpSession] = useState(false)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  const [chatPanePercent, setChatPanePercent] = useState(38)
 
   const { isLoading, setIsLoading } = useGlobal()
   const auth = useAuth()
 
   // Ref for message container to enable auto-scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   // Register default tool renderer (wildcard "*")
   useDefaultTool(({ name, args, status, result }) => (
@@ -65,8 +119,82 @@ export default function ChatInterface() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
+  useEffect(() => {
+    if (!sessions.some(session => session.id === sessionId) && sessions[0]) {
+      setSessionId(sessions[0].id)
+      setMessages(sessions[0].history ?? [])
+      setRepository(sessions[0].repository ?? null)
+    }
+  }, [sessionId, sessions])
+
+  useEffect(() => {
+    localStorage.setItem(
+      CHAT_SESSIONS_STORAGE_KEY,
+      JSON.stringify(sessions.filter(session => Boolean(session.repository)))
+    )
+  }, [sessions])
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, sessionId)
+  }, [sessionId])
+
+  useEffect(() => {
+    const now = new Date().toISOString()
+    setSessions(prev =>
+      prev.map(session =>
+        session.id === sessionId
+          ? {
+              ...session,
+              history: messages,
+              repository,
+              endDate: now,
+              name:
+                session.name === "New chat" && messages[0]?.content
+                  ? messages[0].content.slice(0, 48)
+                  : session.name,
+            }
+          : session
+      )
+    )
+  }, [messages, repository, sessionId])
+
+  useEffect(() => {
+    if (!isSetupOpen || !client || !auth.user?.access_token) return
+    let cancelled = false
+    setIsLoadingInstalledRepositories(true)
+    setSetupError(null)
+    client.githubAction(
+      "listInstalledRepositories",
+      crypto.randomUUID(),
+      auth.user.access_token,
+      null
+    )
+      .then(response => {
+        if (cancelled) return
+        const repositories = ((response as any)?.repositories ?? []) as SelectedRepository[]
+        setInstalledRepositories(repositories)
+        setSelectedInstalledRepository(current => current || repositories[0]?.fullName || "")
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setSetupError(err instanceof Error ? err.message : "Failed to load installed repositories")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingInstalledRepositories(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [auth.user?.access_token, client, isSetupOpen])
+
   const sendMessage = async (userMessage: string) => {
     if (!userMessage.trim() || !client) return
+    if (!repository) {
+      setIsSetupOpen(true)
+      setError("Create a chat session connected to a GitHub repository before chatting.")
+      return
+    }
 
     // Clear any previous errors
     setError(null)
@@ -85,7 +213,7 @@ export default function ChatInterface() {
     // Create placeholder for assistant response
     const assistantResponse: Message = {
       role: "assistant",
-      content: "",
+      content: "Thinking...",
       timestamp: new Date().toISOString(),
     }
 
@@ -101,6 +229,8 @@ export default function ChatInterface() {
 
       const segments: MessageSegment[] = []
       const toolCallMap = new Map<string, ToolCall>()
+      const abortController = new AbortController()
+      abortControllerRef.current = abortController
 
       const updateMessage = () => {
         // Build content from text segments for backward compat
@@ -113,7 +243,7 @@ export default function ChatInterface() {
           const updated = [...prev]
           updated[updated.length - 1] = {
             ...updated[updated.length - 1],
-            content,
+            content: content || "Thinking...",
             segments: [...segments],
           }
           return updated
@@ -183,8 +313,20 @@ export default function ChatInterface() {
             break
           }
         }
-      })
+      }, repository, abortController.signal)
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setMessages(prev => {
+          const updated = [...prev]
+          const last = updated[updated.length - 1]
+          updated[updated.length - 1] = {
+            ...last,
+            content: last.content === "Thinking..." ? "Stopped." : last.content,
+          }
+          return updated
+        })
+        return
+      }
       const errorMessage = err instanceof Error ? err.message : "Unknown error"
       setError(`Failed to get response: ${errorMessage}`)
       console.error("Error invoking AgentCore:", err)
@@ -200,16 +342,37 @@ export default function ChatInterface() {
         return updated
       })
     } finally {
+      abortControllerRef.current = null
       setIsLoading(false)
     }
   }
 
+  const stopMessage = useCallback(() => {
+    abortControllerRef.current?.abort()
+  }, [])
+
   // Handle form submission
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
 
     sendMessage(input)
   }
+
+  const handlePaneResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const container = event.currentTarget.parentElement
+    if (!container) return
+    const bounds = container.getBoundingClientRect()
+    const move = (moveEvent: PointerEvent) => {
+      const next = ((moveEvent.clientX - bounds.left) / bounds.width) * 100
+      setChatPanePercent(Math.min(65, Math.max(28, next)))
+    }
+    const up = () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", up)
+    }
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", up)
+  }, [])
 
   // Handle feedback submission
   const handleFeedbackSubmit = async (
@@ -246,23 +409,85 @@ export default function ChatInterface() {
   // Start a new chat by clearing messages and generating a fresh session ID.
   // A new UUID is required so the backend treats this as a distinct conversation context.
   const startNewChat = () => {
-    setMessages([])
+    setSelectedInstalledRepository(installedRepositories[0]?.fullName ?? "")
+    setSetupError(null)
+    setError(null)
+    setIsSetupOpen(true)
+  }
+
+  const selectSession = (next: ChatSession) => {
+    setSessionId(next.id)
+    setMessages(next.history ?? [])
+    setRepository(next.repository ?? null)
     setInput("")
     setError(null)
-    setSessionId(crypto.randomUUID())
+  }
+
+  const activateSession = (next: ChatSession) => {
+    setSessions(prev => [
+      next,
+      ...prev.filter(session => session.id !== next.id && Boolean(session.repository)),
+    ])
+    setSessionId(next.id)
+    setMessages(next.history ?? [])
+    setRepository(next.repository ?? null)
+    setInput("")
+    setError(null)
+  }
+
+  const setupSession = async () => {
+    setIsSettingUpSession(true)
+    setSetupError(null)
+    try {
+      if (!client) throw new Error("Agent runtime is not configured yet")
+      const accessToken = auth.user?.access_token
+      if (!accessToken) throw new Error("Authentication required. Please log in again.")
+      const requestedRepository = installedRepositories.find(item => item.fullName === selectedInstalledRepository)
+      if (!requestedRepository) throw new Error("Choose an installed GitHub App repository")
+      const pendingSessionId = crypto.randomUUID()
+      await client.githubAction("previewPullRequest", pendingSessionId, accessToken, requestedRepository)
+      const next = createChatSession(requestedRepository, pendingSessionId)
+      activateSession(next)
+      setIsSetupOpen(false)
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : "Failed to set up GitHub repository")
+    } finally {
+      setIsSettingUpSession(false)
+    }
   }
 
   // Check if this is the initial state (no messages)
   const isInitialState = messages.length === 0
 
-  // Check if there are any assistant messages
-  const hasAssistantMessages = messages.some(message => message.role === "assistant")
-
   return (
-    <div className="flex flex-col h-screen w-full">
+    <div
+      className="grid h-screen w-full grid-cols-1 overflow-hidden lg:grid-cols-[minmax(360px,var(--chat-pane-width))_6px_minmax(520px,1fr)]"
+      style={{ "--chat-pane-width": `${chatPanePercent}%` } as CSSProperties}
+    >
+      <section className="flex min-h-0 min-w-0 flex-col">
       {/* Fixed header */}
       <div className="flex-none">
-        <ChatHeader onNewChat={startNewChat} canStartNewChat={hasAssistantMessages} />
+        <ChatHeader onNewChat={startNewChat} canStartNewChat />
+        <div className="flex flex-wrap items-center gap-2 border-b bg-white px-4 py-2">
+          <span className="text-xs font-medium text-slate-500">Session</span>
+          <select
+            className="h-8 min-w-48 rounded-md border bg-white px-2 text-sm"
+            onChange={event => {
+              const next = sessions.find(session => session.id === event.target.value)
+              if (next) selectSession(next)
+            }}
+            value={sessionId}
+          >
+            {sessions.map(session => (
+              <option key={session.id} value={session.id}>
+                {session.name}
+              </option>
+            ))}
+          </select>
+          <span className="truncate text-xs text-slate-500">
+            {repository ? `Connected to ${repository.fullName}` : "No repository connected"}
+          </span>
+        </div>
         {error && (
           <div className="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2">
             <p className="text-sm text-red-700">{error}</p>
@@ -270,8 +495,22 @@ export default function ChatInterface() {
         )}
       </div>
 
-      {/* Conditional layout based on whether there are messages */}
-      {isInitialState ? (
+      {/* Conditional layout based on repository setup and whether there are messages */}
+      {!repository ? (
+        <>
+          <div className="grow" />
+          <div className="mx-auto mb-16 w-full max-w-2xl px-4 text-center">
+            <h2 className="text-2xl font-bold text-gray-800">Connect a GitHub Repository</h2>
+            <p className="mt-2 text-gray-600">
+              Choose an installed repository before chatting.
+            </p>
+            <Button type="button" className="mt-6" onClick={startNewChat}>
+              Set Up Chat Session
+            </Button>
+          </div>
+          <div className="grow" />
+        </>
+      ) : isInitialState ? (
         // Initial state - input in the middle
         <>
           {/* Empty space above */}
@@ -290,6 +529,7 @@ export default function ChatInterface() {
               setInput={setInput}
               handleSubmit={handleSubmit}
               isLoading={isLoading}
+              onStop={stopMessage}
             />
           </div>
 
@@ -319,11 +559,69 @@ export default function ChatInterface() {
                 setInput={setInput}
                 handleSubmit={handleSubmit}
                 isLoading={isLoading}
+                onStop={stopMessage}
               />
             </div>
           </div>
         </>
       )}
+      </section>
+      <div
+        className="hidden cursor-col-resize bg-slate-200 transition hover:bg-slate-300 lg:block"
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={handlePaneResize}
+      />
+      <div className="hidden min-h-0 min-w-0 lg:block">
+        <FileSystemPanel
+          accessToken={auth.user?.access_token ?? null}
+          client={client}
+          repository={repository}
+          sessionId={sessionId}
+        />
+      </div>
+      <Dialog open={isSetupOpen} onOpenChange={open => {
+        if (isSettingUpSession) return
+        setIsSetupOpen(open)
+      }}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Set Up Chat Session</DialogTitle>
+            <DialogDescription>
+              Choose an installed GitHub repository for this chat. The repository is locked after the session is created.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+            Installed repository
+            <select
+              className="h-10 rounded-md border bg-white px-3 text-sm"
+              value={selectedInstalledRepository}
+              onChange={event => setSelectedInstalledRepository(event.target.value)}
+              disabled={isSettingUpSession || isLoadingInstalledRepositories}
+            >
+              {installedRepositories.length === 0 ? (
+                <option value="">
+                  {isLoadingInstalledRepositories ? "Loading repositories..." : "No installed repositories found"}
+                </option>
+              ) : (
+                installedRepositories.map(item => (
+                  <option key={item.fullName} value={item.fullName}>
+                    {item.fullName} ({item.defaultBranch})
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          {setupError && <p className="text-sm text-red-700">{setupError}</p>}
+          <Button
+            type="button"
+            disabled={isSettingUpSession || !selectedInstalledRepository}
+            onClick={() => void setupSession()}
+          >
+            {isSettingUpSession ? "Cloning Repository" : "Clone Repository and Start"}
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

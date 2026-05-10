@@ -26,12 +26,17 @@ export class CognitoStack extends cdk.NestedStack {
 
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: `${config.stack_name_base}-user-pool`,
-      selfSignUpEnabled: false,
+      selfSignUpEnabled: true,
       signInAliases: {
         email: true,
       },
       autoVerify: {
         email: true,
+      },
+      userVerification: {
+        emailSubject: `Verify your email for ${config.stack_name_base}`,
+        emailBody: `<p>Your verification code is <strong>{####}</strong>.</p>`,
+        emailStyle: cognito.VerificationEmailStyle.CODE,
       },
       standardAttributes: {
         email: {

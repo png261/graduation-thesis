@@ -1,4 +1,6 @@
 // Define message types
+import type { SelectedRepository } from "@/lib/agentcore-client/types"
+
 export type MessageRole = "user" | "assistant"
 
 export type ToolCallStatus = "streaming" | "executing" | "complete"
@@ -22,11 +24,11 @@ export interface Message {
   segments?: MessageSegment[]
 }
 
-// Define chat session types
 export interface ChatSession {
   id: string
   name: string
   history: Message[]
   startDate: string
   endDate: string
+  repository?: SelectedRepository | null
 }

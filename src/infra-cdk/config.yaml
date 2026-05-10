@@ -1,12 +1,12 @@
-stack_name_base: FAST-stack
+stack_name_base: Infrastructure-agent-stack
 
 # Optional: Set to automatically create an admin user and email credentials
 # If not provided, you'll need to manually create users via AWS Console
 admin_user_email: admin@example.com
 
 backend:
-  deployment_type: docker # Available deployment types: docker (default), zip
-  network_mode: PUBLIC # Available network modes: PUBLIC (default), VPC
+  deployment_type: zip # Available deployment types: docker, zip (default, no local Docker required)
+  network_mode: VPC # Required for the default /mnt/s3 S3 Files mount.
 
   # Long-term memory uses a SemanticMemoryStrategy to extract and store facts across sessions.
   # This incurs additional costs: $0.75/1,000 records stored + $0.50/1,000 retrieval calls.
@@ -16,8 +16,22 @@ backend:
   ltm_top_k: 10             # Number of facts to retrieve per turn (default: 10)
   ltm_relevance_score: 0.3  # Minimum similarity threshold for retrieval (default: 0.3)
 
-  # VPC configuration - required when network_mode is VPC
-  # Your VPC must have the necessary VPC endpoints for AWS services.
+  # OpenAI configuration for AgentCore Runtime
+  # The API key should be stored in AWS Secrets Manager after deployment
+  openai:
+    base_url: https://openrouter.ai/api/v1  # OpenAI-compatible API base URL
+    model_id: openrouter/owl-alpha          # OpenRouter model ID to use
+
+  # GitHub App configuration for repository-scoped agent workspaces.
+  # Store the GitHub App private key in AgentCore Identity under this API key provider name.
+  github:
+    app_slug: appleai-codes
+    app_id: "3573852"
+    credential_provider_name: Infrastructure-agent-stack-github-app
+
+  # VPC configuration - optional. If omitted while network_mode is VPC, CDK creates a managed VPC
+  # and security group for AgentCore Runtime and S3 Files mount targets.
+  # For an existing VPC, ensure it has the necessary VPC endpoints for AWS services.
   # See docs/DEPLOYMENT.md for the full list of required VPC endpoints.
   # vpc:
   #   vpc_id: vpc-0abc1234def56789a
@@ -26,3 +40,15 @@ backend:
   #     - subnet-cccc3333dddd4444e
   #   security_group_ids:  # Optional - a default SG is created if omitted
   #     - sg-0abc1234def56789a
+
+  # Shared S3-backed file storage for AgentCore Runtime.
+  # Enabled by default: creates an S3 bucket, Amazon S3 Files file system/access point,
+  # AppSync API, S3 event publisher Lambda, file-listing Lambda, and mounts the access
+  # point into AgentCore Runtime at /mnt/s3.
+  s3_files:
+    enabled: true
+    mount_path: /mnt/s3
+    prefix: shared/
+    root_directory: /workspace
+    uid: "1000"
+    gid: "1000"

@@ -83,6 +83,12 @@ export class FastMainStack extends cdk.Stack {
       exportName: `${props.config.stack_name_base}-FeedbackApiUrl`,
     })
 
+    new cdk.CfnOutput(this, "ResourcesApiUrl", {
+      value: this.backendStack.resourcesApiUrl,
+      description: "Resources API Gateway URL",
+      exportName: `${props.config.stack_name_base}-ResourcesApiUrl`,
+    })
+
     new cdk.CfnOutput(this, "AmplifyConsoleUrl", {
       value: `https://console.aws.amazon.com/amplify/apps/${this.amplifyHostingStack.amplifyApp.appId}`,
       description: "Amplify Console URL for monitoring deployments",
@@ -98,5 +104,43 @@ export class FastMainStack extends cdk.Stack {
       description: "S3 bucket for Amplify deployment staging",
       exportName: `${props.config.stack_name_base}-StagingBucket`,
     })
+
+    if (this.backendStack.sharedBucketName) {
+      new cdk.CfnOutput(this, "SharedBrainBucketName", {
+        value: this.backendStack.sharedBucketName,
+        description: "S3 bucket backing the shared AgentCore file system",
+        exportName: `${props.config.stack_name_base}-SharedBrainBucket`,
+      })
+
+      new cdk.CfnOutput(this, "SharedBrainMountPath", {
+        value: props.config.backend.s3_files.mount_path,
+        description: "AgentCore runtime mount path for shared files",
+        exportName: `${props.config.stack_name_base}-SharedBrainMountPath`,
+      })
+    }
+
+    if (this.backendStack.fileEventsApiUrl) {
+      new cdk.CfnOutput(this, "FileEventsApiUrl", {
+        value: this.backendStack.fileEventsApiUrl,
+        description: "AppSync GraphQL API URL for real-time file events",
+        exportName: `${props.config.stack_name_base}-FileEventsApiUrl`,
+      })
+    }
+
+    if (this.backendStack.fileEventsApiId) {
+      new cdk.CfnOutput(this, "FileEventsApiId", {
+        value: this.backendStack.fileEventsApiId,
+        description: "AppSync GraphQL API ID for real-time file events",
+        exportName: `${props.config.stack_name_base}-FileEventsApiId`,
+      })
+    }
+
+    if (this.backendStack.githubAppInstallUrl) {
+      new cdk.CfnOutput(this, "GitHubAppInstallUrl", {
+        value: this.backendStack.githubAppInstallUrl,
+        description: "GitHub App installation URL",
+        exportName: `${props.config.stack_name_base}-GitHubAppInstallUrl`,
+      })
+    }
   }
 }

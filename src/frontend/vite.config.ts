@@ -1,9 +1,15 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
+import monacoEditorPlugin from "vite-plugin-monaco-editor"
 import path from "path"
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    monacoEditorPlugin({
+      languageWorkers: ["editorWorkerService"],
+    }),
+  ],
 
   resolve: {
     alias: {
@@ -25,6 +31,8 @@ export default defineConfig({
             "@radix-ui/react-progress",
           ],
           "auth-vendor": ["react-oidc-context", "aws-amplify"],
+          "filesystem-vendor": ["react-arborist"],
+          "monaco-vendor": ["@monaco-editor/react", "monaco-editor"],
         },
       },
     },

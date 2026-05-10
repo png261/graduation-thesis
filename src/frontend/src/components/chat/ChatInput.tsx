@@ -3,13 +3,15 @@
 import { FormEvent, KeyboardEvent, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Loader2Icon, Send } from "lucide-react"
+import { Send, Square } from "lucide-react"
 
 interface ChatInputProps {
   input: string
   setInput: (input: string) => void
   handleSubmit: (e: FormEvent) => void
   isLoading: boolean
+  onStop?: () => void
+  disabled?: boolean
   className?: string
 }
 
@@ -18,6 +20,8 @@ export function ChatInput({
   setInput,
   handleSubmit,
   isLoading,
+  onStop,
+  disabled = false,
   className = "",
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -61,17 +65,22 @@ export function ChatInput({
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type your message... (Ctrl+Enter for new line)"
-          disabled={isLoading}
+          disabled={isLoading || disabled}
           className="flex-1 min-h-[40px] max-h-[200px] resize-none py-2"
           rows={1}
           autoFocus
         />
 
-        <Button type="submit" disabled={!input.trim() || isLoading} className="h-10">
+        <Button
+          type={isLoading ? "button" : "submit"}
+          disabled={isLoading ? disabled : !input.trim() || disabled}
+          className="h-10"
+          onClick={isLoading ? onStop : undefined}
+        >
           {isLoading ? (
             <>
-              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-              Thinking...
+              <Square className="mr-2 h-4 w-4 fill-current" />
+              Stop
             </>
           ) : (
             <>

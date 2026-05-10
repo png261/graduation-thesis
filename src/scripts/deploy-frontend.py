@@ -349,6 +349,7 @@ def generate_aws_exports(
         "AmplifyUrl",
         "RuntimeArn",
         "FeedbackApiUrl",
+        "ResourcesApiUrl",
     ]
     missing = [k for k in required if k not in outputs]
 
@@ -366,6 +367,12 @@ def generate_aws_exports(
         "agentRuntimeArn": outputs["RuntimeArn"],
         "awsRegion": region,
         "feedbackApiUrl": outputs["FeedbackApiUrl"],
+        "resourcesApiUrl": outputs["ResourcesApiUrl"],
+        "fileEventsApiUrl": outputs.get("FileEventsApiUrl"),
+        "fileEventsApiId": outputs.get("FileEventsApiId"),
+        "sharedBrainBucketName": outputs.get("SharedBrainBucketName"),
+        "sharedBrainMountPath": outputs.get("SharedBrainMountPath", "/mnt/s3"),
+        "githubAppInstallUrl": outputs.get("GitHubAppInstallUrl"),
     }
 
     public_dir = frontend_dir / "public"

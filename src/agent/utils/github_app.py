@@ -1,0 +1,408 @@
+"""GitHub App workspace helpers for AgentCore Runtime."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+import jwt
+
+from utils.auth import get_github_app_credentials
+
+GITHUB_API = "https://api.github.com"
+
+
+def _repo_parts(repository: dict) -> tuple[str, str, str]:
+    full_name = repository.get("fullName") or repository.get("full_name") or ""
+    if not full_name and repository.get("owner") and repository.get("name"):
+        full_name = f"{repository['owner']}/{repository['name']}"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+        raise ValueError("Repository must be in owner/name format")
+    owner, name = full_name.split("/", 1)
+    default_branch = repository.get("defaultBranch") or repository.get("default_branch") or "main"
+    return owner, name, default_branch
+
+
+def _run_git(args: list[str], cwd: Path | None = None, timeout: int = 120) -> str:
+    command = ["git"]
+    if cwd is not None:
+        command.extend(["-c", f"safe.directory={cwd}"])
+    command.extend(args)
+    result = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        message = f"{' '.join(command)} failed with {result.returncode}: {detail}"
+        message = re.sub(r"x-access-token:[^@\\s]+@", "x-access-token:REDACTED@", message)
+        raise RuntimeError(message)
+    return result.stdout.strip()
+
+
+def _github_request(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(
+        f"{GITHUB_API}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "agentcore-github-app",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read()
+            return json.loads(raw.decode("utf-8")) if raw else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API {method} {path} failed: {exc.code} {details}") from exc
+
+
+def _app_jwt(credentials: dict[str, str]) -> str:
+    now = int(time.time())
+    app_id = credentials["app_id"]
+    private_key = credentials["private_key"]
+    if not app_id or not private_key:
+        raise ValueError("GitHub App credentials require app_id and private_key")
+    return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app_id}, private_key, algorithm="RS256")
+
+
+def get_installation_token(owner: str, repo: str) -> str:
+    credentials = get_github_app_credentials()
+    app_token = _app_jwt(credentials)
+    try:
+        installation = _github_request("GET", f"/repos/{owner}/{repo}/installation", app_token)
+        installation_id = installation["id"]
+        token_response = _github_request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
+            app_token,
+            {"repositories": [repo]},
+        )
+        return token_response["token"]
+    except RuntimeError as exc:
+        if " failed: 404 " not in str(exc):
+            raise
+
+    target = f"{owner}/{repo}".lower()
+    installations = _github_request("GET", "/app/installations", app_token)
+    if not isinstance(installations, list):
+        raise RuntimeError("GitHub API did not return an installation list")
+
+    seen: list[str] = []
+    for installation in installations:
+        installation_id = installation.get("id")
+        if not installation_id:
+            continue
+        token_response = _github_request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
+            app_token,
+            {},
+        )
+        installation_token = token_response["token"]
+        repositories = _github_request("GET", "/installation/repositories", installation_token)
+        for repository in repositories.get("repositories", []):
+            full_name = repository.get("full_name", "")
+            if full_name:
+                seen.append(full_name)
+            if full_name.lower() == target:
+                return installation_token
+
+    accounts = [((installation.get("account") or {}).get("login") or "unknown") for installation in installations]
+    raise RuntimeError(
+        f"GitHub App installation for {owner}/{repo} was not found. "
+        f"Visible installation accounts: {accounts}. Visible repositories: {seen}."
+    )
+
+
+def _session_root(session_id: str) -> Path:
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "-", session_id or "agentcore")
+    mount_path = Path(os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3"))
+    return mount_path / "sessions" / safe_session
+
+
+def scratch_workspace_path(session_id: str) -> Path:
+    path = _session_root(session_id) / "files"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def workspace_path(repository: dict, session_id: str = "agentcore") -> Path:
+    owner, name, _ = _repo_parts(repository)
+    return _session_root(session_id) / "repos" / owner / name
+
+
+def setup_repository_workspace(repository: dict, session_id: str) -> Path:
+    owner, name, default_branch = _repo_parts(repository)
+    token = get_installation_token(owner, name)
+    repo_path = workspace_path(repository, session_id)
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    remote = f"https://x-access-token:{quote(token)}@github.com/{owner}/{name}.git"
+    safe_remote = f"https://github.com/{owner}/{name}.git"
+    branch_name = f"agentcore/{session_id[:8]}"
+
+    if (repo_path / ".git").exists():
+        _run_git(["remote", "set-url", "origin", remote], repo_path)
+        _run_git(["fetch", "origin", default_branch], repo_path)
+        current_branch = _run_git(["branch", "--show-current"], repo_path)
+        if current_branch != branch_name:
+            branches = _run_git(["branch", "--list", branch_name], repo_path)
+            if branches:
+                _run_git(["checkout", branch_name], repo_path)
+            else:
+                _run_git(["checkout", "-B", branch_name, f"origin/{default_branch}"], repo_path)
+    else:
+        _run_git(["clone", remote, str(repo_path)], timeout=300)
+        _run_git(["checkout", "-B", branch_name, f"origin/{default_branch}"], repo_path)
+
+    _run_git(["config", "user.name", "AgentCore GitHub App"], repo_path)
+    _run_git(["config", "user.email", "agentcore-github-app@users.noreply.github.com"], repo_path)
+    _run_git(["remote", "set-url", "origin", safe_remote], repo_path)
+    return repo_path
+
+
+def list_installed_repositories() -> dict:
+    credentials = get_github_app_credentials()
+    app_token = _app_jwt(credentials)
+    installations = _github_request("GET", "/app/installations", app_token)
+    if not isinstance(installations, list):
+        raise RuntimeError("GitHub API did not return an installation list")
+
+    accounts: list[dict] = []
+    repositories: list[dict] = []
+    for installation in installations:
+        installation_id = installation.get("id")
+        if not installation_id:
+            continue
+        account = installation.get("account") or {}
+        account_login = account.get("login") or ""
+        account_type = account.get("type") or ""
+        if account_login:
+            accounts.append(
+                {
+                    "login": account_login,
+                    "type": account_type,
+                    "canCreateRepositories": account_type == "Organization",
+                }
+            )
+        token_response = _github_request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
+            app_token,
+            {},
+        )
+        installation_token = token_response["token"]
+        response = _github_request("GET", "/installation/repositories?per_page=100", installation_token)
+        for repository in response.get("repositories", []):
+            full_name = repository.get("full_name") or ""
+            if not full_name or "/" not in full_name:
+                continue
+            owner, name = full_name.split("/", 1)
+            repositories.append(
+                {
+                    "fullName": full_name,
+                    "owner": owner,
+                    "name": name,
+                    "defaultBranch": repository.get("default_branch") or "main",
+                    "url": repository.get("html_url") or "",
+                    "private": bool(repository.get("private")),
+                }
+            )
+
+    accounts.sort(key=lambda item: item["login"].lower())
+    repositories.sort(key=lambda item: item["fullName"].lower())
+    return {"accounts": accounts, "repositories": repositories}
+
+
+def preview_pull_request(repository: dict, session_id: str) -> dict:
+    repo_path = setup_repository_workspace(repository, session_id)
+    owner, name, default_branch = _repo_parts(repository)
+    branch_name = f"agentcore/{session_id[:8]}"
+    status = _run_git(["status", "--short"], repo_path)
+    diff_stat = _run_git(["diff", "--stat"], repo_path)
+    diff = _run_git(["diff", "--", "."], repo_path)
+    untracked = _run_git(["ls-files", "--others", "--exclude-standard"], repo_path)
+    changed_files = [line.strip() for line in status.splitlines() if line.strip()]
+    return {
+        "repository": f"{owner}/{name}",
+        "baseBranch": default_branch,
+        "headBranch": branch_name,
+        "title": f"AgentCore changes for {owner}/{name}",
+        "body": "Created by AgentCore from the selected workspace.",
+        "hasChanges": bool(changed_files),
+        "changedFiles": changed_files,
+        "diffStat": diff_stat,
+        "diff": diff[:20000],
+        "untrackedFiles": [line for line in untracked.splitlines() if line],
+    }
+
+
+def _safe_repo_file_path(path_value: str) -> str:
+    file_path = str(path_value or "").strip().replace("\\", "/")
+    if not file_path or file_path.startswith("/") or ".." in file_path.split("/"):
+        raise ValueError("filePath is invalid")
+    return file_path
+
+
+def _git_file_status(repo_path: Path, file_path: str) -> str:
+    status = _run_git(["status", "--short", "--", file_path], repo_path)
+    code = status[:2].strip() if status else ""
+    if not code:
+        return "unchanged"
+    if "D" in code:
+        return "deleted"
+    if "A" in code or "?" in code:
+        return "added"
+    return "modified"
+
+
+def get_file_diff(repository: dict, session_id: str, file_path: str) -> dict:
+    repo_path = setup_repository_workspace(repository, session_id)
+    safe_path = _safe_repo_file_path(file_path)
+    status = _git_file_status(repo_path, safe_path)
+
+    try:
+        original = _run_git(["show", f"HEAD:{safe_path}"], repo_path)
+    except RuntimeError:
+        original = ""
+
+    try:
+        current = (repo_path / safe_path).read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        current = "[Binary file preview is not available]"
+    except (FileNotFoundError, IsADirectoryError):
+        current = ""
+
+    return {
+        "path": safe_path,
+        "status": status,
+        "originalContent": original,
+        "currentContent": current,
+    }
+
+
+def create_pull_request(repository: dict, session_id: str, title: str, body: str) -> dict:
+    repo_path = setup_repository_workspace(repository, session_id)
+    owner, name, default_branch = _repo_parts(repository)
+    branch_name = f"agentcore/{session_id[:8]}"
+    token = get_installation_token(owner, name)
+
+    _run_git(["add", "-A"], repo_path)
+    staged = _run_git(["diff", "--cached", "--name-only"], repo_path)
+    if not staged:
+        return {"created": False, "message": "No repository changes to commit."}
+
+    _run_git(["commit", "-m", title], repo_path)
+    push_remote = f"https://x-access-token:{quote(token)}@github.com/{owner}/{name}.git"
+    _run_git(["push", push_remote, f"HEAD:{branch_name}", "--force-with-lease"], repo_path, timeout=300)
+    pr = _github_request(
+        "POST",
+        f"/repos/{owner}/{name}/pulls",
+        token,
+        {"title": title, "body": body, "head": branch_name, "base": default_branch},
+    )
+    return {
+        "created": True,
+        "number": pr.get("number"),
+        "url": pr.get("html_url"),
+        "headBranch": branch_name,
+        "baseBranch": default_branch,
+    }
+
+
+def _check_summary(check_runs: list[dict], combined_state: str) -> dict:
+    counts: dict[str, int] = {}
+    for run in check_runs:
+        key = run.get("conclusion") or run.get("status") or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+
+    if any(run.get("status") != "completed" for run in check_runs):
+        state = "pending"
+    elif any(run.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required"} for run in check_runs):
+        state = "failure"
+    elif check_runs:
+        state = "success"
+    else:
+        state = combined_state or "unknown"
+
+    return {
+        "state": state,
+        "total": len(check_runs),
+        "counts": counts,
+    }
+
+
+def list_pull_requests(repository: dict, state: str = "open") -> dict:
+    owner, name, _ = _repo_parts(repository)
+    token = get_installation_token(owner, name)
+    normalized_state = state if state in {"open", "closed", "all"} else "open"
+    pulls = _github_request(
+        "GET",
+        f"/repos/{owner}/{name}/pulls?state={normalized_state}&per_page=50&sort=updated&direction=desc",
+        token,
+    )
+    if not isinstance(pulls, list):
+        raise RuntimeError("GitHub API did not return a pull request list")
+
+    items = []
+    for pr in pulls:
+        head = pr.get("head") or {}
+        base = pr.get("base") or {}
+        user = pr.get("user") or {}
+        sha = head.get("sha") or ""
+        combined = _github_request("GET", f"/repos/{owner}/{name}/commits/{sha}/status", token) if sha else {}
+        checks = _github_request("GET", f"/repos/{owner}/{name}/commits/{sha}/check-runs", token) if sha else {}
+        check_runs = checks.get("check_runs", []) if isinstance(checks, dict) else []
+        labels = pr.get("labels") or []
+        items.append(
+            {
+                "number": pr.get("number"),
+                "title": pr.get("title"),
+                "state": pr.get("state"),
+                "draft": pr.get("draft", False),
+                "url": pr.get("html_url"),
+                "createdAt": pr.get("created_at"),
+                "updatedAt": pr.get("updated_at"),
+                "author": user.get("login"),
+                "headBranch": head.get("ref"),
+                "baseBranch": base.get("ref"),
+                "headSha": sha,
+                "labels": [label.get("name") for label in labels if label.get("name")],
+                "mergeableState": pr.get("mergeable_state"),
+                "combinedStatus": combined.get("state", "unknown") if isinstance(combined, dict) else "unknown",
+                "checkSummary": _check_summary(check_runs, combined.get("state", "unknown") if isinstance(combined, dict) else "unknown"),
+                "checks": [
+                    {
+                        "name": run.get("name"),
+                        "status": run.get("status"),
+                        "conclusion": run.get("conclusion"),
+                        "url": run.get("html_url"),
+                        "startedAt": run.get("started_at"),
+                        "completedAt": run.get("completed_at"),
+                    }
+                    for run in check_runs
+                ],
+            }
+        )
+
+    return {
+        "repository": f"{owner}/{name}",
+        "state": normalized_state,
+        "pullRequests": items,
+    }

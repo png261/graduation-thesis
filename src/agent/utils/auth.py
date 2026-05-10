@@ -3,13 +3,15 @@ Authentication utilities for the agent.
 
 Provides secure user identity extraction from JWT tokens in the AgentCore Runtime
 RequestContext (prevents impersonation via prompt injection).
+Also provides OpenAI credential retrieval from AgentCore Identity.
 """
 
 import logging
 import os
+import json
 
 import jwt
-from bedrock_agentcore.identity.auth import requires_access_token
+from bedrock_agentcore.identity.auth import requires_access_token, requires_api_key
 from bedrock_agentcore.runtime import RequestContext
 
 logger = logging.getLogger(__name__)
@@ -99,3 +101,69 @@ def get_gateway_access_token(access_token: str) -> str:
     message processing loop.
     """
     return access_token
+
+
+@requires_api_key(
+    provider_name=os.environ.get("OPENAI_CREDENTIAL_PROVIDER_NAME", ""),
+)
+def get_openai_credentials(
+    api_key: str,
+    base_url: str | None = None,
+    model_id: str | None = None,
+) -> dict[str, str]:
+    """
+    Fetch OpenAI API credentials from AgentCore Identity.
+
+    The @requires_api_key decorator handles credential retrieval:
+    1. Credential Retrieval: Calls GetResourceApiKey API to fetch credentials from Token Vault
+    2. Returns api_key from the credential provider
+
+    The provider_name must match the Name field in the CDK ApiKeyCredentialProvider resource.
+
+    This is synchronous because it's called during agent setup before the async
+    message processing loop.
+
+    Returns:
+        dict: Dictionary containing 'api_key', plus base_url and model_id from environment fallbacks
+    """
+    return {
+        "api_key": api_key,
+        "base_url": base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "model_id": model_id or os.environ.get("OPENAI_MODEL_ID", "gpt-4o"),
+    }
+
+
+@requires_api_key(
+    provider_name=os.environ.get("GITHUB_CREDENTIAL_PROVIDER_NAME", ""),
+)
+def get_github_app_credentials(
+    api_key: str,
+    app_id: str | None = None,
+    app_slug: str | None = None,
+) -> dict[str, str]:
+    """
+    Fetch GitHub App credentials from AgentCore Identity.
+
+    The API key value can be either the GitHub App private key PEM or a JSON string
+    containing api_key/private_key/private_key_pem plus app_id and app_slug.
+    """
+    try:
+        credential_json = json.loads(api_key)
+    except json.JSONDecodeError:
+        credential_json = {}
+
+    private_key = (
+        credential_json.get("api_key")
+        or credential_json.get("private_key")
+        or credential_json.get("private_key_pem")
+        or api_key
+    )
+    return {
+        "private_key": private_key.replace("\\n", "\n"),
+        "app_id": (
+            str(credential_json.get("app_id") or app_id or os.environ.get("GITHUB_APP_ID", ""))
+        ),
+        "app_slug": (
+            credential_json.get("app_slug") or app_slug or os.environ.get("GITHUB_APP_SLUG", "")
+        ),
+    }

@@ -6,7 +6,7 @@ describe("Routing Tests", () => {
   describe("Route Configuration", () => {
     it("should use react-router-dom Routes component", () => {
       const routesContent = readFileSync(resolve(__dirname, "../routes/index.tsx"), "utf-8")
-      expect(routesContent).toContain("import { Routes, Route } from 'react-router-dom'")
+      expect(routesContent).toMatch(/import \{ Routes, Route \} from ["']react-router-dom["']/)
       expect(routesContent).toContain("<Routes>")
       expect(routesContent).toContain("</Routes>")
     })
@@ -20,7 +20,7 @@ describe("Routing Tests", () => {
   describe("BrowserRouter Configuration", () => {
     it("should use BrowserRouter in App component", () => {
       const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
-      expect(appContent).toContain("import { BrowserRouter } from 'react-router-dom'")
+      expect(appContent).toMatch(/import \{ BrowserRouter \} from ["']react-router-dom["']/)
       expect(appContent).toContain("<BrowserRouter>")
       expect(appContent).toContain("</BrowserRouter>")
     })
@@ -38,7 +38,7 @@ describe("Routing Tests", () => {
 
     it("should render AppRoutes inside BrowserRouter", () => {
       const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
-      expect(appContent).toContain("import AppRoutes from './routes'")
+      expect(appContent).toMatch(/import AppRoutes from ["']\.\/routes["']/)
       expect(appContent).toContain("<AppRoutes />")
     })
   })
@@ -47,6 +47,12 @@ describe("Routing Tests", () => {
     it("should have routes directory with index.tsx", () => {
       const routesContent = readFileSync(resolve(__dirname, "../routes/index.tsx"), "utf-8")
       expect(routesContent).toBeTruthy()
+    })
+
+    it("should route settings page", () => {
+      const routesContent = readFileSync(resolve(__dirname, "../routes/index.tsx"), "utf-8")
+      expect(routesContent).toContain("SettingsPage")
+      expect(routesContent).toContain('path="/settings"')
     })
   })
 

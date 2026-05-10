@@ -4,6 +4,14 @@ export interface AgentCoreConfig {
   region?: string
 }
 
+export type SelectedRepository = {
+  fullName: string
+  owner: string
+  name: string
+  defaultBranch: string
+  url?: string
+}
+
 /** Stream event types emitted by parsers */
 export type StreamEvent =
   | { type: "text"; content: string }
