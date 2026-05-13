@@ -8,7 +8,6 @@ import { CHAT_AGENTS, findMentionedAgent } from "./agents"
 
 import { useGlobal } from "@/app/context/GlobalContext"
 import { AgentCoreClient } from "@/lib/agentcore-client"
-import { submitFeedback } from "@/services/feedbackService"
 import { useAuth } from "react-oidc-context"
 import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
@@ -517,38 +516,6 @@ export default function ChatInterface() {
     sendMessage(input, attachments)
   }
 
-  // Handle feedback submission
-  const handleFeedbackSubmit = async (
-    messageContent: string,
-    feedbackType: "positive" | "negative",
-    comment: string
-  ) => {
-    try {
-      // Use ID token for API Gateway Cognito authorizer (not access token)
-      const idToken = auth.user?.id_token
-
-      if (!idToken) {
-        throw new Error("Authentication required. Please log in again.")
-      }
-
-      await submitFeedback(
-        {
-          sessionId,
-          message: messageContent,
-          feedbackType,
-          comment: comment || undefined,
-        },
-        idToken
-      )
-
-      console.log("Feedback submitted successfully")
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error"
-      console.error("Error submitting feedback:", err)
-      setError(`Failed to submit feedback: ${errorMessage}`)
-    }
-  }
-
   const activateSession = (next: ChatSession) => {
     const nextSessions = [
       next,
@@ -731,8 +698,6 @@ export default function ChatInterface() {
               <ChatMessages
                 messages={messages}
                 messagesEndRef={messagesEndRef}
-                sessionId={sessionId}
-                onFeedbackSubmit={handleFeedbackSubmit}
               />
             </div>
           </div>

@@ -23,7 +23,6 @@ describe("ChatMessage", () => {
           },
         }}
         sessionId="session-1"
-        onFeedbackSubmit={async () => undefined}
       />
     )
 

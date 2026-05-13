@@ -32,7 +32,6 @@ export class BackendStack extends cdk.NestedStack {
   public readonly userPoolId: string
   public readonly userPoolClientId: string
   public readonly userPoolDomain: cognito.UserPoolDomain
-  public feedbackApiUrl: string
   public resourcesApiUrl: string
   public sharedBucketName?: string
   public fileEventsApiUrl?: string
@@ -105,12 +104,6 @@ export class BackendStack extends cdk.NestedStack {
 
     // Store Cognito configuration in SSM for testing and frontend
     this.createCognitoSSMParameters(props.config)
-
-    // Create Feedback DynamoDB table (example of application data storage)
-    const feedbackTable = this.createFeedbackTable(props.config)
-
-    // Create API Gateway Feedback API resources
-    this.createFeedbackApi(props.config, props.frontendUrl, feedbackTable)
 
     const resourcesTable = this.createResourcesTable(props.config)
     const resourceGraphBucket = this.createResourceGraphBucket(props.config)
@@ -502,162 +495,6 @@ export class BackendStack extends cdk.NestedStack {
       parameterName: `/${config.stack_name_base}/cognito_provider`,
       stringValue: `${this.userPoolDomain.domainName}.auth.${cdk.Aws.REGION}.amazoncognito.com`,
       description: "Cognito domain URL for token endpoint",
-    })
-  }
-
-  // Creates a DynamoDB table for storing user feedback.
-  private createFeedbackTable(config: AppConfig): dynamodb.Table {
-    const feedbackTable = new dynamodb.Table(this, "FeedbackTable", {
-      tableName: `${config.stack_name_base}-feedback`,
-      partitionKey: {
-        name: "feedbackId",
-        type: dynamodb.AttributeType.STRING,
-      },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      pointInTimeRecoverySpecification: {
-        pointInTimeRecoveryEnabled: true,
-      },
-      encryption: dynamodb.TableEncryption.AWS_MANAGED,
-    })
-
-    // Add GSI for querying by feedbackType with timestamp sorting
-    feedbackTable.addGlobalSecondaryIndex({
-      indexName: "feedbackType-timestamp-index",
-      partitionKey: {
-        name: "feedbackType",
-        type: dynamodb.AttributeType.STRING,
-      },
-      sortKey: {
-        name: "timestamp",
-        type: dynamodb.AttributeType.NUMBER,
-      },
-      projectionType: dynamodb.ProjectionType.ALL,
-    })
-
-    return feedbackTable
-  }
-
-  /**
-   * Creates an API Gateway with Lambda integration for the feedback endpoint.
-   * This is an EXAMPLE implementation demonstrating best practices for API Gateway + Lambda.
-   *
-   * API Contract - POST /feedback
-   * Authorization: Bearer <cognito-access-token> (required)
-   *
-   * Request Body:
-   *   sessionId: string (required, max 100 chars, alphanumeric with -_) - Conversation session ID
-   *   message: string (required, max 5000 chars) - Agent's response being rated
-   *   feedbackType: "positive" | "negative" (required) - User's rating
-   *   comment: string (optional, max 5000 chars) - User's explanation for rating
-   *
-   * Success Response (200):
-   *   { success: true, feedbackId: string }
-   *
-   * Error Responses:
-   *   400: { error: string } - Validation failure (missing fields, invalid format)
-   *   401: { error: "Unauthorized" } - Invalid/missing JWT token
-   *   500: { error: "Internal server error" } - DynamoDB or processing error
-   *
-   * Implementation: infra-cdk/lambdas/feedback/index.py
-   */
-  private createFeedbackApi(
-    config: AppConfig,
-    frontendUrl: string,
-    feedbackTable: dynamodb.Table
-  ): void {
-    // Create Lambda function for feedback using Python
-    // ARM_64 required — matches Powertools ARM64 layer and avoids cross-platform
-    const feedbackLambda = new lambda.Function(this, "FeedbackLambda", {
-      functionName: `${config.stack_name_base}-feedback`,
-      runtime: lambda.Runtime.PYTHON_3_13,
-      architecture: lambda.Architecture.ARM_64,
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "feedback")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      handler: "index.handler",
-      environment: {
-        TABLE_NAME: feedbackTable.tableName,
-        CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
-      },
-      timeout: cdk.Duration.seconds(30),
-      logGroup: new logs.LogGroup(this, "FeedbackLambdaLogGroup", {
-        logGroupName: `/aws/lambda/${config.stack_name_base}-feedback`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    })
-
-    // Grant Lambda permissions to write to DynamoDB
-    feedbackTable.grantWriteData(feedbackLambda)
-
-    /*
-     * CORS TODO: Wildcard (*) used because Backend deploys before Frontend in nested stack order.
-     * For Lambda proxy integrations, the Lambda's ALLOWED_ORIGINS env var is the primary CORS control.
-     * API Gateway defaultCorsPreflightOptions below only handles OPTIONS preflight requests.
-     * See detailed explanation and fix options in: infra-cdk/lambdas/feedback/index.py
-     */
-    const api = new apigateway.RestApi(this, "FeedbackApi", {
-      restApiName: `${config.stack_name_base}-api`,
-      description: "API for user feedback and future endpoints",
-      defaultCorsPreflightOptions: {
-        allowOrigins: [frontendUrl, "http://localhost:3000"],
-        allowMethods: ["POST", "OPTIONS"],
-        allowHeaders: ["Content-Type", "Authorization"],
-      },
-      deployOptions: {
-        stageName: "prod",
-        throttlingRateLimit: 100,
-        throttlingBurstLimit: 200,
-        cachingEnabled: true,
-        cacheDataEncrypted: true,
-        cacheClusterEnabled: true,
-        cacheClusterSize: "0.5",
-        cacheTtl: cdk.Duration.minutes(5),
-        loggingLevel: apigateway.MethodLoggingLevel.INFO,
-        dataTraceEnabled: true,
-        metricsEnabled: true,
-        accessLogDestination: new apigateway.LogGroupLogDestination(
-          new logs.LogGroup(this, "FeedbackApiAccessLogGroup", {
-            logGroupName: `/aws/apigateway/${config.stack_name_base}-api-access`,
-            retention: logs.RetentionDays.ONE_WEEK,
-            removalPolicy: cdk.RemovalPolicy.DESTROY,
-          })
-        ),
-        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
-        tracingEnabled: true,
-      },
-    })
-
-    // Add request validator for API security
-    const requestValidator = new apigateway.RequestValidator(this, "FeedbackApiRequestValidator", {
-      restApi: api,
-      requestValidatorName: `${config.stack_name_base}-request-validator`,
-      validateRequestBody: true,
-      validateRequestParameters: true,
-    })
-
-    // Create Cognito authorizer
-    const authorizer = new apigateway.CognitoUserPoolsAuthorizer(this, "FeedbackApiAuthorizer", {
-      cognitoUserPools: [this.userPool],
-      identitySource: "method.request.header.Authorization",
-      authorizerName: `${config.stack_name_base}-authorizer`,
-    })
-
-    // Create /feedback resource and POST method
-    const feedbackResource = api.root.addResource("feedback")
-    feedbackResource.addMethod("POST", new apigateway.LambdaIntegration(feedbackLambda), {
-      authorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-      requestValidator: requestValidator,
-    })
-
-    // Store the API URL for access from main stack
-    this.feedbackApiUrl = api.url
-
-    // Store API URL in SSM for frontend
-    new ssm.StringParameter(this, "FeedbackApiUrlParam", {
-      parameterName: `/${config.stack_name_base}/feedback-api-url`,
-      stringValue: api.url,
-      description: "Feedback API Gateway URL",
     })
   }
 

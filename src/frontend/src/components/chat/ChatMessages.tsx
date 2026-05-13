@@ -5,19 +5,11 @@ import { ChatMessage } from "./ChatMessage"
 interface ChatMessagesProps {
   messages: Message[]
   messagesEndRef: RefObject<HTMLDivElement | null>
-  sessionId: string
-  onFeedbackSubmit: (
-    messageContent: string,
-    feedbackType: "positive" | "negative",
-    comment: string
-  ) => Promise<void>
 }
 
 export function ChatMessages({
   messages,
   messagesEndRef,
-  sessionId,
-  onFeedbackSubmit,
 }: ChatMessagesProps) {
   return (
     <div
@@ -34,10 +26,6 @@ export function ChatMessages({
           <ChatMessage
             key={index}
             message={message}
-            sessionId={sessionId}
-            onFeedbackSubmit={async (feedbackType, comment) => {
-              await onFeedbackSubmit(message.content, feedbackType, comment)
-            }}
           />
         ))
       )}

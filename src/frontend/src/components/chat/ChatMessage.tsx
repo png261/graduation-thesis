@@ -1,28 +1,19 @@
 "use client"
 
 import { useState } from "react"
-import { Check, Copy, ThumbsDown, ThumbsUp } from "lucide-react"
+import { Check, Copy } from "lucide-react"
 import { Message } from "./types"
-import { FeedbackDialog } from "./FeedbackDialog"
 import { getToolRenderer } from "@/hooks/useToolRenderer"
 import { MarkdownRenderer } from "./MarkdownRenderer"
 import { ShinyText } from "@/components/ui/shiny-text"
 
 interface ChatMessageProps {
   message: Message
-  sessionId: string
-  onFeedbackSubmit: (feedbackType: "positive" | "negative", comment: string) => Promise<void>
 }
 
 export function ChatMessage({
   message,
-  onFeedbackSubmit,
 }: ChatMessageProps) {
-  const [isDialogOpen, setIsDialogOpen] = useState(false)
-  const [selectedFeedbackType, setSelectedFeedbackType] = useState<"positive" | "negative">(
-    "positive"
-  )
-  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const formatTime = (timestamp: string) => {
@@ -30,16 +21,6 @@ export function ChatMessage({
       hour: "2-digit",
       minute: "2-digit",
     })
-  }
-
-  const handleFeedbackClick = (type: "positive" | "negative") => {
-    setSelectedFeedbackType(type)
-    setIsDialogOpen(true)
-  }
-
-  const handleFeedbackSubmit = async (comment: string) => {
-    await onFeedbackSubmit(selectedFeedbackType, comment)
-    setFeedbackSubmitted(true)
   }
 
   const handleCopyResponse = async () => {
@@ -125,11 +106,10 @@ export function ChatMessage({
         )}
       </div>
 
-      {/* Timestamp and Feedback buttons for assistant messages */}
+      {/* Timestamp and assistant message actions */}
       <div className="flex items-center gap-2 mt-1 px-1">
         <div className="text-xs text-neutral-500">{formatTime(message.timestamp)}</div>
 
-        {/* Show feedback buttons only for assistant messages with content */}
         {message.role === "assistant" && message.content && (
           <div className="flex items-center gap-1 ml-2">
             <button
@@ -140,38 +120,9 @@ export function ChatMessage({
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
-            <button
-              onClick={() => handleFeedbackClick("positive")}
-              disabled={feedbackSubmitted}
-              className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label="Positive feedback"
-              title="Good response"
-            >
-              <ThumbsUp size={14} />
-            </button>
-            <button
-              onClick={() => handleFeedbackClick("negative")}
-              disabled={feedbackSubmitted}
-              className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label="Negative feedback"
-              title="Bad response"
-            >
-              <ThumbsDown size={14} />
-            </button>
-            {feedbackSubmitted && (
-              <span className="ml-1 text-xs text-neutral-500">Thanks for your feedback!</span>
-            )}
           </div>
         )}
       </div>
-
-      {/* Feedback Dialog */}
-      <FeedbackDialog
-        isOpen={isDialogOpen}
-        onClose={() => setIsDialogOpen(false)}
-        onSubmit={handleFeedbackSubmit}
-        feedbackType={selectedFeedbackType}
-      />
     </div>
   )
 }

@@ -77,12 +77,6 @@ export class FastMainStack extends cdk.Stack {
       exportName: `${props.config.stack_name_base}-MemoryArn`,
     })
 
-    new cdk.CfnOutput(this, "FeedbackApiUrl", {
-      value: this.backendStack.feedbackApiUrl,
-      description: "Feedback API Gateway URL",
-      exportName: `${props.config.stack_name_base}-FeedbackApiUrl`,
-    })
-
     new cdk.CfnOutput(this, "ResourcesApiUrl", {
       value: this.backendStack.resourcesApiUrl,
       description: "Resources API Gateway URL",
