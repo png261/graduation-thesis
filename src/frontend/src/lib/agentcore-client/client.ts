@@ -1,4 +1,4 @@
-import type { AgentCoreConfig, ChunkParser, SelectedRepository, StreamCallback } from "./types"
+import type { AgentCoreConfig, ChatAgentPayload, ChatAttachmentPayload, ChunkParser, SelectedRepository, StreamCallback } from "./types"
 import { parseStrandsChunk } from "./parsers/strands"
 import { readSSEStream } from "./utils/sse"
 
@@ -23,6 +23,8 @@ export class AgentCoreClient {
     accessToken: string,
     onEvent: StreamCallback,
     repository?: SelectedRepository | null,
+    agent?: ChatAgentPayload | null,
+    attachments?: ChatAttachmentPayload[],
     signal?: AbortSignal
   ): Promise<void> {
     if (!accessToken) throw new Error("No valid access token found.")
@@ -38,6 +40,8 @@ export class AgentCoreClient {
       prompt: query,
       runtimeSessionId: sessionId,
       repository,
+      agent,
+      attachments,
     }
 
     // User identity is extracted server-side from the validated JWT token
@@ -64,7 +68,13 @@ export class AgentCoreClient {
   }
 
   async githubAction(
-    action: "previewPullRequest" | "createPullRequest" | "getFileDiff" | "listPullRequests" | "listInstalledRepositories",
+    action:
+      | "previewPullRequest"
+      | "createPullRequest"
+      | "getFileDiff"
+      | "listPullRequests"
+      | "listInstalledRepositories"
+      | "setupRepositoryWorkspace",
     sessionId: string,
     accessToken: string,
     repository?: SelectedRepository | null,
@@ -95,6 +105,55 @@ export class AgentCoreClient {
         filePath: options?.filePath,
         pullRequest,
         pullRequestState: options?.pullRequestState,
+      }),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
+    }
+
+    const text = await response.text()
+    const lines = text.split("\n").filter(line => line.startsWith("data: "))
+    const last = lines.length > 0 ? lines[lines.length - 1].replace(/^data:\s*/, "") : undefined
+    if (!last) return null
+    const parsed = JSON.parse(last)
+    if (parsed && typeof parsed === "object" && "status" in parsed && parsed.status === "error") {
+      throw new Error(parsed.error || `${action} failed`)
+    }
+    return parsed
+  }
+
+  async filesystemAction(
+    action: "listFiles" | "getFileContent",
+    sessionId: string,
+    accessToken: string,
+    repository?: SelectedRepository | null,
+    options?: { prefix?: string; fileKey?: string }
+  ): Promise<unknown> {
+    if (!accessToken) throw new Error("No valid access token found.")
+    if (!this.runtimeArn) throw new Error("Agent Runtime ARN not configured.")
+
+    const endpoint = `https://bedrock-agentcore.${this.region}.amazonaws.com`
+    const escapedArn = encodeURIComponent(this.runtimeArn)
+    const url = `${endpoint}/runtimes/${escapedArn}/invocations?qualifier=DEFAULT`
+    const traceId = `1-${Math.floor(Date.now() / 1000).toString(16)}-${crypto.randomUUID()}`
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Amzn-Trace-Id": traceId,
+        "Content-Type": "application/json",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": sessionId,
+      },
+      body: JSON.stringify({
+        prompt: action,
+        runtimeSessionId: sessionId,
+        filesystemAction: action,
+        repository: repository ?? undefined,
+        prefix: options?.prefix,
+        fileKey: options?.fileKey,
       }),
     })
 

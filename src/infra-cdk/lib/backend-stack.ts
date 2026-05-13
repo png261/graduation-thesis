@@ -9,9 +9,6 @@ import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as codebuild from "aws-cdk-lib/aws-codebuild"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
-import * as s3n from "aws-cdk-lib/aws-s3-notifications"
-import * as s3files from "aws-cdk-lib/aws-s3files"
-import * as appsync from "aws-cdk-lib/aws-appsync"
 import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import * as lambda from "aws-cdk-lib/aws-lambda"
@@ -37,11 +34,12 @@ export class BackendStack extends cdk.NestedStack {
   public readonly userPoolDomain: cognito.UserPoolDomain
   public feedbackApiUrl: string
   public resourcesApiUrl: string
-  public runtimeArn: string
-  public memoryArn: string
   public sharedBucketName?: string
   public fileEventsApiUrl?: string
   public fileEventsApiId?: string
+  public runtimeArn: string
+  public memoryArn: string
+  public memoryId: string
   public githubAppInstallUrl?: string
   private agentName: cdk.CfnParameter
   private userPool: cognito.IUserPool
@@ -115,8 +113,9 @@ export class BackendStack extends cdk.NestedStack {
     this.createFeedbackApi(props.config, props.frontendUrl, feedbackTable)
 
     const resourcesTable = this.createResourcesTable(props.config)
+    const resourceGraphBucket = this.createResourceGraphBucket(props.config)
     const driftProject = this.createCloudriftCodeBuildProject(props.config, resourcesTable)
-    this.createResourcesApi(props.config, props.frontendUrl, resourcesTable, driftProject)
+    this.createResourcesApi(props.config, props.frontendUrl, resourcesTable, driftProject, resourceGraphBucket)
   }
 
   private createAgentCoreRuntime(config: AppConfig): void {
@@ -183,7 +182,7 @@ export class BackendStack extends cdk.NestedStack {
           this.readDirRecursive(moduleDir, target, agentCode)
         }
       }
-      for (const module of ["tools", "utils"]) {
+      for (const module of ["tools", "utils", "skills"]) {
         const moduleDir = path.join(agentDir, module) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         if (fs.existsSync(moduleDir)) {
           this.readDirRecursive(moduleDir, module, agentCode)
@@ -292,6 +291,7 @@ export class BackendStack extends cdk.NestedStack {
 
     // Store the memory ARN for access from main stack
     this.memoryArn = memoryArn
+    this.memoryId = memoryId
 
     // Add memory-specific permissions to agent role
     agentRole.addToPrincipalPolicy(
@@ -392,8 +392,6 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
-    const sharedStorage = this.createSharedS3FilesStorage(config, agentRole)
-
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
       AWS_REGION: stack.region,
@@ -416,7 +414,8 @@ export class BackendStack extends cdk.NestedStack {
       // See config.yaml: ltm_top_k and ltm_relevance_score.
       LTM_TOP_K: String(config.backend.ltm_top_k),
       LTM_RELEVANCE_SCORE: String(config.backend.ltm_relevance_score),
-      SHARED_FILES_MOUNT_PATH: config.backend.s3_files.mount_path,
+      SHARED_FILES_MOUNT_PATH: "/tmp/agentcore-runtime-files",
+      SHARED_FILES_FALLBACK_PATH: "/tmp/agentcore-runtime-files",
       BYPASS_TOOL_CONSENT: "true",
     }
 
@@ -437,20 +436,6 @@ export class BackendStack extends cdk.NestedStack {
       },
       description: `Strands single agent runtime for ${config.stack_name_base}`,
     })
-
-    if (sharedStorage) {
-      const attachment = this.createS3FilesRuntimeAttachment(
-        config,
-        sharedStorage.accessPoint,
-        runtimeArtifactVersion
-      )
-      attachment.node.addDependency(this.agentRuntime)
-      this.agentRuntime.node.addDependency(sharedStorage.accessPoint)
-      for (const mountTarget of sharedStorage.mountTargets) {
-        this.agentRuntime.node.addDependency(mountTarget)
-        attachment.node.addDependency(mountTarget)
-      }
-    }
 
     // Make sure that ZIP is uploaded before Runtime is created
     if (zipPackagerResource) {
@@ -481,320 +466,6 @@ export class BackendStack extends cdk.NestedStack {
     new cdk.CfnOutput(this, "MemoryArn", {
       description: "ARN of the agent memory resource",
       value: memoryArn,
-    })
-  }
-
-  private createSharedS3FilesStorage(
-    config: AppConfig,
-    agentRole: iam.IRole
-  ):
-    | {
-        bucket: s3.Bucket
-        accessPoint: s3files.CfnAccessPoint
-        fileSystem: s3files.CfnFileSystem
-        mountTargets: s3files.CfnMountTarget[]
-      }
-    | undefined {
-    const s3FilesConfig = config.backend.s3_files
-    if (!s3FilesConfig.enabled) {
-      return undefined
-    }
-
-    const vpcResources = this.getRuntimeVpcResources(config)
-
-    const sharedBucket = new s3.Bucket(this, "SharedBrainBucket", {
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      versioned: true,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-    })
-    this.sharedBucketName = sharedBucket.bucketName
-
-    const syncRole = new iam.Role(this, "S3FilesSyncRole", {
-      assumedBy: new iam.ServicePrincipal("elasticfilesystem.amazonaws.com"),
-      description: "Allows Amazon S3 Files to synchronize with the shared brain S3 bucket.",
-    })
-    syncRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "S3FilesBucketAccess",
-        effect: iam.Effect.ALLOW,
-        actions: ["s3:ListBucket*"],
-        resources: [sharedBucket.bucketArn],
-      })
-    )
-    syncRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "S3FilesObjectAccess",
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "s3:AbortMultipartUpload",
-          "s3:DeleteObject",
-          "s3:GetObject*",
-          "s3:List*",
-          "s3:PutObject*",
-        ],
-        resources: [sharedBucket.arnForObjects("*")],
-      })
-    )
-    syncRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "S3FilesEventBridgeSyncRules",
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "events:DeleteRule",
-          "events:DisableRule",
-          "events:EnableRule",
-          "events:PutRule",
-          "events:PutTargets",
-          "events:RemoveTargets",
-        ],
-        resources: [
-          `arn:${cdk.Aws.PARTITION}:events:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:rule/DO-NOT-DELETE-S3-Files*`,
-        ],
-        conditions: {
-          StringEquals: {
-            "events:ManagedBy": "elasticfilesystem.amazonaws.com",
-          },
-        },
-      })
-    )
-
-    const fileSystem = new s3files.CfnFileSystem(this, "SharedBrainS3Files", {
-      bucket: sharedBucket.bucketArn,
-      prefix: s3FilesConfig.prefix,
-      roleArn: syncRole.roleArn,
-      acceptBucketWarning: true,
-    })
-
-    const accessPoint = new s3files.CfnAccessPoint(this, "SharedBrainS3FilesAccessPoint", {
-      fileSystemId: fileSystem.attrFileSystemId,
-      posixUser: {
-        uid: s3FilesConfig.uid,
-        gid: s3FilesConfig.gid,
-      },
-      rootDirectory: {
-        path: s3FilesConfig.root_directory,
-        creationPermissions: {
-          ownerUid: s3FilesConfig.uid,
-          ownerGid: s3FilesConfig.gid,
-          permissions: "777",
-        },
-      },
-    })
-
-    const mountTargets = vpcResources.subnetIds.map(
-      (subnetId, index) =>
-        new s3files.CfnMountTarget(this, `SharedBrainS3FilesMountTarget${index}`, {
-          fileSystemId: fileSystem.attrFileSystemId,
-          subnetId,
-          securityGroups: vpcResources.securityGroupIds,
-        })
-    )
-
-    agentRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({
-        sid: "S3FilesMountAccess",
-        effect: iam.Effect.ALLOW,
-        actions: ["s3files:ClientMount", "s3files:ClientWrite", "s3files:GetAccessPoint"],
-        resources: [fileSystem.attrFileSystemArn],
-        conditions: {
-          ArnEquals: {
-            "s3files:AccessPointArn": accessPoint.attrAccessPointArn,
-          },
-        },
-      })
-    )
-    agentRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({
-        sid: "S3FilesAccessPointRead",
-        effect: iam.Effect.ALLOW,
-        actions: [
-          "s3files:GetAccessPoint",
-          "s3files:GetMountTarget",
-          "s3files:ListAccessPoints",
-          "s3files:ListMountTargets",
-        ],
-        resources: ["*"],
-      })
-    )
-    this.createFileEventsApi(config, sharedBucket)
-
-    const githubAppSlug = config.backend.github?.app_slug || ""
-    if (githubAppSlug) {
-      this.githubAppInstallUrl = `https://github.com/apps/${githubAppSlug}/installations/new`
-      new cdk.CfnOutput(this, "GitHubAppInstallUrl", {
-        value: this.githubAppInstallUrl,
-        description: "GitHub App installation URL",
-      })
-    }
-
-    new cdk.CfnOutput(this, "SharedBrainBucketName", {
-      value: sharedBucket.bucketName,
-      description: "S3 bucket backing the shared AgentCore file system",
-    })
-    new cdk.CfnOutput(this, "SharedBrainMountPath", {
-      value: s3FilesConfig.mount_path,
-      description: "AgentCore runtime mount path for shared files",
-    })
-    new cdk.CfnOutput(this, "SharedBrainS3FilesAccessPointArn", {
-      value: accessPoint.attrAccessPointArn,
-      description: "S3 Files access point mounted into AgentCore Runtime",
-    })
-
-    return { bucket: sharedBucket, accessPoint, fileSystem, mountTargets }
-  }
-
-  private createS3FilesRuntimeAttachment(
-    config: AppConfig,
-    accessPoint: s3files.CfnAccessPoint,
-    runtimeArtifactVersion: string
-  ): cdk.CustomResource {
-    const attachLambda = new lambda.Function(this, "AgentCoreS3FilesAttachLambda", {
-      runtime: lambda.Runtime.PYTHON_3_13,
-      architecture: lambda.Architecture.ARM_64,
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "agentcore-s3files-attach")),
-      timeout: cdk.Duration.minutes(2),
-      logGroup: new logs.LogGroup(this, "AgentCoreS3FilesAttachLambdaLogGroup", {
-        logGroupName: `/aws/lambda/${config.stack_name_base}-agentcore-s3files-attach`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    })
-    this.agentCodeBucket?.grantRead(attachLambda)
-
-    attachLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:UpdateAgentRuntime"],
-        resources: [this.agentRuntime.agentRuntimeArn],
-      })
-    )
-    attachLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["iam:PassRole"],
-        resources: [this.agentRuntime.role.roleArn],
-      })
-    )
-
-    const provider = new cr.Provider(this, "AgentCoreS3FilesAttachProvider", {
-      onEventHandler: attachLambda,
-    })
-
-    return new cdk.CustomResource(this, "AgentCoreS3FilesAttachment", {
-      serviceToken: provider.serviceToken,
-      properties: {
-        RuntimeArn: this.agentRuntime.agentRuntimeArn,
-        AccessPointArn: accessPoint.attrAccessPointArn,
-        MountPath: config.backend.s3_files.mount_path,
-        RuntimeArtifactVersion: runtimeArtifactVersion,
-        ProviderImplementationVersion: "raw-s3files-access-point-v1",
-      },
-    })
-  }
-
-  private createFileEventsApi(config: AppConfig, sharedBucket: s3.Bucket): void {
-    const api = new appsync.GraphqlApi(this, "FileEventsApi", {
-      name: `${config.stack_name_base}-file-events`,
-      definition: appsync.Definition.fromFile(
-        path.join(__dirname, "..", "graphql", "file-events.graphql")
-      ),
-      authorizationConfig: {
-        defaultAuthorization: {
-          authorizationType: appsync.AuthorizationType.USER_POOL,
-          userPoolConfig: {
-            userPool: this.userPool,
-          },
-        },
-        additionalAuthorizationModes: [
-          {
-            authorizationType: appsync.AuthorizationType.IAM,
-          },
-        ],
-      },
-      logConfig: {
-        fieldLogLevel: appsync.FieldLogLevel.ERROR,
-      },
-      xrayEnabled: true,
-    })
-
-    const none = api.addNoneDataSource("FileEventsNoneDataSource")
-    none.createResolver("PublishFileEventResolver", {
-      typeName: "Mutation",
-      fieldName: "publishFileEvent",
-      requestMappingTemplate: appsync.MappingTemplate.fromString(
-        [
-          "{",
-          '  "version": "2017-02-28",',
-          '  "payload": $util.toJson($context.arguments.input)',
-          "}",
-        ].join("\n")
-      ),
-      responseMappingTemplate: appsync.MappingTemplate.fromString("$util.toJson($context.result)"),
-    })
-
-    const browser = new lambda.Function(this, "FileBrowser", {
-      runtime: lambda.Runtime.PYTHON_3_13,
-      architecture: lambda.Architecture.ARM_64,
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "file-browser")),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        BUCKET_NAME: sharedBucket.bucketName,
-      },
-      logGroup: new logs.LogGroup(this, "FileBrowserLogGroup", {
-        logGroupName: `/aws/lambda/${config.stack_name_base}-file-browser`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    })
-    sharedBucket.grantRead(browser)
-    const browserDataSource = api.addLambdaDataSource("FileBrowserDataSource", browser)
-    browserDataSource.createResolver("ListFilesResolver", {
-      typeName: "Query",
-      fieldName: "listFiles",
-    })
-    browserDataSource.createResolver("GetFileContentResolver", {
-      typeName: "Query",
-      fieldName: "getFileContent",
-    })
-
-    const publisher = new lambda.Function(this, "S3FileEventPublisher", {
-      runtime: lambda.Runtime.PYTHON_3_13,
-      architecture: lambda.Architecture.ARM_64,
-      handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "s3-file-events")),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        APPSYNC_API_URL: api.graphqlUrl,
-      },
-      logGroup: new logs.LogGroup(this, "S3FileEventPublisherLogGroup", {
-        logGroupName: `/aws/lambda/${config.stack_name_base}-s3-file-events`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    })
-    api.grantMutation(publisher)
-    sharedBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(publisher))
-    sharedBucket.addEventNotification(s3.EventType.OBJECT_REMOVED, new s3n.LambdaDestination(publisher))
-
-    this.fileEventsApiUrl = api.graphqlUrl
-    this.fileEventsApiId = api.apiId
-
-    new ssm.StringParameter(this, "FileEventsApiUrlParam", {
-      parameterName: `/${config.stack_name_base}/file-events-api-url`,
-      stringValue: api.graphqlUrl,
-      description: "AppSync GraphQL API URL for real-time file events",
-    })
-
-    new cdk.CfnOutput(this, "FileEventsApiUrl", {
-      value: api.graphqlUrl,
-      description: "AppSync GraphQL API URL for real-time S3 file events",
-    })
-    new cdk.CfnOutput(this, "FileEventsApiId", {
-      value: api.apiId,
-      description: "AppSync GraphQL API ID for real-time S3 file events",
     })
   }
 
@@ -1025,6 +696,28 @@ export class BackendStack extends cdk.NestedStack {
     return resourcesTable
   }
 
+  private createResourceGraphBucket(config: AppConfig): s3.Bucket {
+    const bucketPrefix = config.stack_name_base
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]/g, "-")
+      .slice(0, 20)
+      .replace(/[-.]+$/g, "")
+
+    return new s3.Bucket(this, "ResourceGraphBucket", {
+      bucketName: `${bucketPrefix}-graphs-${this.account}-${this.region}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(30),
+        },
+      ],
+    })
+  }
+
   private createCloudriftCodeBuildProject(
     config: AppConfig,
     resourcesTable: dynamodb.Table
@@ -1068,7 +761,6 @@ export class BackendStack extends cdk.NestedStack {
               `python - <<'PY'
 import json
 import os
-import subprocess
 import time
 import traceback
 
@@ -1176,10 +868,20 @@ def store(status, drift=None, policies=None, resources=None, raw=None, error=Non
     }
     if raw is not None:
         item["rawResult"] = raw
+    if existing.get("graphBucket"):
+        item["graphBucket"] = existing["graphBucket"]
+    if existing.get("graphKey"):
+        item["graphKey"] = existing["graphKey"]
+    if existing.get("graphGeneratedAt"):
+        item["graphGeneratedAt"] = existing["graphGeneratedAt"]
+    if existing.get("graphError"):
+        item["graphError"] = existing["graphError"]
     if error:
         item["error"] = str(error)[:4000]
     if existing.get("codeBuildBuildId"):
         item["codeBuildBuildId"] = existing["codeBuildBuildId"]
+    if existing.get("repository"):
+        item["repository"] = existing["repository"]
     if drift_guard_id:
         item["guardId"] = drift_guard_id
     table.put_item(Item=item)
@@ -1416,7 +1118,8 @@ PY`,
     config: AppConfig,
     frontendUrl: string,
     resourcesTable: dynamodb.Table,
-    driftProject: codebuild.Project
+    driftProject: codebuild.Project,
+    resourceGraphBucket: s3.Bucket
   ): void {
     const resourcesLambdaName = `${config.stack_name_base}-resources`
     const resourcesLambdaArn = `arn:aws:lambda:${this.region}:${this.account}:function:${resourcesLambdaName}`
@@ -1436,12 +1139,12 @@ PY`,
       })
     )
 
-    const resourcesLambda = new lambda.Function(this, "ResourcesLambda", {
+    const resourcesLambda = new lambda.DockerImageFunction(this, "ResourcesLambda", {
       functionName: resourcesLambdaName,
-      runtime: lambda.Runtime.PYTHON_3_13,
-      architecture: lambda.Architecture.ARM_64,
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "resources")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      handler: "index.handler",
+      architecture: lambda.Architecture.X86_64,
+      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, "..", "lambdas", "resources"), {
+        platform: ecr_assets.Platform.LINUX_AMD64,
+      }), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       environment: {
         TABLE_NAME: resourcesTable.tableName,
         CODEBUILD_PROJECT_NAME: driftProject.projectName,
@@ -1449,9 +1152,12 @@ PY`,
         DRIFT_GUARD_SCHEDULER_ROLE_ARN: schedulerRoleArn,
         RESOURCES_LAMBDA_ARN: resourcesLambdaArn,
         GITHUB_APP_SECRET_NAME: `/${config.stack_name_base}/github_app`,
+        MEMORY_ID: this.memoryId,
+        RESOURCE_GRAPH_BUCKET: resourceGraphBucket.bucketName,
+        AWS_ICONS_PATH: "/opt/aws-official-icons",
         CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
       },
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.minutes(3),
       logGroup: new logs.LogGroup(this, "ResourcesLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-resources`,
         retention: logs.RetentionDays.ONE_WEEK,
@@ -1460,6 +1166,18 @@ PY`,
     })
 
     resourcesTable.grantReadWriteData(resourcesLambda)
+    resourceGraphBucket.grantReadWrite(resourcesLambda)
+    resourcesLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "DeleteAgentCoreMemoryEvents",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:DeleteEvent",
+        ],
+        resources: [this.memoryArn],
+      })
+    )
     resourcesLambda.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "StartCloudriftBuild",
@@ -1542,7 +1260,7 @@ PY`,
       description: "API for AWS credentials, state backends, and Cloudrift scan results",
       defaultCorsPreflightOptions: {
         allowOrigins: [frontendUrl, "http://localhost:3000"],
-        allowMethods: ["GET", "POST", "OPTIONS"],
+        allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
         allowHeaders: ["Content-Type", "Authorization"],
       },
       deployOptions: {
@@ -1569,7 +1287,9 @@ PY`,
       identitySource: "method.request.header.Authorization",
       authorizerName: `${config.stack_name_base}-resources-authorizer`,
     })
-    const integration = new apigateway.LambdaIntegration(resourcesLambda)
+    const integration = new apigateway.LambdaIntegration(resourcesLambda, {
+      allowTestInvoke: false,
+    })
     const methodOptions = {
       authorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -1582,16 +1302,30 @@ PY`,
     credentialsResource.addMethod("GET", integration, methodOptions)
     credentialsResource.addMethod("POST", integration, methodOptions)
 
+    const userResource = api.root.addResource("user")
+    const userChatSessionsResource = userResource.addResource("chat-sessions")
+    userChatSessionsResource.addMethod("GET", integration, methodOptions)
+    userChatSessionsResource.addMethod("POST", integration, methodOptions)
+    const userChatSessionResource = userChatSessionsResource.addResource("{sessionId}")
+    userChatSessionResource.addMethod("DELETE", integration, methodOptions)
+    const userConfigResource = userResource.addResource("config")
+    userConfigResource.addMethod("GET", integration, methodOptions)
+    userConfigResource.addMethod("POST", integration, methodOptions)
+
     const resourcesRoot = api.root.addResource("resources")
     const backendsResource = resourcesRoot.addResource("state-backends")
     backendsResource.addMethod("GET", integration, methodOptions)
     backendsResource.addMethod("POST", integration, methodOptions)
+    const s3BucketsResource = resourcesRoot.addResource("s3-buckets")
+    s3BucketsResource.addMethod("GET", integration, methodOptions)
     const terraformPlansResource = resourcesRoot.addResource("terraform-plans")
     terraformPlansResource.addMethod("GET", integration, methodOptions)
     terraformPlansResource.addMethod("POST", integration, methodOptions)
     const backendResource = backendsResource.addResource("{backendId}")
     const backendPlanResource = backendResource.addResource("plan")
     backendPlanResource.addMethod("POST", integration, methodOptions)
+    const backendGraphResource = backendResource.addResource("graph")
+    backendGraphResource.addMethod("GET", integration, methodOptions)
 
     const scansResource = resourcesRoot.addResource("scans")
     scansResource.addMethod("GET", integration, methodOptions)
@@ -1605,6 +1339,8 @@ PY`,
     const scanResource = scansResource.addResource("{scanId}")
     const scanLogsResource = scanResource.addResource("logs")
     scanLogsResource.addMethod("GET", integration, methodOptions)
+    const scanGraphResource = scanResource.addResource("graph")
+    scanGraphResource.addMethod("GET", integration, methodOptions)
 
     const githubResource = api.root.addResource("github")
     const githubWebhookResource = githubResource.addResource("webhook")
@@ -1625,27 +1361,11 @@ PY`,
   }
 
   private createAgentCoreGateway(config: AppConfig): void {
-    // Create sample tool Lambda
-    const toolLambda = new lambda.Function(this, "SampleToolLambda", {
-      runtime: lambda.Runtime.PYTHON_3_13,
-      handler: "sample_tool_lambda.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/sample_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-      timeout: cdk.Duration.seconds(30),
-      logGroup: new logs.LogGroup(this, "SampleToolLambdaLogGroup", {
-        logGroupName: `/aws/lambda/${config.stack_name_base}-sample-tool`,
-        retention: logs.RetentionDays.ONE_WEEK,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      }),
-    })
-
     // Create comprehensive IAM role for gateway
     const gatewayRole = new iam.Role(this, "GatewayRole", {
       assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
       description: "Role for AgentCore Gateway with comprehensive permissions",
     })
-
-    // Lambda invoke permission
-    toolLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -1689,10 +1409,6 @@ PY`,
         ],
       })
     )
-
-    // Load tool specification from JSON file
-    const toolSpecPath = path.join(__dirname, "../../gateway/tools/sample_tool/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-    const apiSpec = JSON.parse(require("fs").readFileSync(toolSpecPath, "utf8"))
 
     // Cognito OAuth2 configuration for gateway
     const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${this.userPool.userPoolId}`
@@ -1812,31 +1528,7 @@ PY`,
       description: "AgentCore Gateway with MCP protocol and JWT authentication",
     })
 
-    // Create Gateway Target using L1 construct (CfnGatewayTarget)
-    const gatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GatewayTarget", {
-      gatewayIdentifier: gateway.attrGatewayIdentifier,
-      name: "sample-tool-target",
-      description: "Sample tool Lambda target",
-      targetConfiguration: {
-        mcp: {
-          lambda: {
-            lambdaArn: toolLambda.functionArn,
-            toolSchema: {
-              inlinePayload: apiSpec,
-            },
-          },
-        },
-      },
-      credentialProviderConfigurations: [
-        {
-          credentialProviderType: "GATEWAY_IAM_ROLE",
-        },
-      ],
-    })
-
     // Ensure proper creation order
-    gatewayTarget.addDependency(gateway)
-    gateway.node.addDependency(toolLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
@@ -1862,31 +1554,24 @@ PY`,
       value: gateway.attrGatewayArn,
       description: "AgentCore Gateway ARN",
     })
-
-    new cdk.CfnOutput(this, "GatewayTargetId", {
-      value: gatewayTarget.ref,
-      description: "AgentCore Gateway Target ID",
-    })
-
-    new cdk.CfnOutput(this, "ToolLambdaArn", {
-      description: "ARN of the sample tool Lambda",
-      value: toolLambda.functionArn,
-    })
   }
 
   private createOpenAICredentialProvider(config: AppConfig): void {
-    // Create secret for OpenAI API key with JSON structure
-    const placeholderCredentials = JSON.stringify({
-      api_key: "PLACEHOLDER_REPLACE_ME",
-      base_url: config.backend.openai?.base_url || "https://api.openai.com/v1",
-      model_id: config.backend.openai?.model_id || "gpt-4o",
-    })
-
-    const openaiApiKeySecret = new secretsmanager.Secret(this, "OpenAIApiKeySecret", {
-      secretName: `/${config.stack_name_base}/openai_api_key`,
-      description: "OpenAI API credentials (JSON: api_key, base_url, model_id)",
-      secretStringValue: cdk.SecretValue.unsafePlainText(placeholderCredentials),
-    })
+    const openaiApiKeySecret = new secretsmanager.Secret(
+      this,
+      "OpenAIApiKeySecret",
+      {
+        secretName: `/${config.stack_name_base}/openai_api_key`,
+        secretStringValue: cdk.SecretValue.unsafePlainText(
+          JSON.stringify({
+            api_key: config.backend.secrets.openai_api_key,
+            base_url: config.backend.openai?.base_url || "https://api.openai.com/v1",
+            model_id: config.backend.openai?.model_id || "gpt-4o",
+          })
+        ),
+        description: "OpenAI-compatible API credentials for AgentCore Identity",
+      }
+    )
 
     // Create Lambda for OpenAI Credential Provider management
     const openaiProviderLambda = new lambda.Function(this, "OpenAIProviderLambda", {
@@ -1967,29 +1652,28 @@ PY`,
     // Output instructions for setting the API key
     new cdk.CfnOutput(this, "OpenAIApiKeySecretArn", {
       value: openaiApiKeySecret.secretArn,
-      description: "OpenAI API Key Secret ARN - Update this secret with your credentials (JSON format)",
-    })
-
-    new cdk.CfnOutput(this, "OpenAIApiKeyUpdateCommand", {
-      value: `aws secretsmanager put-secret-value --secret-id ${openaiApiKeySecret.secretArn} --secret-string '{"api_key":"sk-your-key","base_url":"https://api.openai.com/v1","model_id":"gpt-4o"}'`,
-      description: "Command to update OpenAI credentials (replace with your values)",
+      description: "OpenAI API Key Secret ARN",
     })
   }
 
   private createGitHubCredentialProvider(config: AppConfig): void {
     const providerName =
       config.backend.github?.credential_provider_name || `${config.stack_name_base}-github-app`
-    const placeholderCredentials = JSON.stringify({
-      api_key: "PLACEHOLDER_REPLACE_WITH_GITHUB_APP_PRIVATE_KEY",
-      app_id: config.backend.github?.app_id || "",
-      app_slug: config.backend.github?.app_slug || "",
-    })
-
-    const githubSecret = new secretsmanager.Secret(this, "GitHubAppSecret", {
-      secretName: `/${config.stack_name_base}/github_app`,
-      description: "GitHub App credentials (JSON: api_key private key PEM, app_id, app_slug)",
-      secretStringValue: cdk.SecretValue.unsafePlainText(placeholderCredentials),
-    })
+    const githubSecret = new secretsmanager.Secret(
+      this,
+      "GitHubAppSecret",
+      {
+        secretName: `/${config.stack_name_base}/github_app`,
+        secretStringValue: cdk.SecretValue.unsafePlainText(
+          JSON.stringify({
+            private_key: config.backend.secrets.github_app_private_key,
+            app_id: config.backend.github?.app_id || "",
+            app_slug: config.backend.github?.app_slug || "",
+          })
+        ),
+        description: "GitHub App credentials for AgentCore Identity",
+      }
+    )
 
     const githubProviderLambda = new lambda.Function(this, "GitHubProviderLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -2059,8 +1743,17 @@ PY`,
 
     new cdk.CfnOutput(this, "GitHubAppSecretArn", {
       value: githubSecret.secretArn,
-      description: "GitHub App Secret ARN - update JSON with api_key private key PEM, app_id, app_slug",
+      description: "GitHub App Secret ARN",
     })
+
+    const githubAppSlug = config.backend.github?.app_slug || ""
+    if (githubAppSlug) {
+      this.githubAppInstallUrl = `https://github.com/apps/${githubAppSlug}/installations/new`
+      new cdk.CfnOutput(this, "GitHubAppInstallUrl", {
+        value: this.githubAppInstallUrl,
+        description: "GitHub App installation URL",
+      })
+    }
   }
 
   private createMachineAuthentication(config: AppConfig): void {
@@ -2264,11 +1957,14 @@ PY`,
       const relativePath = path.join(prefix, entry.name) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
       if (entry.isDirectory()) {
-        // Skip __pycache__ directories
-        if (entry.name !== "__pycache__") {
+        const isSkillReferencesDir = entry.name === "references" && relativePath.includes("skills/terrashark")
+        if (entry.name !== "__pycache__" && !isSkillReferencesDir) {
           this.readDirRecursive(fullPath, relativePath, output)
         }
       } else if (entry.isFile()) {
+        if (entry.name === "LICENSE" && relativePath.includes("skills/terrashark")) {
+          continue
+        }
         const content = fs.readFileSync(fullPath)
         output[relativePath] = content.toString("base64")
       }

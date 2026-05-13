@@ -1,3 +1,7 @@
+FROM golang:1.24-bookworm AS awsdac
+
+RUN go install github.com/awslabs/diagram-as-code/cmd/awsdac-mcp-server@latest
+
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 WORKDIR /app
@@ -16,12 +20,15 @@ RUN uv pip install --no-cache -r requirements.txt && \
 
 RUN uv pip install --no-cache requests>=2.31.0
 
+COPY --from=awsdac /go/bin/awsdac-mcp-server /usr/local/bin/awsdac-mcp-server
+
 RUN useradd -m -u 1000 bedrock_agentcore
 USER bedrock_agentcore
 
 EXPOSE 8080
 
 COPY agent/basic_agent.py .
+COPY agent/skills/ skills/
 COPY agent/tools/ tools/
 COPY agent/utils/ utils/
 

@@ -1,5 +1,5 @@
 {
-  "name": "fullstack-agentcore-solution-template-frontend",
+  "name": "infraq-frontend",
   "version": "0.4.1",
   "private": true,
   "scripts": {
@@ -13,6 +13,7 @@
     "clean": "rm -rf build/ node_modules/ .vite/"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0-b2b2815",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.15",
@@ -23,6 +24,7 @@
     "aws-amplify": "^6.16.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "framer-motion": "^12.38.0",
     "lucide-react": "^0.562.0",
     "monaco-editor": "^0.55.1",
     "radix-ui": "^1.4.3",
@@ -36,7 +38,8 @@
     "react-spinners": "^0.17.0",
     "react-syntax-highlighter": "^16.1.0",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.2.0"
+    "tailwind-merge": "^3.2.0",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

@@ -1,10 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
-import { ChatHeader } from "./ChatHeader"
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { ChatInput } from "./ChatInput"
 import { ChatMessages } from "./ChatMessages"
-import { ChatSession, Message, MessageSegment, ToolCall } from "./types"
+import type { ChatAttachment, ChatSession, Message, MessageSegment, PullRequestInfo, ToolCall, UserHandoff } from "./types"
+import { CHAT_AGENTS, findMentionedAgent } from "./agents"
 
 import { useGlobal } from "@/app/context/GlobalContext"
 import { AgentCoreClient } from "@/lib/agentcore-client"
@@ -14,7 +14,11 @@ import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
 import { FileSystemPanel } from "@/components/files/FileSystemPanel"
 import type { SelectedRepository } from "@/lib/agentcore-client/types"
+import { useWebAppStore } from "@/stores/webAppStore"
 import { Button } from "@/components/ui/button"
+import { CursorDrivenParticleTypography } from "@/components/ui/cursor-driven-particle-typography"
+import { ensureToolCallSegment } from "./tool-call-state"
+import { ChevronLeft, ChevronRight } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -23,10 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
-const CHAT_SESSIONS_STORAGE_KEY = "agentcore:chatSessions"
-const ACTIVE_CHAT_SESSION_STORAGE_KEY = "agentcore:activeChatSessionId"
-
-function createChatSession(repository: SelectedRepository | null = null, id = crypto.randomUUID()): ChatSession {
+function createChatSession(repository: SelectedRepository | null = null, id: string = crypto.randomUUID()): ChatSession {
   const now = new Date().toISOString()
   return {
     id,
@@ -38,47 +39,57 @@ function createChatSession(repository: SelectedRepository | null = null, id = cr
   }
 }
 
-function loadStoredSessions(): ChatSession[] {
-  try {
-    const saved = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY)
-    if (!saved) return []
-    const parsed = JSON.parse(saved) as ChatSession[]
-    return Array.isArray(parsed) ? parsed.filter(session => Boolean(session.repository)) : []
-  } catch {
-    return []
-  }
-}
+const NO_REPOSITORY_VALUE = "__no_repository__"
 
 export default function ChatInterface() {
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const stored = loadStoredSessions()
-    return stored.length > 0 ? stored : [createChatSession()]
-  })
-  const [sessionId, setSessionId] = useState(() => {
-    const stored = loadStoredSessions()
-    const activeId = localStorage.getItem(ACTIVE_CHAT_SESSION_STORAGE_KEY)
-    return stored.find(session => session.id === activeId)?.id ?? stored[0]?.id ?? crypto.randomUUID()
-  })
+  const storedSessions = useWebAppStore.getState().sessions
+  const storedActiveSessionId = useWebAppStore.getState().activeSessionId
+  const [sessions, setSessions] = useState<ChatSession[]>(() =>
+    storedSessions.length > 0 ? storedSessions : [createChatSession()]
+  )
+  const [sessionId, setSessionId] = useState<string>(() =>
+    storedSessions.find(session => session.id === storedActiveSessionId)?.id ??
+    storedSessions[0]?.id ??
+    crypto.randomUUID()
+  )
   const initialSession = sessions.find(session => session.id === sessionId) ?? sessions[0]
   const [messages, setMessages] = useState<Message[]>(() => initialSession?.history ?? [])
   const [input, setInput] = useState("")
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [error, setError] = useState<string | null>(null)
   const [client, setClient] = useState<AgentCoreClient | null>(null)
   const [repository, setRepository] = useState<SelectedRepository | null>(() => initialSession?.repository ?? null)
+  const [pullRequest, setPullRequest] = useState<PullRequestInfo | null>(() => initialSession?.pullRequest ?? null)
+  const [pendingUserHandoff, setPendingUserHandoff] = useState<UserHandoff | null>(() => initialSession?.pendingUserHandoff ?? null)
   const [isSetupOpen, setIsSetupOpen] = useState(false)
   const [installedRepositories, setInstalledRepositories] = useState<SelectedRepository[]>([])
   const [selectedInstalledRepository, setSelectedInstalledRepository] = useState("")
   const [isLoadingInstalledRepositories, setIsLoadingInstalledRepositories] = useState(false)
   const [isSettingUpSession, setIsSettingUpSession] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
-  const [chatPanePercent, setChatPanePercent] = useState(38)
+  const [isFilesystemOpen, setIsFilesystemOpen] = useState(false)
+  const [isSessionStoreReady, setIsSessionStoreReady] = useState(() => storedSessions.length > 0)
 
   const { isLoading, setIsLoading } = useGlobal()
   const auth = useAuth()
+  const hydrateChatSessions = useWebAppStore(state => state.hydrateChatSessions)
+  const persistChatSessions = useWebAppStore(state => state.persistChatSessions)
+  const setStoredSessions = useWebAppStore(state => state.setSessions)
+  const setStoredActiveSessionId = useWebAppStore(state => state.setActiveSessionId)
+  const storedSessionsFromStore = useWebAppStore(state => state.sessions)
+  const storedActiveSessionIdFromStore = useWebAppStore(state => state.activeSessionId)
+  const repositoryChatRequest = useWebAppStore(state => state.repositoryChatRequest)
+  const selectedAgent = CHAT_AGENTS[0]
 
   // Ref for message container to enable auto-scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const hasRequestedChatSessionsRef = useRef(false)
+  const handledRepositoryChatRequestRef = useRef(0)
+  const repositorySetupRequestRef = useRef(0)
+  const latestPersistedSessionsRef = useRef(
+    JSON.stringify({ sessions: storedSessions, activeSessionId: storedActiveSessionId })
+  )
 
   // Register default tool renderer (wildcard "*")
   useDefaultTool(({ name, args, status, result }) => (
@@ -124,22 +135,109 @@ export default function ChatInterface() {
       setSessionId(sessions[0].id)
       setMessages(sessions[0].history ?? [])
       setRepository(sessions[0].repository ?? null)
+      setPullRequest(sessions[0].pullRequest ?? null)
+      setPendingUserHandoff(sessions[0].pendingUserHandoff ?? null)
     }
   }, [sessionId, sessions])
 
   useEffect(() => {
-    localStorage.setItem(
-      CHAT_SESSIONS_STORAGE_KEY,
-      JSON.stringify(sessions.filter(session => Boolean(session.repository)))
-    )
-  }, [sessions])
+    const idToken = auth.user?.id_token
+    if (!idToken) return
+    if (useWebAppStore.getState().chatSessionsLoadedFor === idToken) {
+      setIsSessionStoreReady(true)
+      return
+    }
+    if (hasRequestedChatSessionsRef.current) return
+    hasRequestedChatSessionsRef.current = true
+    let cancelled = false
+    setIsSessionStoreReady(false)
+    hydrateChatSessions(idToken)
+      .then(response => {
+        if (cancelled) return
+        const loadedSessions = response.sessions
+        const nextSessions = loadedSessions.length > 0 ? loadedSessions : [createChatSession()]
+        const activeSession =
+          nextSessions.find(session => session.id === response.activeSessionId) ?? nextSessions[0]
+        setSessions(nextSessions)
+        setSessionId(activeSession.id)
+        setMessages(activeSession.history ?? [])
+        setRepository(activeSession.repository ?? null)
+        setPullRequest(activeSession.pullRequest ?? null)
+        setPendingUserHandoff(activeSession.pendingUserHandoff ?? null)
+        latestPersistedSessionsRef.current = JSON.stringify({
+          sessions: loadedSessions,
+          activeSessionId: activeSession.id,
+        })
+        setIsSessionStoreReady(true)
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load chat sessions")
+          setIsSessionStoreReady(true)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [auth.user?.id_token, hydrateChatSessions])
 
   useEffect(() => {
-    localStorage.setItem(ACTIVE_CHAT_SESSION_STORAGE_KEY, sessionId)
-  }, [sessionId])
+    if (storedSessionsFromStore.length === 0) return
+
+    const hasSameSessionIds =
+      sessions.length === storedSessionsFromStore.length &&
+      sessions.every(session => storedSessionsFromStore.some(storedSession => storedSession.id === session.id))
+    if (hasSameSessionIds && (!storedActiveSessionIdFromStore || storedActiveSessionIdFromStore === sessionId)) return
+
+    const nextSessions = storedSessionsFromStore
+    const nextSession =
+      nextSessions.find(session => session.id === storedActiveSessionIdFromStore) ?? nextSessions[0]
+    if (!nextSession) return
+    setSessions(nextSessions)
+    setSessionId(nextSession.id)
+    setMessages(nextSession.history ?? [])
+    setRepository(nextSession.repository ?? null)
+    setPullRequest(nextSession.pullRequest ?? null)
+    setPendingUserHandoff(nextSession.pendingUserHandoff ?? null)
+    setInput("")
+    setError(null)
+  }, [sessionId, sessions, storedActiveSessionIdFromStore, storedSessionsFromStore])
 
   useEffect(() => {
-    const now = new Date().toISOString()
+    if (!repositoryChatRequest || handledRepositoryChatRequestRef.current === repositoryChatRequest.id) return
+    handledRepositoryChatRequestRef.current = repositoryChatRequest.id
+    const next = createChatSession(repositoryChatRequest.repository)
+    activateSession(next)
+    setInput(repositoryChatRequest.prompt)
+    setIsSetupOpen(false)
+  }, [repositoryChatRequest])
+
+  useEffect(() => {
+    setStoredSessions(sessions)
+    setStoredActiveSessionId(sessionId)
+  }, [sessionId, sessions, setStoredActiveSessionId, setStoredSessions])
+
+  useEffect(() => {
+    const idToken = auth.user?.id_token
+    if (!idToken || !isSessionStoreReady) return
+    const persistedSessions = sessions
+    const payload = { sessions: persistedSessions, activeSessionId: sessionId }
+    const serialized = JSON.stringify(payload)
+    if (serialized === latestPersistedSessionsRef.current) return
+    const timeout = window.setTimeout(() => {
+      persistChatSessions(idToken)
+        .then(() => {
+          latestPersistedSessionsRef.current = serialized
+        })
+        .catch(err => {
+          setError(err instanceof Error ? err.message : "Failed to save chat sessions")
+        })
+    }, 900)
+    return () => window.clearTimeout(timeout)
+  }, [auth.user?.id_token, isSessionStoreReady, persistChatSessions, sessionId, sessions])
+
+  useEffect(() => {
+    const lastMessageTimestamp = messages[messages.length - 1]?.timestamp
     setSessions(prev =>
       prev.map(session =>
         session.id === sessionId
@@ -147,19 +245,17 @@ export default function ChatInterface() {
               ...session,
               history: messages,
               repository,
-              endDate: now,
-              name:
-                session.name === "New chat" && messages[0]?.content
-                  ? messages[0].content.slice(0, 48)
-                  : session.name,
+              pullRequest,
+              pendingUserHandoff,
+              endDate: lastMessageTimestamp ?? session.endDate,
             }
           : session
       )
     )
-  }, [messages, repository, sessionId])
+  }, [messages, pendingUserHandoff, pullRequest, repository, sessionId])
 
   useEffect(() => {
-    if (!isSetupOpen || !client || !auth.user?.access_token) return
+    if (!client || !auth.user?.access_token || (repository && !isSetupOpen)) return
     let cancelled = false
     setIsLoadingInstalledRepositories(true)
     setSetupError(null)
@@ -173,7 +269,11 @@ export default function ChatInterface() {
         if (cancelled) return
         const repositories = ((response as any)?.repositories ?? []) as SelectedRepository[]
         setInstalledRepositories(repositories)
-        setSelectedInstalledRepository(current => current || repositories[0]?.fullName || "")
+        setSelectedInstalledRepository(current => {
+          if (repository?.fullName) return repository.fullName
+          if (current) return current
+          return NO_REPOSITORY_VALUE
+        })
       })
       .catch(err => {
         if (!cancelled) {
@@ -186,28 +286,48 @@ export default function ChatInterface() {
     return () => {
       cancelled = true
     }
-  }, [auth.user?.access_token, client, isSetupOpen])
+  }, [auth.user?.access_token, client, isSetupOpen, repository])
 
-  const sendMessage = async (userMessage: string) => {
-    if (!userMessage.trim() || !client) return
-    if (!repository) {
-      setIsSetupOpen(true)
-      setError("Create a chat session connected to a GitHub repository before chatting.")
-      return
-    }
+  const sendMessage = async (userMessage: string, messageAttachments: ChatAttachment[] = []) => {
+    const trimmedMessage = userMessage.trim()
+    if ((!trimmedMessage && messageAttachments.length === 0) || !client) return
 
     // Clear any previous errors
     setError(null)
+    const mentionedAgent = findMentionedAgent(userMessage)
+    const activeAgent = mentionedAgent ?? selectedAgent
+    const selectedRepository =
+      repository ??
+      installedRepositories.find(item => item.fullName === selectedInstalledRepository) ??
+      null
 
     // Add user message to chat
     const newUserMessage: Message = {
       role: "user",
-      content: userMessage,
+      content: trimmedMessage || `Attached ${messageAttachments.length} file${messageAttachments.length === 1 ? "" : "s"}`,
       timestamp: new Date().toISOString(),
+      agent: activeAgent,
+      attachments: messageAttachments,
     }
 
+    if (!repository && selectedRepository) {
+      setRepository(selectedRepository)
+      setSessions(prev =>
+        prev.map(session =>
+          session.id === sessionId
+            ? {
+                ...session,
+                repository: selectedRepository,
+                endDate: newUserMessage.timestamp,
+              }
+            : session
+        )
+      )
+    }
     setMessages(prev => [...prev, newUserMessage])
     setInput("")
+    setAttachments([])
+    setPendingUserHandoff(null)
     setIsLoading(true)
 
     // Create placeholder for assistant response
@@ -215,6 +335,7 @@ export default function ChatInterface() {
       role: "assistant",
       content: "Thinking...",
       timestamp: new Date().toISOString(),
+      agent: activeAgent,
     }
 
     setMessages(prev => [...prev, assistantResponse])
@@ -252,8 +373,19 @@ export default function ChatInterface() {
 
       // User identity is extracted server-side from the validated JWT token,
       // not passed as a parameter — prevents impersonation via prompt injection.
-      await client.invoke(userMessage, sessionId, accessToken, event => {
+      await client.invoke(trimmedMessage || "Please review the attached file(s).", sessionId, accessToken, event => {
         switch (event.type) {
+          case "agent": {
+            setMessages(prev => {
+              const updated = [...prev]
+              const last = updated[updated.length - 1]
+              if (last?.role === "assistant") {
+                updated[updated.length - 1] = { ...last, agent: event.agent }
+              }
+              return updated
+            })
+            break
+          }
           case "text": {
             // If text arrives after a tool segment, mark all pending tools as complete
             const prev = segments[segments.length - 1]
@@ -275,14 +407,7 @@ export default function ChatInterface() {
             break
           }
           case "tool_use_start": {
-            const tc: ToolCall = {
-              toolUseId: event.toolUseId,
-              name: event.name,
-              input: "",
-              status: "streaming",
-            }
-            toolCallMap.set(event.toolUseId, tc)
-            segments.push({ type: "tool", toolCall: tc })
+            ensureToolCallSegment(segments, toolCallMap, event)
             updateMessage()
             break
           }
@@ -290,6 +415,14 @@ export default function ChatInterface() {
             const tc = toolCallMap.get(event.toolUseId)
             if (tc) {
               tc.input += event.input
+            }
+            updateMessage()
+            break
+          }
+          case "tool_use_input_snapshot": {
+            const tc = toolCallMap.get(event.toolUseId)
+            if (tc) {
+              tc.input = event.input
             }
             updateMessage()
             break
@@ -312,8 +445,34 @@ export default function ChatInterface() {
             }
             break
           }
+          case "pull_request": {
+            const nextPullRequest = event.pullRequest as PullRequestInfo
+            setPullRequest(nextPullRequest)
+            break
+          }
+          case "session_title": {
+            const title = event.title.trim()
+            if (title) {
+              setSessions(prev =>
+                prev.map(session =>
+                  session.id === sessionId
+                    ? {
+                        ...session,
+                        name: title.slice(0, 80),
+                        endDate: new Date().toISOString(),
+                      }
+                    : session
+                )
+              )
+            }
+            break
+          }
+          case "user_handoff": {
+            setPendingUserHandoff(event.handoff as UserHandoff)
+            break
+          }
         }
-      }, repository, abortController.signal)
+      }, selectedRepository, activeAgent, messageAttachments, abortController.signal)
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setMessages(prev => {
@@ -355,24 +514,8 @@ export default function ChatInterface() {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
 
-    sendMessage(input)
+    sendMessage(input, attachments)
   }
-
-  const handlePaneResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const container = event.currentTarget.parentElement
-    if (!container) return
-    const bounds = container.getBoundingClientRect()
-    const move = (moveEvent: PointerEvent) => {
-      const next = ((moveEvent.clientX - bounds.left) / bounds.width) * 100
-      setChatPanePercent(Math.min(65, Math.max(28, next)))
-    }
-    const up = () => {
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("pointerup", up)
-    }
-    window.addEventListener("pointermove", move)
-    window.addEventListener("pointerup", up)
-  }, [])
 
   // Handle feedback submission
   const handleFeedbackSubmit = async (
@@ -406,33 +549,27 @@ export default function ChatInterface() {
     }
   }
 
-  // Start a new chat by clearing messages and generating a fresh session ID.
-  // A new UUID is required so the backend treats this as a distinct conversation context.
-  const startNewChat = () => {
-    setSelectedInstalledRepository(installedRepositories[0]?.fullName ?? "")
-    setSetupError(null)
-    setError(null)
-    setIsSetupOpen(true)
-  }
-
-  const selectSession = (next: ChatSession) => {
-    setSessionId(next.id)
-    setMessages(next.history ?? [])
-    setRepository(next.repository ?? null)
-    setInput("")
-    setError(null)
-  }
-
   const activateSession = (next: ChatSession) => {
-    setSessions(prev => [
+    const nextSessions = [
       next,
-      ...prev.filter(session => session.id !== next.id && Boolean(session.repository)),
-    ])
+      ...sessions.filter(session => session.id !== next.id),
+    ]
+    setStoredSessions(nextSessions)
+    setStoredActiveSessionId(next.id)
+    setSessions(nextSessions)
     setSessionId(next.id)
     setMessages(next.history ?? [])
     setRepository(next.repository ?? null)
+    setSelectedInstalledRepository(next.repository?.fullName ?? NO_REPOSITORY_VALUE)
+    setPullRequest(next.pullRequest ?? null)
+    setPendingUserHandoff(next.pendingUserHandoff ?? null)
     setInput("")
     setError(null)
+  }
+
+  const handleUserHandoffSubmit = (answers: string) => {
+    setPendingUserHandoff(null)
+    void sendMessage(answers, [])
   }
 
   const setupSession = async () => {
@@ -444,9 +581,23 @@ export default function ChatInterface() {
       if (!accessToken) throw new Error("Authentication required. Please log in again.")
       const requestedRepository = installedRepositories.find(item => item.fullName === selectedInstalledRepository)
       if (!requestedRepository) throw new Error("Choose an installed GitHub App repository")
-      const pendingSessionId = crypto.randomUUID()
-      await client.githubAction("previewPullRequest", pendingSessionId, accessToken, requestedRepository)
-      const next = createChatSession(requestedRepository, pendingSessionId)
+      const previewResponse = await client.githubAction("previewPullRequest", sessionId, accessToken, requestedRepository)
+      const currentSession = sessions.find(session => session.id === sessionId)
+      const next = {
+        ...(currentSession ?? createChatSession(null, sessionId)),
+        repository: requestedRepository,
+      }
+      const preview = (previewResponse as any)?.preview
+      if (preview?.number || preview?.url) {
+        next.pullRequest = {
+          number: preview.number,
+          url: preview.url,
+          state: preview.state,
+          title: preview.title,
+          headBranch: preview.headBranch,
+          baseBranch: preview.baseBranch,
+        }
+      }
       activateSession(next)
       setIsSetupOpen(false)
     } catch (err) {
@@ -456,81 +607,116 @@ export default function ChatInterface() {
     }
   }
 
+  const setupRepositoryWorkspaceForSelection = async (value: string) => {
+    if (isRepositoryLocked) return
+    setSelectedInstalledRepository(value)
+    setSetupError(null)
+
+    if (value === NO_REPOSITORY_VALUE) {
+      repositorySetupRequestRef.current += 1
+      setRepository(null)
+      return
+    }
+
+    const requestedRepository = installedRepositories.find(item => item.fullName === value)
+    if (!requestedRepository) return
+
+    const requestId = repositorySetupRequestRef.current + 1
+    repositorySetupRequestRef.current = requestId
+    setIsSettingUpSession(true)
+    try {
+      if (!client) throw new Error("Agent runtime is not configured yet")
+      const accessToken = auth.user?.access_token
+      if (!accessToken) throw new Error("Authentication required. Please log in again.")
+      await client.githubAction("setupRepositoryWorkspace", sessionId, accessToken, requestedRepository)
+      if (repositorySetupRequestRef.current !== requestId) return
+      setRepository(requestedRepository)
+      setSessions(prev =>
+        prev.map(session =>
+          session.id === sessionId
+            ? {
+                ...session,
+                repository: requestedRepository,
+                endDate: new Date().toISOString(),
+              }
+            : session
+        )
+      )
+    } catch (err) {
+      if (repositorySetupRequestRef.current === requestId) {
+        setSetupError(err instanceof Error ? err.message : "Failed to clone GitHub repository")
+      }
+    } finally {
+      if (repositorySetupRequestRef.current === requestId) {
+        setIsSettingUpSession(false)
+      }
+    }
+  }
+
   // Check if this is the initial state (no messages)
   const isInitialState = messages.length === 0
+  const isRepositoryLocked = Boolean(repository) && (messages.length > 0 || isLoading)
+  const selectedRepositoryFullName = repository?.fullName || selectedInstalledRepository || NO_REPOSITORY_VALUE
+  const showFilesystem = Boolean(repository && isFilesystemOpen)
 
   return (
     <div
-      className="grid h-screen w-full grid-cols-1 overflow-hidden lg:grid-cols-[minmax(360px,var(--chat-pane-width))_6px_minmax(520px,1fr)]"
-      style={{ "--chat-pane-width": `${chatPanePercent}%` } as CSSProperties}
+      className={`relative grid h-screen w-full grid-cols-1 overflow-hidden bg-white transition-[grid-template-columns] duration-300 ${
+        showFilesystem
+          ? "lg:grid-cols-[minmax(360px,1fr)_minmax(520px,42vw)]"
+          : "lg:grid-cols-[minmax(0,1fr)_minmax(0,0px)]"
+      }`}
     >
-      <section className="flex min-h-0 min-w-0 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-col bg-white text-slate-950">
       {/* Fixed header */}
       <div className="flex-none">
-        <ChatHeader onNewChat={startNewChat} canStartNewChat />
-        <div className="flex flex-wrap items-center gap-2 border-b bg-white px-4 py-2">
-          <span className="text-xs font-medium text-slate-500">Session</span>
-          <select
-            className="h-8 min-w-48 rounded-md border bg-white px-2 text-sm"
-            onChange={event => {
-              const next = sessions.find(session => session.id === event.target.value)
-              if (next) selectSession(next)
-            }}
-            value={sessionId}
-          >
-            {sessions.map(session => (
-              <option key={session.id} value={session.id}>
-                {session.name}
-              </option>
-            ))}
-          </select>
-          <span className="truncate text-xs text-slate-500">
-            {repository ? `Connected to ${repository.fullName}` : "No repository connected"}
-          </span>
-        </div>
+        {!repository && (
+          <div className="mx-4 mt-2 flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-sm text-slate-600">
+              No repository connected. Pick a GitHub repository in the message box before the first send if this chat should inspect files or open a pull request.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isRepositoryLocked}
+              onClick={() => setIsSetupOpen(true)}
+            >
+              Connect Repository
+            </Button>
+          </div>
+        )}
+        {pullRequest?.number && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
+            <span className="rounded-full border border-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600">
+              PR #{pullRequest.number}
+            </span>
+          </div>
+        )}
         {error && (
-          <div className="bg-red-50 border-l-4 border-red-500 p-4 mx-4 mt-2">
+          <div className="mx-4 mt-2 border-l-4 border-red-500 bg-red-50 p-4">
             <p className="text-sm text-red-700">{error}</p>
           </div>
         )}
       </div>
 
-      {/* Conditional layout based on repository setup and whether there are messages */}
-      {!repository ? (
-        <>
-          <div className="grow" />
-          <div className="mx-auto mb-16 w-full max-w-2xl px-4 text-center">
-            <h2 className="text-2xl font-bold text-gray-800">Connect a GitHub Repository</h2>
-            <p className="mt-2 text-gray-600">
-              Choose an installed repository before chatting.
-            </p>
-            <Button type="button" className="mt-6" onClick={startNewChat}>
-              Set Up Chat Session
-            </Button>
-          </div>
-          <div className="grow" />
-        </>
-      ) : isInitialState ? (
-        // Initial state - input in the middle
+      {/* Conditional layout based on whether there are messages */}
+      {isInitialState ? (
+        // Initial state
         <>
           {/* Empty space above */}
           <div className="grow" />
 
           {/* Centered welcome message */}
-          <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold text-gray-800">Welcome to FAST Chat</h2>
-            <p className="text-gray-600 mt-2">Ask me anything to get started</p>
-          </div>
-
-          {/* Centered input */}
-          <div className="px-4 mb-16 max-w-4xl mx-auto w-full">
-            <ChatInput
-              input={input}
-              setInput={setInput}
-              handleSubmit={handleSubmit}
-              isLoading={isLoading}
-              onStop={stopMessage}
-            />
+          <div className="mx-auto mb-24 flex w-full max-w-5xl flex-col items-center gap-3 px-4 text-center">
+            <div className="relative h-44 w-full max-w-5xl text-slate-950 sm:h-52">
+              <CursorDrivenParticleTypography
+                text="InfraQ"
+                className="relative h-full min-h-0 text-slate-950"
+                fontSize={132}
+                particleSize={1.8}
+                particleDensity={4}
+              />
+            </div>
           </div>
 
           {/* Empty space below */}
@@ -550,35 +736,54 @@ export default function ChatInterface() {
               />
             </div>
           </div>
-
-          {/* Fixed input area at bottom */}
-          <div className="flex-none">
-            <div className="max-w-4xl mx-auto w-full">
-              <ChatInput
-                input={input}
-                setInput={setInput}
-                handleSubmit={handleSubmit}
-                isLoading={isLoading}
-                onStop={stopMessage}
-              />
-            </div>
-          </div>
         </>
       )}
       </section>
-      <div
-        className="hidden cursor-col-resize bg-slate-200 transition hover:bg-slate-300 lg:block"
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={handlePaneResize}
-      />
-      <div className="hidden min-h-0 min-w-0 lg:block">
-        <FileSystemPanel
-          accessToken={auth.user?.access_token ?? null}
-          client={client}
-          repository={repository}
-          sessionId={sessionId}
+      {repository && (
+        <button
+          type="button"
+          className={`absolute top-1/2 z-50 hidden h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition-[right,background-color] hover:bg-slate-50 lg:flex ${
+            isFilesystemOpen ? "right-[calc(42vw+0.75rem)]" : "right-3"
+          }`}
+          onClick={() => setIsFilesystemOpen(open => !open)}
+          aria-label={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
+          title={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
+        >
+          {isFilesystemOpen ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
+      )}
+      <div className="absolute bottom-4 left-1/2 z-40 w-full max-w-5xl -translate-x-1/2 px-4">
+        <ChatInput
+          input={input}
+          setInput={setInput}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          handleSubmit={handleSubmit}
+          isLoading={isLoading}
+          onStop={stopMessage}
+          className="bg-transparent p-0"
+          agents={CHAT_AGENTS}
+          repositories={installedRepositories}
+          selectedRepositoryFullName={selectedRepositoryFullName}
+          onRepositoryChange={value => void setupRepositoryWorkspaceForSelection(value)}
+          repositoryLocked={isRepositoryLocked}
+          isLoadingRepositories={isLoadingInstalledRepositories || isSettingUpSession}
+          repositoryError={setupError}
+          userHandoff={pendingUserHandoff}
+          onUserHandoffSubmit={handleUserHandoffSubmit}
         />
+      </div>
+      <div className="hidden min-h-0 min-w-0 overflow-hidden border-l border-slate-200 bg-white lg:block">
+        {repository && isFilesystemOpen && (
+          <FileSystemPanel
+            accessToken={auth.user?.access_token ?? null}
+            client={client}
+            repository={repository}
+            sessionId={sessionId}
+            pullRequest={pullRequest}
+            onPullRequestChange={setPullRequest}
+          />
+        )}
       </div>
       <Dialog open={isSetupOpen} onOpenChange={open => {
         if (isSettingUpSession) return
@@ -586,9 +791,9 @@ export default function ChatInterface() {
       }}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Set Up Chat Session</DialogTitle>
+            <DialogTitle>Connect Repository</DialogTitle>
             <DialogDescription>
-              Choose an installed GitHub repository for this chat. The repository is locked after the session is created.
+              Chat works without a repository. Connect one when you want the agent to inspect files, prepare changes, or open a pull request.
             </DialogDescription>
           </DialogHeader>
           <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
@@ -597,10 +802,10 @@ export default function ChatInterface() {
               className="h-10 rounded-md border bg-white px-3 text-sm"
               value={selectedInstalledRepository}
               onChange={event => setSelectedInstalledRepository(event.target.value)}
-              disabled={isSettingUpSession || isLoadingInstalledRepositories}
+              disabled={isRepositoryLocked || isSettingUpSession || isLoadingInstalledRepositories}
             >
               {installedRepositories.length === 0 ? (
-                <option value="">
+                 <option value={NO_REPOSITORY_VALUE}>
                   {isLoadingInstalledRepositories ? "Loading repositories..." : "No installed repositories found"}
                 </option>
               ) : (
@@ -615,10 +820,10 @@ export default function ChatInterface() {
           {setupError && <p className="text-sm text-red-700">{setupError}</p>}
           <Button
             type="button"
-            disabled={isSettingUpSession || !selectedInstalledRepository}
+            disabled={isRepositoryLocked || isSettingUpSession || !selectedInstalledRepository || selectedInstalledRepository === NO_REPOSITORY_VALUE}
             onClick={() => void setupSession()}
           >
-            {isSettingUpSession ? "Cloning Repository" : "Clone Repository and Start"}
+            {isSettingUpSession ? "Connecting Repository" : "Connect Repository"}
           </Button>
         </DialogContent>
       </Dialog>

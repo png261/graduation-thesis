@@ -3,6 +3,33 @@ import type { SelectedRepository } from "@/lib/agentcore-client/types"
 
 export type MessageRole = "user" | "assistant"
 
+export interface ChatAgent {
+  id: "agent1"
+  mention: "@devops"
+  name: string
+  avatar: string
+  className: string
+}
+
+export interface ChatAttachment {
+  id: string
+  name: string
+  type: string
+  size: number
+  dataUrl: string
+}
+
+export interface UserHandoffQuestion {
+  id: string
+  question: string
+  options: string[]
+}
+
+export interface UserHandoff {
+  type: "user_handoff"
+  questions: UserHandoffQuestion[]
+}
+
 export type ToolCallStatus = "streaming" | "executing" | "complete"
 
 export interface ToolCall {
@@ -21,7 +48,26 @@ export interface Message {
   role: MessageRole
   content: string
   timestamp: string
+  agent?: ChatAgent
+  attachments?: ChatAttachment[]
   segments?: MessageSegment[]
+}
+
+export type PullRequestInfo = {
+  number?: number
+  url?: string
+  state?: string
+  title?: string
+  body?: string
+  headBranch?: string
+  baseBranch?: string
+  created?: boolean
+  updated?: boolean
+  committed?: boolean
+  commitTitle?: string
+  message?: string
+  error?: string
+  changedFiles?: string[]
 }
 
 export interface ChatSession {
@@ -31,4 +77,6 @@ export interface ChatSession {
   startDate: string
   endDate: string
   repository?: SelectedRepository | null
+  pullRequest?: PullRequestInfo | null
+  pendingUserHandoff?: UserHandoff | null
 }

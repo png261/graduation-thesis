@@ -1,6 +1,5 @@
 "use client"
 
-import { Link } from "react-router-dom"
 import { Github, KeyRound, Save } from "lucide-react"
 import { FormEvent, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
@@ -28,12 +27,8 @@ export default function SettingsPage() {
   const [isGithubInstalled, setIsGithubInstalled] = useState(false)
   const [credentialForm, setCredentialForm] = useState({
     credentialId: "",
-    name: "",
-    accountId: "",
-    region: "us-east-2",
     accessKeyId: "",
     secretAccessKey: "",
-    sessionToken: "",
   })
   const [isSavingCredential, setIsSavingCredential] = useState(false)
   const [credentialMessage, setCredentialMessage] = useState<string | null>(null)
@@ -117,12 +112,8 @@ export default function SettingsPage() {
       setActiveCredentialId(saved.credentialId ?? "")
       setCredentialForm({
         credentialId: "",
-        name: "",
-        accountId: saved.accountId ?? "",
-        region: saved.region ?? credentialForm.region,
         accessKeyId: "",
         secretAccessKey: "",
-        sessionToken: "",
       })
       setCredentialMessage("AWS credential saved")
     } catch (error) {
@@ -136,14 +127,6 @@ export default function SettingsPage() {
     <main className="min-h-screen bg-slate-50">
       <header className="flex items-center justify-between border-b bg-white px-6 py-4">
         <h1 className="text-xl font-semibold text-slate-900">Settings</h1>
-        <div className="flex gap-2">
-          <Button asChild variant="outline">
-            <Link to="/resources">Resources</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link to="/">Back to Chat</Link>
-          </Button>
-        </div>
       </header>
       <section className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
         <form className="rounded-lg border bg-white p-5" onSubmit={handleSaveCredential}>
@@ -163,11 +146,10 @@ export default function SettingsPage() {
                 {credentials.map(item => (
                   <div key={item.credentialId} className="rounded border border-emerald-200 bg-white/70 p-2">
                     <p>
-                      {item.name || item.accountId} {item.credentialId === activeCredentialId ? "(active)" : ""}
+                      {item.name || item.accessKeyIdSuffix || "AWS credential"} {item.credentialId === activeCredentialId ? "(active)" : ""}
                     </p>
                     <p>
-                      {item.accountId} · {item.region} · {item.accessKeyIdSuffix}
-                      {item.hasSessionToken ? " · session token" : ""}
+                      {[item.accountId, item.accessKeyIdSuffix].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 ))}
@@ -175,38 +157,6 @@ export default function SettingsPage() {
             </div>
           )}
           <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-              Name
-              <Input
-                value={credentialForm.name}
-                onChange={event =>
-                  setCredentialForm(current => ({ ...current, name: event.target.value }))
-                }
-                placeholder="Production account"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-              Account ID
-              <Input
-                inputMode="numeric"
-                maxLength={12}
-                value={credentialForm.accountId}
-                onChange={event =>
-                  setCredentialForm(current => ({ ...current, accountId: event.target.value }))
-                }
-                placeholder="123456789012"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-              Region
-              <Input
-                value={credentialForm.region}
-                onChange={event =>
-                  setCredentialForm(current => ({ ...current, region: event.target.value }))
-                }
-                placeholder="us-east-2"
-              />
-            </label>
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               Access key ID
               <Input
@@ -229,20 +179,6 @@ export default function SettingsPage() {
                   }))
                 }
                 placeholder="Secret key"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-              Session token
-              <Input
-                type="password"
-                value={credentialForm.sessionToken}
-                onChange={event =>
-                  setCredentialForm(current => ({
-                    ...current,
-                    sessionToken: event.target.value,
-                  }))
-                }
-                placeholder="Optional for temporary credentials"
               />
             </label>
           </div>

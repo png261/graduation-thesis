@@ -8,11 +8,14 @@ import uuid
 import base64
 import hashlib
 import hmac
+import subprocess
+import tempfile
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, UnknownServiceError
 
 TABLE_NAME = os.environ["TABLE_NAME"]
 CODEBUILD_PROJECT_NAME = os.environ["CODEBUILD_PROJECT_NAME"]
@@ -20,6 +23,7 @@ STACK_NAME_BASE = os.environ["STACK_NAME_BASE"]
 DRIFT_GUARD_SCHEDULER_ROLE_ARN = os.environ.get("DRIFT_GUARD_SCHEDULER_ROLE_ARN", "")
 RESOURCES_LAMBDA_ARN = os.environ.get("RESOURCES_LAMBDA_ARN", "")
 GITHUB_APP_SECRET_NAME = os.environ.get("GITHUB_APP_SECRET_NAME", f"/{STACK_NAME_BASE}/github_app")
+MEMORY_ID = os.environ.get("MEMORY_ID", "")
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")
@@ -33,6 +37,9 @@ codebuild = boto3.client("codebuild")
 cloudwatch_logs = boto3.client("logs")
 scheduler = boto3.client("scheduler")
 sns = boto3.client("sns")
+s3 = boto3.client("s3")
+RESOURCE_GRAPH_BUCKET = os.environ.get("RESOURCE_GRAPH_BUCKET", "")
+AWS_ICONS_PATH = os.environ.get("AWS_ICONS_PATH", "/opt/aws-official-icons")
 
 
 def _now() -> str:
@@ -46,7 +53,7 @@ def _cors_headers(origin: str | None) -> dict[str, str]:
     return {
         "Access-Control-Allow-Origin": allow_origin,
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+        "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
         "Access-Control-Allow-Credentials": "true",
         "Content-Type": "application/json",
     }
@@ -219,9 +226,9 @@ def _validate_aws_credential(payload: dict[str, Any]) -> tuple[str, str, str, st
     if session_token is not None:
         session_token = str(session_token).strip() or None
 
-    if not re.fullmatch(r"\d{12}", account_id):
+    if account_id and not re.fullmatch(r"\d{12}", account_id):
         raise ValueError("accountId must be a 12 digit AWS account ID")
-    if not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", region):
+    if region and not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", region):
         raise ValueError("region is invalid")
     if not re.fullmatch(r"[A-Z0-9]{16,128}", access_key_id):
         raise ValueError("accessKeyId is invalid")
@@ -234,7 +241,19 @@ def _save_aws_credential(user_id: str, payload: dict[str, Any]) -> dict[str, Any
     account_id, region, access_key_id, secret_access_key, session_token = _validate_aws_credential(payload)
     timestamp = _now()
     credential_id = _credential_id(payload)
-    credential_name = str(payload.get("name") or "").strip() or f"{account_id} {region}"
+    if not account_id:
+        try:
+            session_kwargs: dict[str, Any] = {
+                "aws_access_key_id": access_key_id,
+                "aws_secret_access_key": secret_access_key,
+                "region_name": region or "us-east-1",
+            }
+            if session_token:
+                session_kwargs["aws_session_token"] = session_token
+            account_id = boto3.Session(**session_kwargs).client("sts").get_caller_identity().get("Account", "")
+        except ClientError:
+            account_id = ""
+    credential_name = str(payload.get("name") or "").strip() or _mask_access_key(access_key_id)
     if len(credential_name) > 80:
         raise ValueError("name must be 80 characters or less")
     store = _credential_store(user_id)
@@ -273,6 +292,41 @@ def _save_aws_credential(user_id: str, payload: dict[str, Any]) -> dict[str, Any
         )
 
     return _credential_record_metadata(secret_payload)
+
+
+def _aws_session_for_credential(user_id: str, credential_id: str | None = None, region: str | None = None) -> boto3.Session:
+    credential = _credential_payload(user_id, credential_id)
+    selected_region = (region or credential.get("region") or "us-east-1").strip()
+    if not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", selected_region):
+        raise ValueError("region is invalid")
+    session_kwargs: dict[str, Any] = {
+        "aws_access_key_id": credential["accessKeyId"],
+        "aws_secret_access_key": credential["secretAccessKey"],
+        "region_name": selected_region,
+    }
+    if credential.get("sessionToken"):
+        session_kwargs["aws_session_token"] = credential["sessionToken"]
+    return boto3.Session(**session_kwargs)
+
+
+def _list_s3_buckets(user_id: str, query: dict[str, Any] | None) -> dict[str, Any]:
+    query = query or {}
+    credential_id = str(query.get("credentialId") or "").strip() or None
+    region = str(query.get("region") or "").strip() or "us-east-1"
+    session = _aws_session_for_credential(user_id, credential_id, region)
+    response = session.client("s3").list_buckets()
+    buckets = [
+        {
+            "name": bucket.get("Name", ""),
+            "createdAt": bucket.get("CreationDate").strftime("%Y-%m-%dT%H:%M:%SZ")
+            if bucket.get("CreationDate")
+            else "",
+        }
+        for bucket in response.get("Buckets", [])
+        if bucket.get("Name")
+    ]
+    buckets.sort(key=lambda item: item["name"])
+    return {"buckets": buckets}
 
 
 def _github_secret_payload() -> dict[str, Any]:
@@ -318,6 +372,28 @@ def _is_github_app_pull_request(
     if bot_login is None:
         bot_login = _github_app_bot_login()
     return bool(bot_login and str(author or "") == bot_login)
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _pull_request_reactions(pr: dict[str, Any]) -> dict[str, int]:
+    reactions = pr.get("reactions") if isinstance(pr.get("reactions"), dict) else {}
+    return {
+        "total": _int_value(reactions.get("total_count")),
+        "plusOne": _int_value(reactions.get("+1")),
+        "minusOne": _int_value(reactions.get("-1")),
+        "laugh": _int_value(reactions.get("laugh")),
+        "hooray": _int_value(reactions.get("hooray")),
+        "confused": _int_value(reactions.get("confused")),
+        "heart": _int_value(reactions.get("heart")),
+        "rocket": _int_value(reactions.get("rocket")),
+        "eyes": _int_value(reactions.get("eyes")),
+    }
 
 
 def _save_github_webhook_secret(payload: dict[str, Any]) -> dict[str, Any]:
@@ -382,6 +458,7 @@ def _pull_request_item(repo: str, pr: dict[str, Any], event_name: str, action: s
         "githubState": pr.get("state") or "",
         "merged": bool(pr.get("merged")),
         "mergedAt": pr.get("merged_at") or "",
+        "closedAt": pr.get("closed_at") or "",
         "draft": bool(pr.get("draft")),
         "url": pr.get("html_url") or "",
         "author": author,
@@ -396,6 +473,13 @@ def _pull_request_item(repo: str, pr: dict[str, Any], event_name: str, action: s
         "lastEvent": event_name,
         "lastAction": action,
         "lastDelivery": delivery,
+        "comments": _int_value(pr.get("comments")),
+        "reviewComments": _int_value(pr.get("review_comments")),
+        "commits": _int_value(pr.get("commits")),
+        "additions": _int_value(pr.get("additions")),
+        "deletions": _int_value(pr.get("deletions")),
+        "changedFiles": _int_value(pr.get("changed_files")),
+        "reactions": _pull_request_reactions(pr),
     }
 
 
@@ -527,7 +611,7 @@ def _state_backend_id() -> str:
     return str(uuid.uuid4())
 
 
-def _validate_state_backend(payload: dict[str, Any]) -> dict[str, str]:
+def _validate_state_backend(payload: dict[str, Any], require_repository: bool = False) -> dict[str, Any]:
     name = str(payload.get("name") or "").strip()
     bucket = str(payload.get("bucket") or "").strip()
     key = str(payload.get("key") or "").strip()
@@ -547,6 +631,9 @@ def _validate_state_backend(payload: dict[str, Any]) -> dict[str, str]:
         raise ValueError("service must be one of s3, ec2, or iam")
     if credential_id and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", credential_id):
         raise ValueError("credentialId is invalid")
+    repository = _sanitize_repository(payload.get("repository"))
+    if require_repository and not repository:
+        raise ValueError("Choose an installed GitHub repository before creating a state backend")
     return {
         "name": name,
         "bucket": bucket,
@@ -554,6 +641,7 @@ def _validate_state_backend(payload: dict[str, Any]) -> dict[str, str]:
         "region": region,
         "service": service,
         "credentialId": credential_id,
+        "repository": repository,
     }
 
 
@@ -566,8 +654,439 @@ def _list_state_backends(user_id: str) -> list[dict[str, Any]]:
     return sorted(response.get("Items", []), key=lambda item: item.get("updatedAt", ""), reverse=True)
 
 
+def _chat_session_id(value: Any) -> str:
+    session_id = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", session_id):
+        raise ValueError("session id is invalid")
+    return session_id
+
+
+def _sanitize_message(message: Any) -> dict[str, Any]:
+    if not isinstance(message, dict):
+        raise ValueError("message must be an object")
+    role = str(message.get("role") or "").strip()
+    if role not in {"user", "assistant"}:
+        raise ValueError("message role is invalid")
+    content = str(message.get("content") or "")
+    if len(content) > 12000:
+        content = content[:12000]
+    sanitized = {
+        "role": role,
+        "content": content,
+        "timestamp": str(message.get("timestamp") or _now()),
+    }
+    agent = message.get("agent")
+    if isinstance(agent, dict):
+        agent_id = str(agent.get("id") or "").strip()
+        if agent_id == "agent1":
+            sanitized["agent"] = {
+                "id": agent_id,
+                "mention": "@devops",
+                "name": str(agent.get("name") or "InfraQ")[:80],
+                "avatar": str(agent.get("avatar") or "IQ")[:12],
+                "className": str(agent.get("className") or "")[:120],
+            }
+    segments = message.get("segments")
+    if isinstance(segments, list):
+        serialized_segments = json.loads(json.dumps(segments, default=_json_default))
+        if len(json.dumps(serialized_segments[:40], default=_json_default).encode("utf-8")) <= 20000:
+            sanitized["segments"] = serialized_segments[:40]
+    return sanitized
+
+
+def _sanitize_repository(repository: Any) -> dict[str, Any] | None:
+    if not isinstance(repository, dict):
+        return None
+    full_name = str(repository.get("fullName") or "").strip()
+    owner = str(repository.get("owner") or "").strip()
+    name = str(repository.get("name") or "").strip()
+    default_branch = str(repository.get("defaultBranch") or "main").strip() or "main"
+    url = str(repository.get("url") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", full_name):
+        raise ValueError("repository is invalid")
+    return {
+        "fullName": full_name,
+        "owner": owner or full_name.split("/")[0],
+        "name": name or full_name.split("/")[1],
+        "defaultBranch": default_branch[:120],
+        **({"url": url[:500]} if url else {}),
+    }
+
+
+def _sanitize_pull_request(pull_request: Any) -> dict[str, Any] | None:
+    if not isinstance(pull_request, dict):
+        return None
+    sanitized: dict[str, Any] = {}
+    for key in ["url", "headBranch", "baseBranch", "state", "title", "body", "commitTitle", "message", "error"]:
+        value = str(pull_request.get(key) or "").strip()
+        if value:
+            sanitized[key] = value[:1200] if key in {"body", "message", "error"} else value[:500]
+    number = pull_request.get("number")
+    if number is not None:
+        try:
+            sanitized["number"] = int(number)
+        except (TypeError, ValueError):
+            pass
+    for key in ["created", "updated", "committed"]:
+        if key in pull_request:
+            sanitized[key] = bool(pull_request.get(key))
+    changed_files = pull_request.get("changedFiles")
+    if isinstance(changed_files, list):
+        sanitized["changedFiles"] = [str(item)[:500] for item in changed_files[:80]]
+    return sanitized or None
+
+
+def _sanitize_chat_session(session: Any) -> dict[str, Any]:
+    if not isinstance(session, dict):
+        raise ValueError("session must be an object")
+    session_id = _chat_session_id(session.get("id"))
+    name = str(session.get("name") or "New chat").strip()[:120] or "New chat"
+    history = session.get("history") if isinstance(session.get("history"), list) else []
+    repository = _sanitize_repository(session.get("repository"))
+    sanitized = {
+        "sessionId": session_id,
+        "id": session_id,
+        "name": name,
+        "history": [_sanitize_message(message) for message in history[-80:]],
+        "startDate": str(session.get("startDate") or _now()),
+        "endDate": str(session.get("endDate") or _now()),
+        "repository": repository,
+        "pullRequest": _sanitize_pull_request(session.get("pullRequest")),
+    }
+    while len(json.dumps(sanitized, default=_json_default).encode("utf-8")) > 350000 and sanitized["history"]:
+        sanitized["history"].pop(0)
+    return sanitized
+
+
+def _list_chat_sessions(user_id: str) -> dict[str, Any]:
+    response = table.query(
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":pk": user_id, ":prefix": "SESSION#"},
+        ScanIndexForward=False,
+    )
+    sessions = sorted(response.get("Items", []), key=lambda item: item.get("endDate", ""), reverse=True)
+    config = _get_user_config(user_id, "activeChatSessionId")
+    return {"sessions": sessions, "activeSessionId": config.get("value") or ""}
+
+
+def _save_chat_sessions(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    incoming = payload.get("sessions")
+    if not isinstance(incoming, list):
+        raise ValueError("sessions must be an array")
+    if len(incoming) > 50:
+        raise ValueError("A maximum of 50 chat sessions is supported")
+    sessions = [_sanitize_chat_session(session) for session in incoming if isinstance(session, dict)]
+    timestamp = _now()
+    existing = table.query(
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":pk": user_id, ":prefix": "SESSION#"},
+    ).get("Items", [])
+    incoming_ids = {session["sessionId"] for session in sessions}
+    with table.batch_writer() as batch:
+        for session in sessions:
+            batch.put_item(
+                Item={
+                    **session,
+                    "pk": user_id,
+                    "sk": f"SESSION#{session['sessionId']}",
+                    "type": "chatSession",
+                    "updatedAt": timestamp,
+                }
+            )
+        for session in existing:
+            session_id = str(session.get("sessionId") or session.get("id") or "")
+            if session_id not in incoming_ids:
+                batch.delete_item(Key={"pk": user_id, "sk": session["sk"]})
+    active_session_id = str(payload.get("activeSessionId") or "").strip()
+    if active_session_id:
+        _save_user_config(user_id, {"key": "activeChatSessionId", "value": active_session_id})
+    return _list_chat_sessions(user_id)
+
+
+def _delete_agentcore_session_events(user_id: str, session_id: str) -> dict[str, Any]:
+    if not MEMORY_ID:
+        return {"deletedEvents": 0, "skipped": True}
+
+    deleted_events = 0
+    next_token = None
+    try:
+        agentcore = boto3.client("bedrock-agentcore")
+        while True:
+            params: dict[str, Any] = {
+                "memoryId": MEMORY_ID,
+                "actorId": user_id,
+                "sessionId": session_id,
+                "includePayloads": False,
+                "maxResults": 100,
+            }
+            if next_token:
+                params["nextToken"] = next_token
+            response = agentcore.list_events(**params)
+            events = response.get("events") or response.get("eventSummaries") or []
+            for event in events:
+                event_id = event.get("eventId") or event.get("id")
+                if not event_id:
+                    continue
+                try:
+                    agentcore.delete_event(
+                        memoryId=MEMORY_ID,
+                        actorId=user_id,
+                        sessionId=session_id,
+                        eventId=str(event_id),
+                    )
+                    deleted_events += 1
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code")
+                    if code not in {"ResourceNotFoundException", "ValidationException"}:
+                        raise
+            next_token = response.get("nextToken")
+            if not next_token:
+                break
+    except UnknownServiceError:
+        return {"deletedEvents": deleted_events, "skipped": True}
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"ResourceNotFoundException", "ValidationException"}:
+            return {"deletedEvents": deleted_events, "skipped": False}
+        raise
+    return {"deletedEvents": deleted_events, "skipped": False}
+
+
+def _delete_chat_session(user_id: str, session_id_value: Any) -> dict[str, Any]:
+    session_id = _chat_session_id(session_id_value)
+    table.delete_item(Key={"pk": user_id, "sk": f"SESSION#{session_id}"})
+    config = _get_user_config(user_id, "activeChatSessionId")
+    if config.get("value") == session_id:
+        remaining = _list_chat_sessions(user_id)["sessions"]
+        _save_user_config(
+            user_id,
+            {
+                "key": "activeChatSessionId",
+                "value": remaining[0].get("sessionId") or remaining[0].get("id") if remaining else "",
+            },
+        )
+    agentcore_cleanup = _delete_agentcore_session_events(user_id, session_id)
+    result = _list_chat_sessions(user_id)
+    result["deletedSessionId"] = session_id
+    result["agentcoreCleanup"] = agentcore_cleanup
+    return result
+
+
+def _config_key(value: Any) -> str:
+    key = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", key):
+        raise ValueError("config key is invalid")
+    return key
+
+
+def _sanitize_config_value(value: Any) -> Any:
+    serialized = json.dumps(value, default=_json_default)
+    if len(serialized.encode("utf-8")) > 20000:
+        raise ValueError("config value is too large")
+    return json.loads(serialized)
+
+
+def _get_user_config(user_id: str, key: str) -> dict[str, Any]:
+    response = table.get_item(Key={"pk": user_id, "sk": f"CONFIG#{key}"})
+    item = response.get("Item") or {}
+    return item if item.get("type") == "userConfig" else {}
+
+
+def _list_user_config(user_id: str) -> dict[str, Any]:
+    response = table.query(
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":pk": user_id, ":prefix": "CONFIG#"},
+    )
+    config: dict[str, Any] = {}
+    for item in response.get("Items", []):
+        key = str(item.get("configKey") or "").strip()
+        if key:
+            config[key] = item.get("value")
+    return {"config": config}
+
+
+def _save_user_config(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    key = _config_key(payload.get("key"))
+    value = _sanitize_config_value(payload.get("value"))
+    timestamp = _now()
+    item = {
+        "pk": user_id,
+        "sk": f"CONFIG#{key}",
+        "type": "userConfig",
+        "configKey": key,
+        "value": value,
+        "updatedAt": timestamp,
+    }
+    table.put_item(Item=item)
+    return item
+
+
+def _iter_state_resources(module_payload: dict[str, Any]):
+    for resource in module_payload.get("resources", []):
+        if not isinstance(resource, dict):
+            continue
+        if resource.get("mode", "managed") != "managed":
+            continue
+        resource_type = resource.get("type")
+        resource_name = resource.get("name")
+        if not resource_type or not resource_name:
+            continue
+        if "values" in resource:
+            values = resource.get("values") if isinstance(resource.get("values"), dict) else {}
+            yield {
+                "address": resource.get("address") or f"{resource_type}.{resource_name}",
+                "type": resource_type,
+                "name": resource_name,
+                "values": values,
+            }
+            continue
+        instances = resource.get("instances", [])
+        for index, instance in enumerate(instances):
+            if not isinstance(instance, dict):
+                continue
+            attributes = instance.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            address = resource.get("address") or f"{resource_type}.{resource_name}"
+            if len(instances) > 1:
+                address = f"{address}[{index}]"
+            yield {
+                "address": address,
+                "type": resource_type,
+                "name": resource_name,
+                "values": attributes,
+            }
+    for child in module_payload.get("child_modules", []):
+        if isinstance(child, dict):
+            yield from _iter_state_resources(child)
+
+
+def _state_show_payload(state_payload: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(state_payload.get("values"), dict):
+        return state_payload
+    if isinstance(state_payload.get("planned_values"), dict):
+        return state_payload
+    resources = []
+    if isinstance(state_payload.get("resources"), list):
+        resources = list(_iter_state_resources({"resources": state_payload["resources"]}))
+    return {"values": {"root_module": {"resources": resources}}}
+
+
+def _safe_tf_name(value: Any, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", str(value or fallback))
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if not cleaned or not re.match(r"^[A-Za-z_]", cleaned):
+        cleaned = f"resource_{cleaned}"
+    return cleaned[:80]
+
+
+def _write_terraformgraph_inputs(workdir: Path, state_payload: dict[str, Any]) -> tuple[Path, int]:
+    source_dir = workdir / "terraform-src"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    show_payload = _state_show_payload(state_payload)
+    resources = list(_iter_state_resources(show_payload.get("values", {}).get("root_module", {})))
+    seen: set[tuple[str, str]] = set()
+    lines: list[str] = []
+    for index, resource in enumerate(resources):
+        resource_type = str(resource.get("type") or "")
+        if not resource_type.startswith("aws_"):
+            continue
+        name = _safe_tf_name(resource.get("name"), f"resource_{index}")
+        key = (resource_type, name)
+        if key in seen:
+            name = _safe_tf_name(f"{name}_{index}", f"resource_{index}")
+            key = (resource_type, name)
+        seen.add(key)
+        lines.append(f'resource "{resource_type}" "{name}" {{}}\n')
+    if not lines:
+        raise ValueError("No AWS managed resources found in state file")
+    (source_dir / "main.tf").write_text("\n".join(lines), encoding="utf-8")
+    state_file = workdir / "terraformgraph-state.json"
+    state_file.write_text(json.dumps(show_payload), encoding="utf-8")
+    return state_file, len(lines)
+
+
+def _generate_backend_graph(user_id: str, backend: dict[str, Any]) -> dict[str, Any]:
+    if not RESOURCE_GRAPH_BUCKET:
+        raise ValueError("Resource graph bucket is not configured")
+    credential = _credential_payload(user_id, backend.get("credentialId"))
+    session_kwargs = {
+        "aws_access_key_id": credential["accessKeyId"],
+        "aws_secret_access_key": credential["secretAccessKey"],
+        "region_name": backend["region"],
+    }
+    if credential.get("sessionToken"):
+        session_kwargs["aws_session_token"] = credential["sessionToken"]
+    target_session = boto3.Session(**session_kwargs)
+    state_object = target_session.client("s3").get_object(Bucket=backend["bucket"], Key=backend["key"])
+    state_payload = json.loads(state_object["Body"].read().decode("utf-8"))
+    with tempfile.TemporaryDirectory(prefix="terraformgraph-") as tmp:
+        workdir = Path(tmp)
+        state_file, resource_count = _write_terraformgraph_inputs(workdir, state_payload)
+        output_file = workdir / "terraformgraph.html"
+        command = [
+            "terraformgraph",
+            "-t",
+            str(workdir / "terraform-src"),
+            "--state-file",
+            str(state_file),
+            "-o",
+            str(output_file),
+        ]
+        if Path(AWS_ICONS_PATH).exists():
+            command.extend(["--icons", AWS_ICONS_PATH])
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr or completed.stdout or "terraformgraph failed")
+        graph_key = f"resource-graphs/{user_id}/{backend['backendId']}/latest.html"
+        s3.put_object(
+            Bucket=RESOURCE_GRAPH_BUCKET,
+            Key=graph_key,
+            Body=output_file.read_bytes(),
+            ContentType="text/html; charset=utf-8",
+        )
+    timestamp = _now()
+    return {
+        "graphBucket": RESOURCE_GRAPH_BUCKET,
+        "graphKey": graph_key,
+        "graphGeneratedAt": timestamp,
+        "graphResourceCount": resource_count,
+    }
+
+
+def _attach_backend_graph(user_id: str, backend: dict[str, Any]) -> dict[str, Any]:
+    try:
+        graph = _generate_backend_graph(user_id, backend)
+        backend.update(graph)
+        backend.pop("graphError", None)
+        table.update_item(
+            Key={"pk": user_id, "sk": f"BACKEND#{backend['backendId']}"},
+            UpdateExpression="SET graphBucket = :bucket, graphKey = :key, graphGeneratedAt = :generatedAt, graphResourceCount = :count REMOVE graphError",
+            ExpressionAttributeValues={
+                ":bucket": graph["graphBucket"],
+                ":key": graph["graphKey"],
+                ":generatedAt": graph["graphGeneratedAt"],
+                ":count": graph["graphResourceCount"],
+            },
+        )
+    except Exception as exc:
+        backend["graphError"] = str(exc)[:4000]
+        table.update_item(
+            Key={"pk": user_id, "sk": f"BACKEND#{backend['backendId']}"},
+            UpdateExpression="SET graphError = :error",
+            ExpressionAttributeValues={":error": backend["graphError"]},
+        )
+    return backend
+
+
 def _create_state_backend(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    validated = _validate_state_backend(payload)
+    validated = _validate_state_backend(payload, require_repository=True)
     credential = _credential_metadata(user_id, validated.get("credentialId") or None)
     if not credential.get("configured"):
         raise ValueError("Choose a saved AWS credential before creating a state backend")
@@ -585,11 +1104,12 @@ def _create_state_backend(user_id: str, payload: dict[str, Any]) -> dict[str, An
         "service": validated["service"],
         "credentialId": credential.get("credentialId"),
         "credentialName": credential.get("name"),
+        "repository": validated["repository"],
         "createdAt": timestamp,
         "updatedAt": timestamp,
     }
     table.put_item(Item=item)
-    return item
+    return _attach_backend_graph(user_id, item)
 
 
 def _get_state_backend(user_id: str, backend_id: str) -> dict[str, Any]:
@@ -821,6 +1341,7 @@ def _start_scan(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "stateKey": backend["key"],
         "stateRegion": scan_region,
         "service": scan_service,
+        "repository": backend.get("repository"),
         "status": "RUNNING",
         "startedAt": timestamp,
         "updatedAt": timestamp,
@@ -882,7 +1403,7 @@ def _decode_file_content(value: Any) -> bytes:
 
 
 def _start_terraform_plan(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    validated = _validate_state_backend(payload)
+    validated = _validate_state_backend(payload, require_repository=True)
     files = payload.get("files")
     if not isinstance(files, list) or not files:
         raise ValueError("files must include at least one Terraform file")
@@ -934,6 +1455,7 @@ def _start_terraform_plan(user_id: str, payload: dict[str, Any]) -> dict[str, An
         "service": validated["service"],
         "credentialId": credential.get("credentialId"),
         "credentialName": credential.get("name"),
+        "repository": validated.get("repository"),
         "createdAt": timestamp,
         "updatedAt": timestamp,
         "sourceType": "terraform",
@@ -951,6 +1473,7 @@ def _start_terraform_plan(user_id: str, payload: dict[str, Any]) -> dict[str, An
         "key": validated["key"],
         "region": validated["region"],
         "service": validated["service"],
+        "repository": validated.get("repository"),
         "sourcePrefix": source_prefix,
         "files": uploaded,
         "status": "RUNNING",
@@ -1031,6 +1554,29 @@ def _scan_logs(user_id: str, scan_id: str, next_token: str | None = None) -> dic
     }
 
 
+def _backend_graph_url(user_id: str, backend_id: str) -> dict[str, Any]:
+    backend = _get_state_backend(user_id, backend_id)
+    graph_key = str(backend.get("graphKey") or "")
+    graph_bucket = str(backend.get("graphBucket") or RESOURCE_GRAPH_BUCKET)
+    if not graph_key or not graph_bucket:
+        raise LookupError(backend.get("graphError") or "Resource graph is not available for this backend")
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": graph_bucket,
+            "Key": graph_key,
+        },
+        ExpiresIn=900,
+    )
+    return {
+        "url": url,
+        "expiresIn": 900,
+        "backendId": backend_id,
+        "graphGeneratedAt": backend.get("graphGeneratedAt"),
+        "graphResourceCount": backend.get("graphResourceCount"),
+    }
+
+
 def _save_backend_plan(user_id: str, backend_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     backend = _get_state_backend(user_id, backend_id)
     plan = payload.get("plan")
@@ -1108,10 +1654,23 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             return _response(200, {"webhookSecret": _github_webhook_secret_metadata()}, origin)
         if path.endswith("/github/webhook-secret") and method == "POST":
             return _response(200, {"webhookSecret": _save_github_webhook_secret(_body(event))}, origin)
+        if path.endswith("/user/chat-sessions") and method == "GET":
+            return _response(200, _list_chat_sessions(user_id), origin)
+        if path.endswith("/user/chat-sessions") and method == "POST":
+            return _response(200, _save_chat_sessions(user_id, _body(event)), origin)
+        chat_session_match = re.search(r"/user/chat-sessions/([^/]+)$", path)
+        if chat_session_match and method == "DELETE":
+            return _response(200, _delete_chat_session(user_id, chat_session_match.group(1)), origin)
+        if path.endswith("/user/config") and method == "GET":
+            return _response(200, _list_user_config(user_id), origin)
+        if path.endswith("/user/config") and method == "POST":
+            return _response(200, {"config": _save_user_config(user_id, _body(event))}, origin)
         if path.endswith("/resources/state-backends") and method == "GET":
             return _response(200, {"backends": _list_state_backends(user_id)}, origin)
         if path.endswith("/resources/state-backends") and method == "POST":
             return _response(200, {"backend": _create_state_backend(user_id, _body(event))}, origin)
+        if path.endswith("/resources/s3-buckets") and method == "GET":
+            return _response(200, _list_s3_buckets(user_id, event.get("queryStringParameters")), origin)
         if path.endswith("/resources/terraform-plans") and method == "GET":
             return _response(200, {"jobs": _list_terraform_jobs(user_id)}, origin)
         if path.endswith("/resources/terraform-plans") and method == "POST":
@@ -1119,6 +1678,9 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         plan_match = re.search(r"/resources/state-backends/([^/]+)/plan$", path)
         if plan_match and method == "POST":
             return _response(200, {"backend": _save_backend_plan(user_id, plan_match.group(1), _body(event))}, origin)
+        backend_graph_match = re.search(r"/resources/state-backends/([^/]+)/graph$", path)
+        if backend_graph_match and method == "GET":
+            return _response(200, {"graph": _backend_graph_url(user_id, backend_graph_match.group(1))}, origin)
         if path.endswith("/resources/scans") and method == "GET":
             return _response(200, {"scans": _list_scans(user_id)}, origin)
         if path.endswith("/resources/scans") and method == "POST":

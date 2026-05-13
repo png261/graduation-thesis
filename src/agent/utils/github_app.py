@@ -9,7 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 import jwt
@@ -17,6 +17,8 @@ import jwt
 from utils.auth import get_github_app_credentials
 
 GITHUB_API = "https://api.github.com"
+DEFAULT_SHARED_FILES_MOUNT_PATH = "/tmp/agentcore-runtime-files"
+DEFAULT_SHARED_FILES_FALLBACK_PATH = "/tmp/agentcore-runtime-files"
 
 
 def _repo_parts(repository: dict) -> tuple[str, str, str]:
@@ -131,10 +133,38 @@ def get_installation_token(owner: str, repo: str) -> str:
     )
 
 
+def _safe_session_id(session_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", session_id or "agentcore")
+
+
+def _ensure_writable_directory(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".agentcore-write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def shared_files_base_path() -> Path:
+    mount_path = Path(os.environ.get("SHARED_FILES_MOUNT_PATH", DEFAULT_SHARED_FILES_MOUNT_PATH))
+    if _ensure_writable_directory(mount_path):
+        os.environ["SHARED_FILES_ACTIVE_PATH"] = str(mount_path)
+        return mount_path
+
+    fallback_path = Path(os.environ.get("SHARED_FILES_FALLBACK_PATH", DEFAULT_SHARED_FILES_FALLBACK_PATH))
+    if _ensure_writable_directory(fallback_path):
+        os.environ["SHARED_FILES_ACTIVE_PATH"] = str(fallback_path)
+        return fallback_path
+
+    raise PermissionError(f"No writable shared files directory found at {mount_path} or {fallback_path}")
+
+
 def _session_root(session_id: str) -> Path:
-    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "-", session_id or "agentcore")
-    mount_path = Path(os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3"))
-    return mount_path / "sessions" / safe_session
+    safe_session = _safe_session_id(session_id)
+    return shared_files_base_path() / "sessions" / safe_session
 
 
 def scratch_workspace_path(session_id: str) -> Path:
@@ -148,6 +178,11 @@ def workspace_path(repository: dict, session_id: str = "agentcore") -> Path:
     return _session_root(session_id) / "repos" / owner / name
 
 
+def _session_branch_name(session_id: str) -> str:
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]", "-", session_id or "agentcore")
+    return f"agentcore/{safe_session[:8]}"
+
+
 def setup_repository_workspace(repository: dict, session_id: str) -> Path:
     owner, name, default_branch = _repo_parts(repository)
     token = get_installation_token(owner, name)
@@ -155,7 +190,7 @@ def setup_repository_workspace(repository: dict, session_id: str) -> Path:
     repo_path.parent.mkdir(parents=True, exist_ok=True)
     remote = f"https://x-access-token:{quote(token)}@github.com/{owner}/{name}.git"
     safe_remote = f"https://github.com/{owner}/{name}.git"
-    branch_name = f"agentcore/{session_id[:8]}"
+    branch_name = _session_branch_name(session_id)
 
     if (repo_path / ".git").exists():
         _run_git(["remote", "set-url", "origin", remote], repo_path)
@@ -230,25 +265,138 @@ def list_installed_repositories() -> dict:
     return {"accounts": accounts, "repositories": repositories}
 
 
+def _find_open_pull_request(owner: str, name: str, token: str, branch_name: str, base_branch: str) -> dict | None:
+    query = urlencode(
+        {
+            "state": "open",
+            "head": f"{owner}:{branch_name}",
+            "base": base_branch,
+            "per_page": "1",
+        }
+    )
+    pulls = _github_request("GET", f"/repos/{owner}/{name}/pulls?{query}", token)
+    if isinstance(pulls, list) and pulls:
+        return pulls[0]
+    return None
+
+
+def _pull_request_summary(
+    pr: dict | None,
+    branch_name: str,
+    base_branch: str,
+    *,
+    created: bool = False,
+    updated: bool = False,
+    committed: bool = False,
+    changed_files: list[str] | None = None,
+    message: str | None = None,
+) -> dict:
+    summary = {
+        "created": created,
+        "updated": updated,
+        "committed": committed,
+        "headBranch": branch_name,
+        "baseBranch": base_branch,
+        "changedFiles": changed_files or [],
+    }
+    if message:
+        summary["message"] = message
+    if pr:
+        summary.update(
+            {
+                "number": pr.get("number"),
+                "url": pr.get("html_url"),
+                "state": pr.get("state"),
+                "title": pr.get("title"),
+                "body": pr.get("body") or "",
+            }
+        )
+    return summary
+
+
+def _commit_title_from_staged(staged_status: str, fallback: str) -> str:
+    changes: list[tuple[str, str]] = []
+    for line in staged_status.splitlines():
+        if not line.strip():
+            continue
+        status, _, path = line.partition("\t")
+        if not path:
+            path = line[3:].strip()
+        changes.append((status.strip(), path.strip()))
+
+    if not changes:
+        return fallback[:72]
+
+    action = "Update"
+    statuses = {status[:1] for status, _ in changes}
+    if statuses == {"A"}:
+        action = "Add"
+    elif statuses == {"D"}:
+        action = "Remove"
+
+    names = [Path(path).name or path for _, path in changes[:3]]
+    if len(changes) == 1:
+        title = f"{action} {names[0]}"
+    else:
+        title = f"{action} {len(changes)} files: {', '.join(names)}"
+    return title[:72]
+
+
+def _short_status_from_name_status(name_status: str) -> list[str]:
+    changed: list[str] = []
+    for line in name_status.splitlines():
+        if not line.strip():
+            continue
+        status, _, path = line.partition("\t")
+        if not path:
+            path = line[2:].strip()
+        if "R" in status and "\t" in path:
+            path = path.split("\t")[-1]
+        code = "D" if "D" in status else "A" if "A" in status else "M"
+        changed.append(f"{code}  {path}")
+    return changed
+
+
+def _merge_changed_files(*groups: list[str]) -> list[str]:
+    merged: dict[str, str] = {}
+    for group in groups:
+        for line in group:
+            path = line[3:].strip()
+            if path:
+                merged[path] = line
+    return list(merged.values())
+
+
 def preview_pull_request(repository: dict, session_id: str) -> dict:
     repo_path = setup_repository_workspace(repository, session_id)
     owner, name, default_branch = _repo_parts(repository)
-    branch_name = f"agentcore/{session_id[:8]}"
+    branch_name = _session_branch_name(session_id)
+    token = get_installation_token(owner, name)
     status = _run_git(["status", "--short"], repo_path)
-    diff_stat = _run_git(["diff", "--stat"], repo_path)
-    diff = _run_git(["diff", "--", "."], repo_path)
+    branch_name_status = _run_git(["diff", "--name-status", f"origin/{default_branch}...HEAD"], repo_path)
+    diff_stat = _run_git(["diff", "--stat", f"origin/{default_branch}...HEAD", "--", "."], repo_path)
+    worktree_diff_stat = _run_git(["diff", "--stat"], repo_path)
+    diff = _run_git(["diff", f"origin/{default_branch}...HEAD", "--", "."], repo_path)
+    worktree_diff = _run_git(["diff", "--", "."], repo_path)
     untracked = _run_git(["ls-files", "--others", "--exclude-standard"], repo_path)
-    changed_files = [line.strip() for line in status.splitlines() if line.strip()]
+    branch_changed_files = _short_status_from_name_status(branch_name_status)
+    worktree_changed_files = [line.strip() for line in status.splitlines() if line.strip()]
+    changed_files = _merge_changed_files(branch_changed_files, worktree_changed_files)
+    existing_pr = _find_open_pull_request(owner, name, token, branch_name, default_branch)
     return {
         "repository": f"{owner}/{name}",
         "baseBranch": default_branch,
         "headBranch": branch_name,
         "title": f"AgentCore changes for {owner}/{name}",
         "body": "Created by AgentCore from the selected workspace.",
+        "created": False,
+        "number": existing_pr.get("number") if existing_pr else None,
+        "url": existing_pr.get("html_url") if existing_pr else None,
+        "state": existing_pr.get("state") if existing_pr else None,
         "hasChanges": bool(changed_files),
         "changedFiles": changed_files,
-        "diffStat": diff_stat,
-        "diff": diff[:20000],
+        "diffStat": "\n".join(part for part in [diff_stat, worktree_diff_stat] if part),
+        "diff": "\n".join(part for part in [diff, worktree_diff] if part)[:20000],
         "untrackedFiles": [line for line in untracked.splitlines() if line],
     }
 
@@ -260,9 +408,12 @@ def _safe_repo_file_path(path_value: str) -> str:
     return file_path
 
 
-def _git_file_status(repo_path: Path, file_path: str) -> str:
+def _git_file_status(repo_path: Path, file_path: str, base_ref: str | None = None) -> str:
     status = _run_git(["status", "--short", "--", file_path], repo_path)
     code = status[:2].strip() if status else ""
+    if not code and base_ref:
+        branch_status = _run_git(["diff", "--name-status", f"{base_ref}...HEAD", "--", file_path], repo_path)
+        code = branch_status[:2].strip() if branch_status else ""
     if not code:
         return "unchanged"
     if "D" in code:
@@ -274,20 +425,30 @@ def _git_file_status(repo_path: Path, file_path: str) -> str:
 
 def get_file_diff(repository: dict, session_id: str, file_path: str) -> dict:
     repo_path = setup_repository_workspace(repository, session_id)
+    _, _, default_branch = _repo_parts(repository)
+    base_ref = f"origin/{default_branch}"
     safe_path = _safe_repo_file_path(file_path)
-    status = _git_file_status(repo_path, safe_path)
+    status = _git_file_status(repo_path, safe_path, base_ref)
 
     try:
-        original = _run_git(["show", f"HEAD:{safe_path}"], repo_path)
+        original = _run_git(["show", f"{base_ref}:{safe_path}"], repo_path)
     except RuntimeError:
         original = ""
 
-    try:
-        current = (repo_path / safe_path).read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        current = "[Binary file preview is not available]"
-    except (FileNotFoundError, IsADirectoryError):
+    if status == "deleted":
         current = ""
+    else:
+        try:
+            current = (repo_path / safe_path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            try:
+                current = _run_git(["show", f"HEAD:{safe_path}"], repo_path)
+            except RuntimeError:
+                current = ""
+        except UnicodeDecodeError:
+            current = "[Binary file preview is not available]"
+        except IsADirectoryError:
+            current = ""
 
     return {
         "path": safe_path,
@@ -297,33 +458,77 @@ def get_file_diff(repository: dict, session_id: str, file_path: str) -> dict:
     }
 
 
-def create_pull_request(repository: dict, session_id: str, title: str, body: str) -> dict:
+def sync_pull_request(repository: dict, session_id: str, title: str, body: str) -> dict:
     repo_path = setup_repository_workspace(repository, session_id)
     owner, name, default_branch = _repo_parts(repository)
-    branch_name = f"agentcore/{session_id[:8]}"
+    branch_name = _session_branch_name(session_id)
     token = get_installation_token(owner, name)
 
     _run_git(["add", "-A"], repo_path)
     staged = _run_git(["diff", "--cached", "--name-only"], repo_path)
-    if not staged:
-        return {"created": False, "message": "No repository changes to commit."}
+    staged_status = _run_git(["diff", "--cached", "--name-status"], repo_path)
+    changed_files = [line.strip() for line in staged.splitlines() if line.strip()]
+    commit_title = _commit_title_from_staged(staged_status, title or "AgentCore chat update")
+    committed = False
+    if staged:
+        _run_git(["commit", "-m", commit_title], repo_path)
+        committed = True
+        push_remote = f"https://x-access-token:{quote(token)}@github.com/{owner}/{name}.git"
+        _run_git(["push", push_remote, f"HEAD:{branch_name}", "--force-with-lease"], repo_path, timeout=300)
 
-    _run_git(["commit", "-m", title], repo_path)
-    push_remote = f"https://x-access-token:{quote(token)}@github.com/{owner}/{name}.git"
-    _run_git(["push", push_remote, f"HEAD:{branch_name}", "--force-with-lease"], repo_path, timeout=300)
+    existing_pr = _find_open_pull_request(owner, name, token, branch_name, default_branch)
+    if existing_pr:
+        if committed or title != existing_pr.get("title") or body != (existing_pr.get("body") or ""):
+            existing_pr = _github_request(
+                "PATCH",
+                f"/repos/{owner}/{name}/pulls/{existing_pr.get('number')}",
+                token,
+                {"title": title, "body": body},
+            )
+        summary = _pull_request_summary(
+            existing_pr,
+            branch_name,
+            default_branch,
+            updated=committed,
+            committed=committed,
+            changed_files=changed_files,
+            message="Pull request branch is up to date." if not committed else None,
+        )
+        summary["commitTitle"] = commit_title if committed else ""
+        return summary
+
+    if not committed:
+        summary = _pull_request_summary(
+            None,
+            branch_name,
+            default_branch,
+            committed=False,
+            message="No repository changes to commit.",
+        )
+        summary["commitTitle"] = ""
+        return summary
+
     pr = _github_request(
         "POST",
         f"/repos/{owner}/{name}/pulls",
         token,
         {"title": title, "body": body, "head": branch_name, "base": default_branch},
     )
-    return {
-        "created": True,
-        "number": pr.get("number"),
-        "url": pr.get("html_url"),
-        "headBranch": branch_name,
-        "baseBranch": default_branch,
-    }
+    summary = _pull_request_summary(
+        pr,
+        branch_name,
+        default_branch,
+        created=True,
+        updated=True,
+        committed=True,
+        changed_files=changed_files,
+    )
+    summary["commitTitle"] = commit_title
+    return summary
+
+
+def create_pull_request(repository: dict, session_id: str, title: str, body: str) -> dict:
+    return sync_pull_request(repository, session_id, title, body)
 
 
 def _check_summary(check_runs: list[dict], combined_state: str) -> dict:

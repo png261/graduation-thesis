@@ -13,7 +13,6 @@ import {
   FileJson,
   FileText,
   Folder,
-  HardDrive,
   ImageIcon,
   Radio,
   RefreshCw,
@@ -22,7 +21,6 @@ import {
   Sheet,
   WifiOff,
 } from "lucide-react"
-import { useAuth } from "react-oidc-context"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -34,28 +32,24 @@ import {
 import { cn } from "@/lib/utils"
 import { AgentCoreClient } from "@/lib/agentcore-client"
 import type { SelectedRepository } from "@/lib/agentcore-client/types"
+import type { PullRequestInfo } from "@/components/chat/types"
 import {
   FileContent,
   FileEvent,
   FileEntry,
-  getFileContent,
-  listFileEntries,
-  subscribeToFileEvents,
+  getCachedFileContent,
+  setCachedFileContent,
 } from "@/services/fileEventsService"
 
-const FILE_REFRESH_INTERVAL_MS = 10_000
-
-type AwsExports = {
-  fileEventsApiUrl?: string | null
-  sharedBrainBucketName?: string | null
-  sharedBrainMountPath?: string | null
-}
+const FILE_REFRESH_INTERVAL_MS = 30_000
 
 type FileSystemPanelProps = {
   accessToken?: string | null
   client?: AgentCoreClient | null
   repository?: SelectedRepository | null
   sessionId?: string
+  pullRequest?: PullRequestInfo | null
+  onPullRequestChange?: (pullRequest: PullRequestInfo | null) => void
 }
 
 type FileChangeStatus = "added" | "modified" | "deleted" | "unchanged"
@@ -195,13 +189,13 @@ function buildTreeData(
     }
   }
   for (const [path, changeStatus] of fileStatusByPath) {
-    if (changeStatus !== "deleted") continue
+    if (changeStatus === "unchanged") continue
     upsertFile(
       root,
       {
         bucket: "",
-        key: path,
-        eventName: "GitDeleted",
+        key: changeStatus === "deleted" ? path : `${displayRootPrefixes[0] ?? ""}${path}`,
+        eventName: changeStatus === "deleted" ? "GitDeleted" : "GitChanged",
         eventTime: new Date(0).toISOString(),
       },
       path,
@@ -209,6 +203,19 @@ function buildTreeData(
     )
   }
   return sortedMutableChildren(root).map(node => toArboristNode(node))
+}
+
+function mergeFileEvents(current: FileEvent[], incoming: FileEvent[]) {
+  const byKey = new Map<string, FileEvent>()
+  for (const event of current) {
+    if (event.eventName === "ObjectListed") byKey.set(event.key, event)
+  }
+  for (const event of incoming) {
+    byKey.set(event.key, event)
+  }
+  return Array.from(byKey.values())
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .slice(-1000)
 }
 
 function eventFromEntry(entry: FileEntry): FileEvent {
@@ -315,6 +322,18 @@ function statusMapFromPreview(preview: any) {
   return map
 }
 
+function filterChangedTreeData(nodes: ArboristFileNode[]): ArboristFileNode[] {
+  return nodes
+    .map(node => {
+      if (node.type === "file") {
+        return node.changeStatus && node.changeStatus !== "unchanged" ? node : null
+      }
+      const children = filterChangedTreeData(node.children ?? [])
+      return children.length > 0 ? { ...node, children } : null
+    })
+    .filter((node): node is ArboristFileNode => Boolean(node))
+}
+
 function FileTreeNode({ node, style, dragHandle }: NodeRendererProps<ArboristFileNode>) {
   const item = node.data
   const isDirectory = item.type === "directory"
@@ -389,22 +408,8 @@ function useElementSize() {
   return { ref, size }
 }
 
-function sessionRootPrefix(sessionId?: string) {
-  return sessionId ? `shared/workspace/sessions/${sessionId}/` : ""
-}
-
-function legacySessionRootPrefix(sessionId?: string) {
-  return sessionId ? `shared/workspace/workspace/sessions/${sessionId}/` : ""
-}
-
-function workspacePrefixes(sessionId?: string, repository?: SelectedRepository | null) {
-  const root = sessionRootPrefix(sessionId)
-  if (!root || !repository) return []
-  const legacyRoot = legacySessionRootPrefix(sessionId)
-  return [
-    `${root}repos/${repository.owner}/${repository.name}/`,
-    `${legacyRoot}repos/${repository.owner}/${repository.name}/`,
-  ]
+function workspacePrefixes(_sessionId?: string, _repository?: SelectedRepository | null) {
+  return []
 }
 
 export function FileSystemPanel({
@@ -412,10 +417,10 @@ export function FileSystemPanel({
   client,
   repository,
   sessionId,
+  pullRequest,
+  onPullRequestChange,
 }: FileSystemPanelProps) {
-  const auth = useAuth()
   const { ref: treeContainerRef, size: treeSize } = useElementSize()
-  const [config, setConfig] = useState<AwsExports | null>(null)
   const [events, setEvents] = useState<FileEvent[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [selectedDisplayPath, setSelectedDisplayPath] = useState<string | null>(null)
@@ -430,14 +435,24 @@ export function FileSystemPanel({
   const [status, setStatus] = useState<"loading" | "connected" | "disabled" | "error">("loading")
   const [error, setError] = useState<string | null>(null)
   const [fileStatusByPath, setFileStatusByPath] = useState<Map<string, FileChangeStatus>>(new Map())
+  const [fileScope, setFileScope] = useState<"changes" | "all">("changes")
+  const [fileView, setFileView] = useState<"diff" | "file">("diff")
   const [treePanePercent, setTreePanePercent] = useState(32)
+  const changeStatusTimerRef = useRef<number | null>(null)
   const displayRootPrefixes = useMemo(() => workspacePrefixes(sessionId, repository), [repository, sessionId])
   const displayRootPrefixesKey = displayRootPrefixes.join("|")
   const treeData = useMemo(
     () => buildTreeData(events, displayRootPrefixes, fileStatusByPath),
     [displayRootPrefixes, events, fileStatusByPath]
   )
-  const lastEvent = events[events.length - 1]
+  const changedFileCount = useMemo(
+    () => Array.from(fileStatusByPath.values()).filter(status => status !== "unchanged").length,
+    [fileStatusByPath]
+  )
+  const visibleTreeData = useMemo(
+    () => (fileScope === "changes" ? filterChangedTreeData(treeData) : treeData),
+    [fileScope, treeData]
+  )
   const selectedLanguage = languageFromKey(preview?.key ?? selectedKey ?? undefined)
   const selectedChangeStatus = selectedDisplayPath ? fileStatusByPath.get(selectedDisplayPath) ?? "unchanged" : "unchanged"
 
@@ -449,6 +464,12 @@ export function FileSystemPanel({
     setFileDiff(null)
     setFileStatusByPath(new Map())
   }, [displayRootPrefixesKey])
+
+  useEffect(() => {
+    if (pullRequest?.number || pullRequest?.url) {
+      setPrPreview((current: any) => ({ ...(current ?? {}), ...pullRequest }))
+    }
+  }, [pullRequest])
 
   const refreshChangeStatus = useCallback(async () => {
     if (!client || !repository || !sessionId || !accessToken) return
@@ -465,26 +486,31 @@ export function FileSystemPanel({
     }
   }, [accessToken, client, repository, sessionId])
 
+  useEffect(() => {
+    return () => {
+      if (changeStatusTimerRef.current !== null) {
+        window.clearTimeout(changeStatusTimerRef.current)
+      }
+    }
+  }, [])
+
   const refreshFiles = useCallback(
     async (options: { showLoading?: boolean } = {}) => {
-      const apiUrl = config?.fileEventsApiUrl
-      const token = auth.user?.id_token
-      if (!apiUrl || !token || !sessionId || !repository) return
+      if (!client || !accessToken || !sessionId) return
 
       if (options.showLoading) setIsRefreshing(true)
       try {
-        const entries = (await Promise.all(
-          displayRootPrefixes.map(prefix => listFileEntries(apiUrl, token, prefix))
-        )).flat()
-        setEvents(prev =>
-          [
-            ...entries.map(eventFromEntry),
-            ...prev.filter(event => event.eventName !== "ObjectListed"),
-          ].slice(-500)
+        const response = await client.filesystemAction(
+          "listFiles",
+          sessionId,
+          accessToken,
+          repository
         )
+        const entries = (((response as any)?.files ?? []) as FileEntry[])
+        setEvents(prev => mergeFileEvents(prev, entries.map(eventFromEntry)))
         setError(null)
         setStatus("connected")
-        void refreshChangeStatus()
+        if (options.showLoading) void refreshChangeStatus()
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to list files")
         setStatus("error")
@@ -492,7 +518,7 @@ export function FileSystemPanel({
         if (options.showLoading) setIsRefreshing(false)
       }
     },
-    [auth.user?.id_token, config?.fileEventsApiUrl, displayRootPrefixes, refreshChangeStatus, repository, sessionId]
+    [accessToken, client, refreshChangeStatus, repository, sessionId]
   )
 
   const openPullRequestPreview = useCallback(async () => {
@@ -506,7 +532,10 @@ export function FileSystemPanel({
         accessToken,
         repository
       )
-      setPrPreview((response as any)?.preview ?? response)
+      const preview = (response as any)?.preview ?? response
+      setPrPreview(preview)
+      if (preview?.number || preview?.url) onPullRequestChange?.(preview)
+      setFileStatusByPath(statusMapFromPreview(preview))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to preview pull request")
@@ -514,7 +543,16 @@ export function FileSystemPanel({
     } finally {
       setIsPrLoading(false)
     }
-  }, [accessToken, client, repository, sessionId])
+  }, [accessToken, client, onPullRequestChange, repository, sessionId])
+
+  const viewPullRequest = useCallback(() => {
+    const url = pullRequest?.url ?? prPreview?.url
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer")
+      return
+    }
+    void openPullRequestPreview()
+  }, [openPullRequestPreview, prPreview?.url, pullRequest?.url])
 
   const createPullRequest = useCallback(async () => {
     if (!client || !repository || !sessionId || !accessToken || !prPreview) return
@@ -527,39 +565,22 @@ export function FileSystemPanel({
         repository,
         { title: prPreview.title, body: prPreview.body }
       )
-      setPrPreview((response as any)?.pullRequest ?? response)
+      const nextPullRequest = (response as any)?.pullRequest ?? response
+      setPrPreview(nextPullRequest)
+      onPullRequestChange?.(nextPullRequest)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create pull request")
     } finally {
       setIsPrLoading(false)
     }
-  }, [accessToken, client, prPreview, repository, sessionId])
+  }, [accessToken, client, onPullRequestChange, prPreview, repository, sessionId])
 
   useEffect(() => {
-    let cancelled = false
-    fetch("/aws-exports.json")
-      .then(response => (response.ok ? response.json() : Promise.reject(response.statusText)))
-      .then((loaded: AwsExports) => {
-        if (cancelled) return
-        setConfig(loaded)
-        setStatus(loaded.fileEventsApiUrl ? "loading" : "disabled")
-      })
-      .catch(err => {
-        if (cancelled) return
-        setError(err instanceof Error ? err.message : "Failed to load file event config")
-        setStatus("error")
-      })
-
-    return () => {
-      cancelled = true
+    if (!client || !accessToken || !sessionId) {
+      setStatus("disabled")
+      return
     }
-  }, [])
-
-  useEffect(() => {
-    const apiUrl = config?.fileEventsApiUrl
-    const token = auth.user?.id_token
-    if (!apiUrl || !token || !sessionId || !repository) return
 
     setStatus("loading")
     void refreshFiles()
@@ -567,42 +588,38 @@ export function FileSystemPanel({
 
     const refreshTimer = window.setInterval(() => {
       void refreshFiles()
-      void refreshChangeStatus()
     }, FILE_REFRESH_INTERVAL_MS)
-
-    const unsubscribe = subscribeToFileEvents(
-      apiUrl,
-      token,
-      event => {
-        setEvents(prev => [...prev, event].slice(-500))
-        setError(null)
-        setStatus("connected")
-      },
-      err => {
-        setError(err.message)
-        setStatus("error")
-      }
-    )
 
     return () => {
       window.clearInterval(refreshTimer)
-      unsubscribe()
     }
-  }, [auth.user?.id_token, config?.fileEventsApiUrl, refreshChangeStatus, refreshFiles, repository, sessionId])
+  }, [accessToken, client, refreshChangeStatus, refreshFiles, sessionId])
 
   useEffect(() => {
-    const apiUrl = config?.fileEventsApiUrl
-    const token = auth.user?.id_token
-    if (!apiUrl || !token || !selectedKey) {
+    if (!client || !accessToken || !sessionId || !selectedKey) {
       setPreview(null)
       return
     }
 
     let cancelled = false
-    setIsPreviewLoading(true)
-    getFileContent(apiUrl, token, selectedKey)
-      .then(file => {
+    const cachedFile = getCachedFileContent(sessionId, selectedKey)
+    if (cachedFile) {
+      setPreview(cachedFile)
+      setIsPreviewLoading(false)
+    } else {
+      setIsPreviewLoading(true)
+    }
+    client.filesystemAction(
+      "getFileContent",
+      sessionId,
+      accessToken,
+      repository,
+      { fileKey: selectedKey }
+    )
+      .then(response => {
         if (cancelled) return
+        const file = (response as any)?.file as FileContent
+        setCachedFileContent(sessionId, selectedKey, file)
         setPreview(file)
         setError(null)
       })
@@ -618,7 +635,7 @@ export function FileSystemPanel({
     return () => {
       cancelled = true
     }
-  }, [auth.user?.id_token, config?.fileEventsApiUrl, selectedKey])
+  }, [accessToken, client, repository, selectedKey, sessionId])
 
   useEffect(() => {
     if (!client || !repository || !sessionId || !accessToken || !selectedDisplayPath || selectedChangeStatus === "unchanged") {
@@ -671,23 +688,13 @@ export function FileSystemPanel({
   }, [])
 
   return (
-    <aside className="flex h-full min-w-0 flex-col border-l border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <HardDrive className="h-5 w-5 text-slate-700" />
-            <h2 className="truncate text-base font-semibold text-slate-900">AgentCore Files</h2>
-          </div>
-          <p className="mt-1 truncate text-xs text-slate-500">
-            {config?.sharedBrainMountPath ?? "/mnt/s3"}
-            {config?.sharedBrainBucketName ? ` · ${config.sharedBrainBucketName}` : ""}
-          </p>
-        </div>
+    <aside className="flex h-full min-w-0 flex-col border-l border-slate-200 bg-white pb-36">
+      <div className="flex items-center justify-end border-b border-slate-200 px-4 py-3">
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <Button
             aria-label="Reload filesystem"
             className="h-8 w-8 p-0"
-            disabled={!config?.fileEventsApiUrl || !auth.user?.id_token || isRefreshing}
+            disabled={!client || !accessToken || !sessionId || isRefreshing}
             onClick={() => {
               void refreshFiles({ showLoading: true })
               void refreshChangeStatus()
@@ -700,12 +707,12 @@ export function FileSystemPanel({
           </Button>
           <Button
             disabled={!client || !repository || !accessToken || !sessionId || isPrLoading}
-            onClick={() => void openPullRequestPreview()}
+            onClick={viewPullRequest}
             size="sm"
             type="button"
             variant="outline"
           >
-            Create Pull Request
+            View PR
           </Button>
           {status === "connected" ? (
             <Radio className="h-4 w-4 text-emerald-600" />
@@ -729,13 +736,30 @@ export function FileSystemPanel({
         style={{ gridTemplateColumns: `${treePanePercent}% 6px minmax(0, 1fr)` }}
       >
         <div className="flex min-h-0 min-w-0 flex-col border-r border-slate-200">
-          <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Files
+          <div className="flex items-center gap-1 border-b border-slate-200 bg-slate-50 px-2 py-2">
+            <Button
+              className="h-7 px-2 text-xs"
+              onClick={() => setFileScope("changes")}
+              size="sm"
+              type="button"
+              variant={fileScope === "changes" ? "default" : "ghost"}
+            >
+              Changes ({changedFileCount})
+            </Button>
+            <Button
+              className="h-7 px-2 text-xs"
+              onClick={() => setFileScope("all")}
+              size="sm"
+              type="button"
+              variant={fileScope === "all" ? "default" : "ghost"}
+            >
+              All Files
+            </Button>
           </div>
           <div ref={treeContainerRef} className="min-h-0 flex-1">
-            {treeData.length > 0 ? (
+            {visibleTreeData.length > 0 ? (
               <Tree
-                data={treeData}
+                data={visibleTreeData}
                 disableDrag
                 disableDrop
                 disableEdit
@@ -749,6 +773,7 @@ export function FileSystemPanel({
                   }
                   setSelectedKey(node.data.event?.eventName === "GitDeleted" ? null : node.data.event?.key ?? node.data.path)
                   setSelectedDisplayPath(node.data.path)
+                  setFileView(node.data.changeStatus && node.data.changeStatus !== "unchanged" ? "diff" : "file")
                 }}
                 openByDefault
                 rowHeight={32}
@@ -760,8 +785,10 @@ export function FileSystemPanel({
             ) : (
               <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">
                 {status === "disabled"
-                  ? "File event subscription is not configured."
-                  : "No files found yet."}
+                  ? "Agent runtime filesystem is not connected."
+                  : fileScope === "changes"
+                    ? "No changes in this chat PR."
+                    : "No files found yet."}
               </div>
             )}
           </div>
@@ -801,10 +828,32 @@ export function FileSystemPanel({
               </div>
             </div>
             {(isPreviewLoading || isDiffLoading) && <RefreshCw className="h-4 w-4 animate-spin text-slate-500" />}
+            {selectedChangeStatus !== "unchanged" && (
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setFileView("diff")}
+                  size="sm"
+                  type="button"
+                  variant={fileView === "diff" ? "default" : "ghost"}
+                >
+                  Diff
+                </Button>
+                <Button
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setFileView("file")}
+                  size="sm"
+                  type="button"
+                  variant={fileView === "file" ? "default" : "ghost"}
+                >
+                  File
+                </Button>
+              </div>
+            )}
           </div>
 
           <div className="min-h-0 flex-1">
-            {fileDiff && selectedChangeStatus !== "unchanged" ? (
+            {fileDiff && selectedChangeStatus !== "unchanged" && fileView === "diff" ? (
               <DiffEditor
                 height="100%"
                 language={selectedLanguage}
@@ -843,14 +892,6 @@ export function FileSystemPanel({
             )}
           </div>
         </div>
-      </div>
-
-      <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-500">
-        {lastEvent
-          ? `${lastEvent.eventName}: ${lastEvent.key}`
-          : repository
-            ? `Waiting for changes in ${repository.fullName}`
-            : "Set up a GitHub repository to browse files"}
       </div>
 
       <Dialog open={isPrDialogOpen} onOpenChange={setIsPrDialogOpen}>

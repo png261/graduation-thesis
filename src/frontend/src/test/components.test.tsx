@@ -108,20 +108,25 @@ describe("Component Integration Tests", () => {
       expect(chatPageContent).toContain("</GlobalContextProvider>")
     })
 
-    it("should require GitHub setup when creating chat sessions", () => {
+    it("should allow chat sessions before GitHub setup", () => {
       const chatInterfaceContent = readFileSync(
         resolve(__dirname, "../components/chat/ChatInterface.tsx"),
         "utf-8"
       )
-      expect(chatInterfaceContent).toContain("agentcore:chatSessions")
-      expect(chatInterfaceContent).toContain("Set Up Chat Session")
+      expect(chatInterfaceContent).toContain("useWebAppStore")
+      expect(chatInterfaceContent).toContain("Connect Repository")
       expect(chatInterfaceContent).toContain("Installed repository")
       expect(chatInterfaceContent).toContain("listInstalledRepositories")
-      expect(chatInterfaceContent).toContain("pendingSessionId")
-      expect(chatInterfaceContent).toContain("Clone Repository and Start")
+      expect(chatInterfaceContent).not.toContain("pendingSessionId")
+      expect(chatInterfaceContent).not.toContain("Clone Repository and Start")
       expect(chatInterfaceContent).toContain("No repository connected")
-      expect(chatInterfaceContent).toContain("Connect a GitHub Repository")
-      expect(chatInterfaceContent).toContain("!repository ?")
+      expect(chatInterfaceContent).toContain("Chat works without a repository")
+      expect(chatInterfaceContent).not.toContain("Connected to ${repository.fullName}")
+      expect(chatInterfaceContent).not.toContain("Create a chat session connected to a GitHub repository before chatting.")
+      const storeContent = readFileSync(resolve(__dirname, "../stores/webAppStore.ts"), "utf-8")
+      expect(storeContent).toContain("requestNewChat")
+      expect(storeContent).toContain("state.sessions.find(isEmptyNewChatSession)")
+      expect(storeContent).toContain("existingEmptySession ?? createEmptyChatSession()")
       expect(chatInterfaceContent).not.toContain("Create New Repo")
       expect(chatInterfaceContent).not.toContain("createRepositorySelection")
       expect(chatInterfaceContent).not.toContain("Create Repository and Start")
@@ -129,7 +134,7 @@ describe("Component Integration Tests", () => {
   })
 
   describe("FileSystemPanel Component", () => {
-    it("should subscribe to AppSync file events", () => {
+    it("should load file entries through the AgentCore runtime filesystem action", () => {
       const filePanelContent = readFileSync(
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
         "utf-8"
@@ -138,8 +143,14 @@ describe("Component Integration Tests", () => {
         resolve(__dirname, "../services/fileEventsService.ts"),
         "utf-8"
       )
-      expect(filePanelContent).toContain("subscribeToFileEvents")
-      expect(fileEventsServiceContent).toContain("onFileEvent")
+      const agentClientContent = readFileSync(
+        resolve(__dirname, "../lib/agentcore-client/client.ts"),
+        "utf-8"
+      )
+      expect(filePanelContent).toContain("filesystemAction(")
+      expect(filePanelContent).toContain('"listFiles"')
+      expect(fileEventsServiceContent).not.toContain(`subscribe${"To"}FileEvents`)
+      expect(agentClientContent).toContain("filesystemAction")
     })
 
     it("should render the filesystem with React Arborist", () => {
@@ -163,18 +174,20 @@ describe("Component Integration Tests", () => {
       )
       expect(filePanelContent).toContain('from "@monaco-editor/react"')
       expect(filePanelContent).toContain("<Editor")
-      expect(filePanelContent).toContain("getFileContent")
-      expect(fileEventsServiceContent).toContain("query GetFileContent")
+      expect(filePanelContent).toContain("filesystemAction(")
+      expect(filePanelContent).toContain('"getFileContent"')
+      expect(fileEventsServiceContent).not.toContain("query GetFileContent")
     })
 
-    it("should poll listFiles so delayed S3 Files sync appears in the UI", () => {
+    it("should poll listFiles so runtime filesystem changes appear in the UI", () => {
       const filePanelContent = readFileSync(
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
         "utf-8"
       )
       expect(filePanelContent).toContain("FILE_REFRESH_INTERVAL_MS")
       expect(filePanelContent).toContain("window.setInterval")
-      expect(filePanelContent).toContain("listFileEntries")
+      expect(filePanelContent).toContain("filesystemAction(")
+      expect(filePanelContent).toContain('"listFiles"')
     })
 
     it("should provide a reload filesystem button", () => {
@@ -192,10 +205,9 @@ describe("Component Integration Tests", () => {
         "utf-8"
       )
       expect(filePanelContent).toContain("workspacePrefixes")
-      expect(filePanelContent).toContain("shared/workspace/sessions")
-      expect(filePanelContent).toContain("shared/workspace/workspace/sessions")
-      expect(filePanelContent).toContain("repos/${repository.owner}/${repository.name}")
-      expect(filePanelContent).toContain("Set up a GitHub repository to browse files")
+      expect(filePanelContent).toContain("return []")
+      expect(filePanelContent).not.toContain("Set up a GitHub repository to browse files")
+      expect(filePanelContent).not.toContain("HardDrive")
     })
 
     it("should support GitHub repository creation and pull request preview", () => {
@@ -235,6 +247,26 @@ describe("Component Integration Tests", () => {
       expect(routesContent).toContain('<Route path="/settings" element={<SettingsPage />} />')
       expect(settingsContent).toContain("Install GitHub App")
       expect(settingsContent).toContain("githubAppInstallUrl")
+    })
+
+    it("should keep AWS credential input limited to access key ID and secret access key", () => {
+      const settingsContent = readFileSync(resolve(__dirname, "../routes/SettingsPage.tsx"), "utf-8")
+      expect(settingsContent).toContain("Access key ID")
+      expect(settingsContent).toContain("Secret access key")
+      expect(settingsContent).not.toContain("Account ID")
+      expect(settingsContent).not.toContain("Session token")
+    })
+
+    it("should add state backends through a modal with credential, region, and S3 bucket browse/manual input", () => {
+      const catalogContent = readFileSync(resolve(__dirname, "../routes/ResourceCatalogPage.tsx"), "utf-8")
+      const serviceContent = readFileSync(resolve(__dirname, "../services/resourcesService.ts"), "utf-8")
+      expect(catalogContent).toContain("<Dialog")
+      expect(catalogContent).toContain("AWS Credential")
+      expect(catalogContent).toContain("Region")
+      expect(catalogContent).toContain("Browse buckets")
+      expect(catalogContent).toContain("my-terraform-state-bucket")
+      expect(catalogContent).toContain("listS3Buckets")
+      expect(serviceContent).toContain("/resources/s3-buckets")
     })
 
     it("should import ChatPage component", () => {

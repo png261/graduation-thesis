@@ -60,24 +60,28 @@ describe("Routing Tests", () => {
     it("should integrate routes with authentication", () => {
       const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
 
-      // Routes should be wrapped with AuthProvider
+      // Routes are rendered inside AppShell, which is wrapped with AuthProvider.
       const authProviderIndex = appContent.indexOf("<AuthProvider>")
+      const appShellIndex = appContent.indexOf("<AppShell />")
       const appRoutesIndex = appContent.indexOf("<AppRoutes />")
 
       expect(authProviderIndex).toBeGreaterThan(0)
-      expect(appRoutesIndex).toBeGreaterThan(authProviderIndex)
+      expect(appShellIndex).toBeGreaterThan(authProviderIndex)
+      expect(appRoutesIndex).toBeGreaterThan(0)
     })
 
     it("should have proper component hierarchy", () => {
       const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
 
-      // Hierarchy: BrowserRouter > AuthProvider > AppRoutes
+      // Hierarchy: BrowserRouter > AuthProvider > AppShell, with AppRoutes inside AppShell.
       const browserRouterIndex = appContent.indexOf("<BrowserRouter>")
       const authProviderIndex = appContent.indexOf("<AuthProvider>")
+      const appShellIndex = appContent.indexOf("<AppShell />")
       const appRoutesIndex = appContent.indexOf("<AppRoutes />")
 
       expect(browserRouterIndex).toBeLessThan(authProviderIndex)
-      expect(authProviderIndex).toBeLessThan(appRoutesIndex)
+      expect(authProviderIndex).toBeLessThan(appShellIndex)
+      expect(appRoutesIndex).toBeLessThan(authProviderIndex)
     })
   })
 })

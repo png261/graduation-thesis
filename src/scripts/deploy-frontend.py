@@ -267,6 +267,33 @@ def start_amplify_deployment(app_id: str, branch: str, source_url: str) -> Dict:
     return json.loads(result.stdout)
 
 
+def start_amplify_deployment_with_retry(
+    app_id: str,
+    branch: str,
+    source_url: str,
+    attempts: int = 4,
+) -> Dict:
+    """Start an Amplify deployment, retrying transient AWS CLI/API failures."""
+    last_error: Optional[subprocess.CalledProcessError] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return start_amplify_deployment(app_id, branch, source_url)
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            if attempt == attempts:
+                break
+            wait_seconds = 10 * attempt
+            stderr = (e.stderr or "").strip()
+            log_warning(
+                f"Amplify start-deployment attempt {attempt}/{attempts} failed; "
+                f"retrying in {wait_seconds}s. {stderr}"
+            )
+            time.sleep(wait_seconds)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Amplify deployment did not start")
+
+
 def get_amplify_job_status(app_id: str, branch: str, job_id: str) -> str:
     """
     Get the status of an Amplify deployment job.
@@ -368,10 +395,6 @@ def generate_aws_exports(
         "awsRegion": region,
         "feedbackApiUrl": outputs["FeedbackApiUrl"],
         "resourcesApiUrl": outputs["ResourcesApiUrl"],
-        "fileEventsApiUrl": outputs.get("FileEventsApiUrl"),
-        "fileEventsApiId": outputs.get("FileEventsApiId"),
-        "sharedBrainBucketName": outputs.get("SharedBrainBucketName"),
-        "sharedBrainMountPath": outputs.get("SharedBrainMountPath", "/mnt/s3"),
         "githubAppInstallUrl": outputs.get("GitHubAppInstallUrl"),
     }
 
@@ -553,7 +576,7 @@ def main() -> int:
     source_url = f"s3://{deployment_bucket}/{s3_key}"
 
     try:
-        deployment = start_amplify_deployment(app_id, BRANCH_NAME, source_url)
+        deployment = start_amplify_deployment_with_retry(app_id, BRANCH_NAME, source_url)
         job_id = deployment["jobSummary"]["jobId"]
         log_success(f"Deployment initiated (Job ID: {job_id})")
     except subprocess.CalledProcessError as e:

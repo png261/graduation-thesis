@@ -12,6 +12,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "roughjs/bin/rough": path.resolve(__dirname, "node_modules/roughjs/bin/rough.js"),
     },
   },
 })

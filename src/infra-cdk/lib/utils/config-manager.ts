@@ -27,9 +27,9 @@ export interface VpcConfig {
 }
 
 export interface S3FilesConfig {
-  /** Enable shared S3-backed file storage mounted into AgentCore Runtime. */
+  /** Legacy S3 Files configuration. Runtime filesystem now uses local AgentCore storage by default. */
   enabled: boolean
-  /** Runtime mount path. AgentCore requires /mnt/<single-segment>. Defaults to /mnt/s3. */
+  /** Runtime filesystem base path. Defaults to /tmp/agentcore-runtime-files. */
   mount_path: string
   /** Optional S3 key prefix backing the file system. */
   prefix?: string
@@ -55,6 +55,11 @@ export interface GitHubConfig {
   app_id: string
   /** AgentCore Identity API key credential provider containing the app private key. */
   credential_provider_name: string
+}
+
+export interface DeploymentSecrets {
+  openai_api_key: string
+  github_app_private_key: string
 }
 
 export interface AppConfig {
@@ -87,15 +92,68 @@ export interface AppConfig {
     openai?: OpenAIConfig
     /** GitHub App configuration for repository workspaces. */
     github?: GitHubConfig
+    /** Required deployment secrets loaded from .env or environment variables. */
+    secrets: DeploymentSecrets
     s3_files: S3FilesConfig
   }
 }
 
 export class ConfigManager {
   private config: AppConfig
+  private env: Record<string, string>
 
   constructor(configFile: string) {
+    this.env = this._loadEnvFiles()
     this.config = this._loadConfig(configFile)
+  }
+
+  private _loadEnvFiles(): Record<string, string> {
+    const env: Record<string, string> = { ...process.env } as Record<string, string>
+    const candidates = [
+      path.resolve(__dirname, "..", "..", "..", ".env"),
+      path.resolve(__dirname, "..", "..", ".env"),
+      path.resolve(process.cwd(), ".env"),
+    ]
+
+    for (const candidate of candidates) {
+      if (!fs.existsSync(candidate)) continue
+      const parsed = this._parseEnvFile(candidate)
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!(key in env)) env[key] = value
+      }
+    }
+
+    return env
+  }
+
+  private _parseEnvFile(envPath: string): Record<string, string> {
+    const values: Record<string, string> = {}
+    for (const rawLine of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith("#")) continue
+      const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+      if (!match) continue
+      const key = match[1]
+      let value = match[2].trim()
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1)
+      }
+      values[key] = value.replace(/\\n/g, "\n")
+    }
+    return values
+  }
+
+  private _requiredEnv(name: string): string {
+    const value = this.env[name]?.trim()
+    if (!value) {
+      throw new Error(
+        `Missing required ${name}. Add it to the repository .env file or export it before running CDK.`
+      )
+    }
+    return value
   }
 
   private _loadConfig(configFile: string): AppConfig {
@@ -123,6 +181,8 @@ export class ConfigManager {
     try {
       const fileContent = fs.readFileSync(configPath, "utf8")
       const parsedConfig = yaml.parse(fileContent) as AppConfig
+      const openaiApiKey = this._requiredEnv("OPENAI_API_KEY")
+      const githubAppPrivateKey = this._requiredEnv("GITHUB_APP_PRIVATE_KEY")
 
       const deploymentType = parsedConfig.backend?.deployment_type || "zip"
       if (deploymentType !== "docker" && deploymentType !== "zip") {
@@ -143,11 +203,9 @@ export class ConfigManager {
       }
 
       const s3FilesConfig = parsedConfig.backend?.s3_files
-      const s3FilesEnabled = parsedConfig.backend?.s3_files?.enabled !== false
+      const s3FilesEnabled = parsedConfig.backend?.s3_files?.enabled === true
 
-      // Validate network_mode if provided. S3 Files mounts require VPC runtime networking,
-      // so enabling shared files makes VPC the effective default.
-      const networkMode = s3FilesEnabled ? "VPC" : parsedConfig.backend?.network_mode || "PUBLIC"
+      const networkMode = parsedConfig.backend?.network_mode || "PUBLIC"
       if (networkMode !== "PUBLIC" && networkMode !== "VPC") {
         throw new Error(
           `Invalid network_mode '${networkMode}' in ${configPath}. Must be 'PUBLIC' or 'VPC'.`
@@ -155,7 +213,7 @@ export class ConfigManager {
       }
 
       // Validate provided VPC configuration. If network_mode is VPC and no VPC is provided,
-      // BackendStack creates a managed VPC for the runtime and S3 Files mount targets.
+      // BackendStack creates a managed VPC for the runtime.
       const vpcConfig = parsedConfig.backend?.vpc
       if (vpcConfig) {
         if (!vpcConfig.vpc_id) {
@@ -169,20 +227,6 @@ export class ConfigManager {
           )
         }
       }
-      if (s3FilesEnabled) {
-        if (networkMode !== "VPC") {
-          throw new Error(
-            `backend.network_mode must be 'VPC' in ${configPath} when backend.s3_files.enabled is true.`
-          )
-        }
-        const mountPath = s3FilesConfig?.mount_path ?? "/mnt/s3"
-        if (!/^\/mnt\/[a-zA-Z0-9._-]+\/?$/.test(mountPath)) {
-          throw new Error(
-            `Invalid backend.s3_files.mount_path '${mountPath}' in ${configPath}. Must match /mnt/<name>.`
-          )
-        }
-      }
-
       return {
         stack_name_base: stackNameBase,
         admin_user_email: parsedConfig.admin_user_email || null,
@@ -195,20 +239,33 @@ export class ConfigManager {
           ltm_relevance_score: parsedConfig.backend?.ltm_relevance_score ?? 0.3,
           openai: parsedConfig.backend?.openai
             ? {
-                base_url: parsedConfig.backend.openai.base_url || "https://api.openai.com/v1",
-                model_id: parsedConfig.backend.openai.model_id || "gpt-4o",
+                base_url:
+                  this.env.OPENAI_BASE_URL ||
+                  parsedConfig.backend.openai.base_url ||
+                  "https://api.openai.com/v1",
+                model_id:
+                  this.env.OPENAI_MODEL_ID ||
+                  parsedConfig.backend.openai.model_id ||
+                  "gpt-4o",
               }
-            : undefined,
+            : {
+                base_url: this.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+                model_id: this.env.OPENAI_MODEL_ID || "gpt-4o",
+              },
           github: {
-            app_slug: parsedConfig.backend?.github?.app_slug || "",
-            app_id: parsedConfig.backend?.github?.app_id || "",
+            app_slug: this.env.GITHUB_APP_SLUG || parsedConfig.backend?.github?.app_slug || "",
+            app_id: this.env.GITHUB_APP_ID || parsedConfig.backend?.github?.app_id || "",
             credential_provider_name:
               parsedConfig.backend?.github?.credential_provider_name ||
               `${stackNameBase}-github-app`,
           },
+          secrets: {
+            openai_api_key: openaiApiKey,
+            github_app_private_key: githubAppPrivateKey,
+          },
           s3_files: {
             enabled: s3FilesEnabled,
-            mount_path: s3FilesConfig?.mount_path ?? "/mnt/s3",
+            mount_path: s3FilesConfig?.mount_path ?? "/tmp/agentcore-runtime-files",
             prefix: s3FilesConfig?.prefix,
             root_directory: s3FilesConfig?.root_directory ?? "/",
             uid: String(s3FilesConfig?.uid ?? "1000"),

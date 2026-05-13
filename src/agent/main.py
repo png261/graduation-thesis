@@ -1,9 +1,17 @@
-"""Strands agent with Gateway MCP tools, Memory, and Code Interpreter."""
+"""Strands agent with Gateway MCP tools, Memory, and awsdac MCP."""
 
+import base64
+from datetime import datetime, timezone
 import json
 import logging
+import mimetypes
 import os
+import re
 import stat
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/.cache")
 
 from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
@@ -13,47 +21,293 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
-from strands import Agent
+from strands import Agent, ToolContext, tool
 from strands.models import OpenAIModel
 from openai import AsyncOpenAI
 from strands_tools import file_read, file_write
+from strands_tools.diagram import diagram as strands_diagram
+from strands_tools.shell import shell as strands_shell
+from strands_tools.swarm import swarm as strands_swarm
+from tools.architecture_diagrams import create_architecture_diagram_tool
+from tools.excalidraw_view import create_excalidraw_view, read_excalidraw_guide
 from tools.gateway import create_gateway_mcp_client
+from tools.opentofu_mcp import create_opentofu_mcp_client
 from utils.auth import extract_user_id_from_context, get_openai_credentials
 from utils.github_app import (
-    create_pull_request,
+    create_pull_request as create_github_pull_request,
     get_file_diff,
     list_installed_repositories,
     list_pull_requests,
     preview_pull_request,
     scratch_workspace_path,
+    shared_files_base_path,
     setup_repository_workspace,
+    workspace_path,
 )
-
-from tools.code_interpreter import StrandsCodeInterpreterTools
 
 logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
+MAX_FILE_PREVIEW_BYTES = int(os.environ.get("MAX_FILE_PREVIEW_BYTES", str(1024 * 1024)))
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to tools via the Gateway, Code Interpreter, "
-    "and session-scoped S3-backed files mounted at /mnt/s3. "
+    "You are a helpful assistant with access to tools via the Gateway "
+    "and session-scoped runtime files. "
     "Use the Strands file_write tool for creating or updating files, and file_read for "
     "reading, searching, or listing files. Your working directory is a dedicated folder for "
-    "this chat session, so relative file paths are isolated from other chats and sync to "
-    "the frontend file browser. "
+    "this chat session, so relative file paths are isolated from other chats. "
+    "You also have Strands community tools: shell for workspace-scoped command execution, "
+    "diagram for cloud/UML diagrams, and swarm for coordinating specialist agents. "
+    "Use shell only in the current session workspace or connected repository, prefer "
+    "read-only commands unless the user asked for changes, and do not run destructive "
+    "commands unless the user explicitly requested them. "
+    "Use the Terraform/OpenTofu skill guidance for Terraform or OpenTofu authoring, "
+    "review, debugging, tests, CI, scans, state operations, and module design. "
+    "Use the OpenTofu MCP registry tools for provider, module, resource, and data "
+    "source documentation instead of guessing provider schemas. "
+    "When asked to visualize AWS architecture, generate awslabs diagram-as-code YAML "
+    "using https://github.com/awslabs/diagram-as-code/blob/main/doc/mcp-server.md "
+    "and call render_architecture_diagram so the diagram is rendered by awsdac MCP "
+    "and saved to the session workspace. The YAML must put DefinitionFiles, Resources, "
+    "and Links under the top-level Diagram key. Use a simple reachable tree such as "
+    "Canvas -> AWSCloud -> VPC -> Subnet -> Instance. Do not invent a Region or "
+    "Container wrapper, and do not list the same resource under multiple parents. "
+    "Do not use Python, Code Interpreter, "
+    "or the Mingrammer diagrams package for architecture diagrams. "
+    "When asked to sketch an idea, workflow, handoff, sequence, or rough plan, "
+    "call read_excalidraw_guide once if needed, then call create_excalidraw_view with "
+    "Excalidraw-compatible elements so the chat can stream an inline drawing. "
+    "When you need a critical missing detail before acting, do not guess. "
+    "Call handoff_to_user with one or more clarification questions. Each question "
+    "must include exactly three concise options, and the user may also provide a custom "
+    "answer. Ask all blocking questions together when possible, then wait for the user "
+    "before continuing. "
     "When asked about your tools, list them and explain what they do."
 )
 
+CHAT_AGENTS = {
+    "agent1": {
+        "id": "agent1",
+        "mention": "@devops",
+        "name": "InfraQ",
+        "avatar": "IQ",
+        "className": "bg-slate-950 text-white",
+        "persona": (
+            "You are InfraQ. Be the default implementation and operations agent: "
+            "practical, direct, and focused on safe infrastructure changes, deployment, "
+            "verification, CI/CD, observability, and pull request delivery."
+        ),
+    },
+}
 
-def _repo_prompt(repository: dict | None) -> str:
+LEGACY_AGENT_MENTIONS = {
+    "@agent1": "agent1",
+}
+
+
+def _public_agent(agent: dict) -> dict:
+    return {key: agent[key] for key in ["id", "mention", "name", "avatar", "className"]}
+
+
+def _select_chat_agent(payload_agent: dict | None, prompt: str) -> dict:
+    if isinstance(payload_agent, dict):
+        agent_id = str(payload_agent.get("id") or "").strip()
+        if agent_id in CHAT_AGENTS:
+            return CHAT_AGENTS[agent_id]
+
+    for agent in CHAT_AGENTS.values():
+        if re.search(rf"(^|\s){re.escape(agent['mention'])}(?=\s|$)", prompt or ""):
+            return agent
+
+    for mention, agent_id in LEGACY_AGENT_MENTIONS.items():
+        if re.search(rf"(^|\s){re.escape(mention)}(?=\s|$)", prompt or ""):
+            return CHAT_AGENTS[agent_id]
+
+    return CHAT_AGENTS["agent1"]
+
+
+def _session_title_from_agent_response(response_text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", response_text or "")
+    text = re.sub(r"[*_#>\[\]()]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    for sentence in sentences:
+        candidate = sentence.strip(" -:")
+        if len(candidate) < 6:
+            continue
+        candidate = re.sub(r"^(I('| a)m|I have|I've|The file|This chat)\s+", "", candidate, flags=re.I)
+        candidate = candidate.strip(" -:")
+        if not candidate:
+            continue
+        if len(candidate) > 56:
+            candidate = candidate[:56].rsplit(" ", 1)[0]
+        return candidate[:56] or ""
+    return text[:56].rsplit(" ", 1)[0] or text[:56]
+
+
+def _pull_request_metadata_from_agent_response(response_text: str) -> tuple[str, str]:
+    text = (response_text or "").replace("\r\n", "\n").strip()
+    title_match = re.search(r"(?im)^\s*(?:#+\s*)?(?:PR\s*)?Title\s*:\s*(.+?)\s*$", text)
+    body_match = re.search(
+        r"(?ims)^\s*(?:#+\s*)?(?:PR\s*)?Body\s*:\s*(.+?)(?=^\s*(?:#+\s*)?(?:PR\s*)?Title\s*:|\Z)",
+        text,
+    )
+
+    title = title_match.group(1).strip(" `*_#") if title_match else ""
+    body = body_match.group(1).strip() if body_match else ""
+
+    if not title:
+        lowered = text.lower()
+        if "terraform" in lowered and "drift" in lowered and "policy" in lowered:
+            title = "Fix Terraform drift and policy findings"
+        elif "terraform" in lowered and "drift" in lowered:
+            title = "Fix Terraform drift findings"
+        elif "policy" in lowered:
+            title = "Fix policy compliance findings"
+        else:
+            title = _session_title_from_agent_response(text) or "AgentCore repository update"
+
+    if len(title) > 72:
+        title = title[:72].rsplit(" ", 1)[0] or title[:72]
+
+    if not body:
+        body = text or "Created by AgentCore from this chat session."
+
+    return title, body
+
+
+def _create_pull_request_tool(repository: dict, session_id: str, results: list[dict]):
+    @tool
+    def create_pull_request(title: str, body: str) -> str:
+        """
+        Create or update the GitHub pull request for this chat session.
+
+        Use this after editing repository files. The title and body must summarize
+        the actual Terraform/code changes made in this session.
+
+        Args:
+            title: Concise pull request title, under 72 characters.
+            body: Markdown pull request body summarizing changed files and fixes.
+
+        Returns:
+            JSON string with pull request number, URL, branch, changed files, and status.
+        """
+        pr_title = (title or "AgentCore repository update").strip()
+        pr_body = (body or "Created by AgentCore from this chat session.").strip()
+        result = create_github_pull_request(repository, session_id, pr_title, pr_body)
+        results.append(result)
+        return json.dumps(result)
+
+    return create_pull_request
+
+
+def _normalize_handoff_questions(raw_questions: str | list | dict) -> list[dict]:
+    if isinstance(raw_questions, str):
+        try:
+            parsed = json.loads(raw_questions)
+        except json.JSONDecodeError:
+            parsed = [{"question": raw_questions}]
+    else:
+        parsed = raw_questions
+
+    if isinstance(parsed, dict):
+        parsed_questions = parsed.get("questions") or [parsed]
+    elif isinstance(parsed, list):
+        parsed_questions = parsed
+    else:
+        parsed_questions = []
+
+    questions: list[dict] = []
+    for index, item in enumerate(parsed_questions[:5], start=1):
+        if not isinstance(item, dict):
+            item = {"question": str(item)}
+        question = str(item.get("question") or item.get("prompt") or "").strip()
+        if not question:
+            continue
+        raw_options = item.get("options")
+        if not isinstance(raw_options, list):
+            raw_options = []
+        options = [str(option).strip() for option in raw_options if str(option).strip()]
+        while len(options) < 3:
+            defaults = ["Use the safest default", "Use the lowest-cost option", "Let me specify manually"]
+            options.append(defaults[len(options)])
+        questions.append(
+            {
+                "id": str(item.get("id") or f"q{index}"),
+                "question": question,
+                "options": options[:3],
+            }
+        )
+
+    if not questions:
+        questions.append(
+            {
+                "id": "q1",
+                "question": "Please clarify the requirement before I continue.",
+                "options": ["Use the safest default", "Use the lowest-cost option", "Let me specify manually"],
+            }
+        )
+
+    return questions
+
+
+def _create_handoff_to_user_tool(results: list[dict]):
+    @tool(context=True)
+    def handoff_to_user(questions: str, tool_context: ToolContext) -> str:
+        """
+        Ask the user for missing information before continuing.
+
+        Use this when a decision is blocking and guessing could produce the wrong
+        implementation. Pass questions as JSON, either:
+        {"questions":[{"question":"...","options":["A","B","C"]}]}
+        or a list of objects with question and exactly three options.
+
+        Args:
+            questions: JSON string containing one or more clarification questions.
+
+        Returns:
+            JSON string with the structured user handoff request.
+        """
+        handoff = {
+            "type": "user_handoff",
+            "questions": _normalize_handoff_questions(questions),
+        }
+        results.append(handoff)
+        tool_context.agent.state.set("pending_user_handoff", handoff)
+        tool_context.invocation_state["stop_event_loop"] = True
+        return json.dumps(handoff)
+
+    return handoff_to_user
+
+
+def _repo_prompt(repository: dict | None, chat_agent: dict | None = None) -> str:
+    prompt = SYSTEM_PROMPT
+    if chat_agent:
+        prompt = f"{prompt} {chat_agent['persona']}"
     if not repository:
-        return SYSTEM_PROMPT
+        return (
+            f"{prompt} This chat does not currently have a GitHub repository connected. "
+            "Answer general questions normally. If the user asks you to inspect repository files, "
+            "change code, create a commit, open a pull request, or do work that requires repository "
+            "access, explain that they can connect a GitHub repository from the chat and then continue "
+            "the same conversation."
+        )
     full_name = repository.get("fullName") or repository.get("full_name")
     return (
-        f"{SYSTEM_PROMPT} You are working inside the cloned GitHub repository {full_name}. "
+        f"{prompt} You are working inside the cloned GitHub repository {full_name}. "
         "Only read and write files inside the current repository working directory. "
-        "Do not use absolute paths outside the repository."
+        "Do not use absolute paths outside the repository. "
+        "Do not run git commands, create commits, or push branches yourself. "
+        "For visualization-only requests, such as generating an architecture diagram, "
+        "read the repository, call render_architecture_diagram, and show the generated "
+        "diagram without creating a pull request unless the user explicitly asks you to "
+        "change repository files. "
+        "After editing and verifying the required files, call the create_pull_request tool exactly once. "
+        "Generate the tool title and body from your actual changes; use a concise title under 72 characters "
+        "and a markdown body that summarizes changed files and fixes."
     )
 
 
@@ -63,14 +317,211 @@ def _use_shared_files_workdir(repository: dict | None = None, session_id: str | 
         os.chdir(repo_path)
         return str(repo_path)
 
-    mount_path = str(scratch_workspace_path(session_id or "agentcore"))
+    workspace_path = str(scratch_workspace_path(session_id or "agentcore"))
     try:
-        os.chdir(mount_path)
+        os.chdir(workspace_path)
     except FileNotFoundError:
-        logger.warning("Shared files mount path does not exist yet: %s", mount_path)
+        logger.warning("Shared files workspace path does not exist yet: %s", workspace_path)
     except PermissionError:
-        logger.warning("Cannot use shared files mount path as working directory: %s", mount_path)
-    return mount_path
+        logger.warning("Cannot use shared files workspace path as working directory: %s", workspace_path)
+    return workspace_path
+
+
+def _runtime_filesystem_root(repository: dict | None, session_id: str) -> Path:
+    if repository:
+        return workspace_path(repository, session_id)
+    return scratch_workspace_path(session_id)
+
+
+def _safe_runtime_path(root: Path, relative_path: str | None = None) -> Path:
+    raw_path = (relative_path or "").strip()
+    if raw_path.startswith("/"):
+        raise ValueError("absolute paths are not allowed")
+    candidate = (root / raw_path).resolve()
+    resolved_root = root.resolve()
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("path escapes runtime filesystem root") from exc
+    return candidate
+
+
+def _iso_mtime(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _list_runtime_files(repository: dict | None, session_id: str, prefix: str = "") -> list[dict]:
+    root = _runtime_filesystem_root(repository, session_id)
+    if not root.exists():
+        return []
+
+    start = _safe_runtime_path(root, prefix)
+    if not start.exists():
+        return []
+
+    candidates = [start] if start.is_file() else start.rglob("*")
+    entries: list[dict] = []
+    for path in candidates:
+        if not path.is_file():
+            continue
+        relative_parts = path.relative_to(root).parts
+        if ".git" in relative_parts:
+            continue
+        entries.append(
+            {
+                "key": path.relative_to(root).as_posix(),
+                "size": path.stat().st_size,
+                "lastModified": _iso_mtime(path),
+                "eTag": None,
+            }
+        )
+        if len(entries) >= 1000:
+            break
+
+    return sorted(entries, key=lambda item: item["key"])
+
+
+def _get_runtime_file_content(repository: dict | None, session_id: str, key: str) -> dict:
+    root = _runtime_filesystem_root(repository, session_id)
+    path = _safe_runtime_path(root, key)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(key)
+
+    size = path.stat().st_size
+    raw = path.read_bytes()[:MAX_FILE_PREVIEW_BYTES]
+    content_type = mimetypes.guess_type(path.name)[0]
+    try:
+        content = raw.decode("utf-8")
+        encoding = "utf-8"
+        if size > MAX_FILE_PREVIEW_BYTES:
+            content += f"\n\n[Preview truncated to {MAX_FILE_PREVIEW_BYTES} bytes of {size} bytes]"
+    except UnicodeDecodeError:
+        content = base64.b64encode(raw).decode("ascii")
+        encoding = "base64"
+
+    return {
+        "key": path.relative_to(root).as_posix(),
+        "content": content,
+        "contentType": content_type,
+        "encoding": encoding,
+        "size": size,
+        "lastModified": _iso_mtime(path),
+    }
+
+
+def _safe_attachment_name(name: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(name or "").strip())
+    cleaned = cleaned.strip("._")
+    return cleaned[:120] or fallback
+
+
+def _attachment_image_format(content_type: str, filename: str) -> str | None:
+    lowered_type = content_type.lower().split(";", 1)[0].strip()
+    if lowered_type in {"image/png", "image/gif", "image/webp"}:
+        return lowered_type.rsplit("/", 1)[1]
+    if lowered_type in {"image/jpeg", "image/jpg"}:
+        return "jpeg"
+
+    extension = os.path.splitext(filename.lower())[1].lstrip(".")
+    if extension in {"png", "gif", "webp"}:
+        return extension
+    if extension in {"jpg", "jpeg"}:
+        return "jpeg"
+    return None
+
+
+def _save_prompt_attachments(attachments: list | None) -> list[dict]:
+    if not isinstance(attachments, list):
+        return []
+
+    saved = []
+    attachment_dir = os.path.join(os.getcwd(), "attachments")
+    os.makedirs(attachment_dir, exist_ok=True)
+
+    for index, attachment in enumerate(attachments[:6], start=1):
+        if not isinstance(attachment, dict):
+            continue
+        data_url = str(attachment.get("dataUrl") or "")
+        if "," in data_url:
+            _, encoded = data_url.split(",", 1)
+        else:
+            encoded = data_url
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except Exception:
+            logger.warning("Skipping invalid attachment payload at index %s", index)
+            continue
+        if len(content) > 4 * 1024 * 1024:
+            logger.warning("Skipping oversized attachment at index %s", index)
+            continue
+
+        filename = _safe_attachment_name(str(attachment.get("name") or ""), f"attachment-{index}")
+        path = os.path.join(attachment_dir, filename)
+        stem, ext = os.path.splitext(filename)
+        suffix = 1
+        while os.path.exists(path):
+            path = os.path.join(attachment_dir, f"{stem}-{suffix}{ext}")
+            suffix += 1
+
+        with open(path, "wb") as file_obj:
+            file_obj.write(content)
+
+        saved.append(
+            {
+                "name": filename,
+                "path": os.path.relpath(path, os.getcwd()),
+                "type": str(attachment.get("type") or "application/octet-stream"),
+                "size": len(content),
+                "content": content,
+            }
+        )
+
+    return saved
+
+
+def _augment_prompt_with_attachments(prompt: str, attachments: list[dict]) -> str:
+    if not attachments:
+        return prompt
+
+    lines = [
+        prompt,
+        "",
+        "The user attached the following file(s). They have been saved in the current session workspace:",
+    ]
+    image_count = 0
+    for item in attachments:
+        image_format = _attachment_image_format(item["type"], item["name"])
+        if image_format:
+            image_count += 1
+        lines.append(f"- {item['name']} ({item['type']}, {item['size']} bytes): {item['path']}")
+    lines.append("Use file_read for text attachments when useful.")
+    if image_count:
+        lines.append(
+            "The image attachment content is included directly in this model message. "
+            "Do not use file_read on image files to understand their visual content; inspect the attached image content directly."
+        )
+    return "\n".join(lines)
+
+
+def _prompt_with_attachment_content_blocks(prompt: str, attachments: list[dict]) -> str | list[dict]:
+    if not attachments:
+        return prompt
+
+    content_blocks: list[dict] = [{"text": _augment_prompt_with_attachments(prompt, attachments)}]
+    for item in attachments:
+        image_format = _attachment_image_format(item["type"], item["name"])
+        if not image_format:
+            continue
+        content_blocks.append(
+            {
+                "image": {
+                    "format": image_format,
+                    "source": {"bytes": item["content"]},
+                }
+            }
+        )
+
+    return content_blocks
 
 
 class OpenRouterModel(OpenAIModel):
@@ -135,8 +586,15 @@ def _create_session_manager(
     )
 
 
-def create_strands_agent(user_id: str, session_id: str, repository: dict | None = None) -> Agent:
-    """Create a Strands agent with Gateway tools, memory, and Code Interpreter."""
+def create_strands_agent(
+    user_id: str,
+    session_id: str,
+    repository: dict | None = None,
+    chat_agent: dict | None = None,
+    pull_request_results: list[dict] | None = None,
+    handoff_results: list[dict] | None = None,
+) -> Agent:
+    """Create a Strands agent with Gateway tools, memory, and awsdac MCP."""
 
     _use_shared_files_workdir(repository, session_id)
 
@@ -158,20 +616,28 @@ def create_strands_agent(user_id: str, session_id: str, repository: dict | None 
 
     session_manager = _create_session_manager(user_id, session_id)
 
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    code_tools = StrandsCodeInterpreterTools(region)
-
     gateway_client = create_gateway_mcp_client()
+    opentofu_client = create_opentofu_mcp_client()
+    tools = [
+        gateway_client,
+        opentofu_client,
+        _create_handoff_to_user_tool(handoff_results if handoff_results is not None else []),
+        create_architecture_diagram_tool(),
+        read_excalidraw_guide,
+        create_excalidraw_view,
+        file_read,
+        file_write,
+        strands_shell,
+        strands_diagram,
+        strands_swarm,
+    ]
+    if repository is not None and pull_request_results is not None:
+        tools.append(_create_pull_request_tool(repository, session_id, pull_request_results))
 
     return Agent(
         name="strands_agent",
-        system_prompt=_repo_prompt(repository),
-        tools=[
-            gateway_client,
-            code_tools.execute_python_securely,
-            file_read,
-            file_write,
-        ],
+        system_prompt=_repo_prompt(repository, chat_agent),
+        tools=tools,
         model=openai_model,
         session_manager=session_manager,
         trace_attributes={"user.id": user_id, "session.id": session_id},
@@ -208,6 +674,13 @@ async def invocations(payload, context: RequestContext):
                 return
             yield {"status": "ok", "preview": preview_pull_request(repository, session_id)}
             return
+        if github_action == "setupRepositoryWorkspace":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            repo_path = setup_repository_workspace(repository, session_id)
+            yield {"status": "ok", "workspace": {"path": str(repo_path)}}
+            return
         if github_action == "getFileDiff":
             if not repository:
                 yield {"status": "error", "error": "repository is required"}
@@ -218,6 +691,23 @@ async def invocations(payload, context: RequestContext):
                 return
             yield {"status": "ok", "fileDiff": get_file_diff(repository, session_id, file_path)}
             return
+
+        filesystem_action = payload.get("filesystemAction")
+        if filesystem_action == "listFiles":
+            prefix = str(payload.get("prefix") or "").strip()
+            yield {"status": "ok", "files": _list_runtime_files(repository, session_id, prefix)}
+            return
+        if filesystem_action == "getFileContent":
+            file_key = str(payload.get("fileKey") or payload.get("key") or "").strip()
+            if not file_key:
+                yield {"status": "error", "error": "fileKey is required"}
+                return
+            try:
+                yield {"status": "ok", "file": _get_runtime_file_content(repository, session_id, file_key)}
+            except FileNotFoundError:
+                yield {"status": "error", "error": f"file not found: {file_key}"}
+            return
+
         if github_action == "createPullRequest":
             if not repository:
                 yield {"status": "error", "error": "repository is required"}
@@ -244,21 +734,27 @@ async def invocations(payload, context: RequestContext):
             return
 
         if payload.get("filesystemSmokeTest") is True:
-            mount_path = os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3")
-            readme_path = os.path.join(mount_path, "README.md")
-            with open(readme_path, "r", encoding="utf-8") as readme:
-                content = readme.read()
+            base_path = shared_files_base_path()
+            readme_path = base_path / "README.md"
+            if not readme_path.exists():
+                readme_path.write_text("AgentCore runtime filesystem initialized", encoding="utf-8")
             yield {
                 "status": "ok",
                 "userId": user_id,
-                "mountPath": mount_path,
-                "readme": content,
+                "mountPath": os.environ.get("SHARED_FILES_MOUNT_PATH", "/tmp/agentcore-runtime-files"),
+                "activePath": str(base_path),
+                "readme": readme_path.read_text(encoding="utf-8"),
             }
             return
 
         if payload.get("filesystemDiagnostic") is True:
-            mount_path = os.environ.get("SHARED_FILES_MOUNT_PATH", "/mnt/s3")
-            paths = ["/mnt", mount_path]
+            mount_path = os.environ.get("SHARED_FILES_MOUNT_PATH", "/tmp/agentcore-runtime-files")
+            active_path = ""
+            try:
+                active_path = str(shared_files_base_path())
+            except Exception as exc:
+                active_path = f"unavailable: {exc}"
+            paths = [mount_path, os.environ.get("SHARED_FILES_FALLBACK_PATH", "/tmp/agentcore-runtime-files")]
             diagnostics = []
             for path in paths:
                 try:
@@ -278,7 +774,11 @@ async def invocations(payload, context: RequestContext):
                     diagnostics.append({"path": path, "exists": False, "error": str(exc)})
 
             write_tests = []
-            for path in [mount_path, os.path.join(mount_path, "repos")]:
+            for path in [
+                mount_path,
+                os.path.join(mount_path, "repos"),
+                os.environ.get("SHARED_FILES_FALLBACK_PATH", "/tmp/agentcore-runtime-files"),
+            ]:
                 try:
                     os.makedirs(path, exist_ok=True)
                     probe_path = os.path.join(path, ".agentcore-write-probe")
@@ -295,15 +795,37 @@ async def invocations(payload, context: RequestContext):
                 "gid": os.getgid(),
                 "cwd": os.getcwd(),
                 "mountPath": mount_path,
+                "activePath": active_path,
                 "paths": diagnostics,
                 "writeTests": write_tests,
             }
             return
 
-        agent = create_strands_agent(user_id, session_id, repository)
+        chat_agent = _select_chat_agent(payload.get("agent"), user_query)
+        yield {"chatAgent": _public_agent(chat_agent)}
 
-        async for event in agent.stream_async(user_query):
-            yield json.loads(json.dumps(dict(event), default=str))
+        pull_request_results: list[dict] = []
+        handoff_results: list[dict] = []
+        agent = create_strands_agent(user_id, session_id, repository, chat_agent, pull_request_results, handoff_results)
+        saved_attachments = _save_prompt_attachments(payload.get("attachments"))
+        agent_query = _prompt_with_attachment_content_blocks(user_query, saved_attachments)
+
+        assistant_chunks = []
+        async for event in agent.stream_async(agent_query):
+            event_dict = json.loads(json.dumps(dict(event), default=str))
+            if isinstance(event_dict.get("data"), str):
+                assistant_chunks.append(event_dict["data"])
+            yield event_dict
+
+        session_title = _session_title_from_agent_response("".join(assistant_chunks))
+        if session_title:
+            yield {"sessionTitle": session_title}
+
+        if pull_request_results:
+            yield {"pullRequest": pull_request_results[-1]}
+
+        if handoff_results:
+            yield {"userHandoff": handoff_results[-1]}
 
     except Exception as e:
         logger.exception("Agent run failed")

@@ -169,7 +169,7 @@ describe("Configuration Verification Tests", () => {
 
     it("should have correct title", () => {
       const indexHtml = readFileSync(resolve(__dirname, "../../index.html"), "utf-8")
-      expect(indexHtml).toContain("<title>Infrastructure Agent</title>")
+      expect(indexHtml).toContain("<title>InfraQ</title>")
     })
 
     it("should have meta description", () => {

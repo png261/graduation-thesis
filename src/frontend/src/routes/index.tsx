@@ -3,7 +3,6 @@ import { Routes, Route } from "react-router-dom"
 
 const ChatPage = lazy(() => import("./ChatPage"))
 const SettingsPage = lazy(() => import("./SettingsPage"))
-const ResourcesPage = lazy(() => import("./ResourcesPage"))
 const PullRequestsPage = lazy(() => import("./PullRequestsPage"))
 const ResourceCatalogPage = lazy(() => import("./ResourceCatalogPage"))
 const DriftGuardPage = lazy(() => import("./DriftGuardPage"))
@@ -14,7 +13,6 @@ export default function AppRoutes() {
       <Routes>
         <Route path="/" element={<ChatPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/resources" element={<ResourcesPage />} />
         <Route path="/resource-catalog" element={<ResourceCatalogPage />} />
         <Route path="/drift-guard" element={<DriftGuardPage />} />
         <Route path="/pull-requests" element={<PullRequestsPage />} />

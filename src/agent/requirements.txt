@@ -1,6 +1,8 @@
 # Strands agent dependencies with OpenAI support
-strands-agents[openai]==1.32.0
-strands-agents-tools==0.5.2
+strands-agents[openai]==1.38.0
+strands-agents-tools[diagram]==0.5.2
 bedrock-agentcore==1.4.7
-mcp==1.26.0
+mcp==1.27.0
 PyJWT[crypto]==2.12.1
+pydantic==2.13.4
+requests==2.33.1

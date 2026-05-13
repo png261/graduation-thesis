@@ -13,27 +13,58 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
   try {
     const json = JSON.parse(data)
 
+    if (json.pullRequest) {
+      callback({ type: "pull_request", pullRequest: json.pullRequest })
+      return
+    }
+
+    if (isUserHandoffPayload(json.userHandoff)) {
+      callback({ type: "user_handoff", handoff: json.userHandoff })
+      return
+    }
+
+    if (isChatAgentPayload(json.chatAgent)) {
+      callback({ type: "agent", agent: json.chatAgent })
+      return
+    }
+
+    if (isChatAgentPayload(json.agent)) {
+      callback({ type: "agent", agent: json.agent })
+      return
+    }
+
+    if (typeof json.sessionTitle === "string") {
+      callback({ type: "session_title", title: json.sessionTitle })
+      return
+    }
+
     // Text streaming
     if (typeof json.data === "string") {
       callback({ type: "text", content: json.data })
       return
     }
 
-    // Tool use streaming
+    // Tool use streaming. Strands may send either Bedrock-style input deltas
+    // or a complete/current tool input snapshot on current_tool_use.
     if (json.current_tool_use) {
       const tool = json.current_tool_use
-      // First delta for a tool has empty input — treat as start
-      if (json.delta?.toolUse?.input === "") {
-        callback({
-          type: "tool_use_start",
-          toolUseId: tool.toolUseId,
-          name: tool.name,
-        })
-      } else if (json.delta?.toolUse?.input) {
+      callback({
+        type: "tool_use_start",
+        toolUseId: tool.toolUseId,
+        name: tool.name,
+      })
+
+      if (typeof json.delta?.toolUse?.input === "string" && json.delta.toolUse.input !== "") {
         callback({
           type: "tool_use_delta",
           toolUseId: tool.toolUseId,
           input: json.delta.toolUse.input,
+        })
+      } else if (tool.input !== undefined && tool.input !== null) {
+        callback({
+          type: "tool_use_input_snapshot",
+          toolUseId: tool.toolUseId,
+          input: typeof tool.input === "string" ? tool.input : JSON.stringify(tool.input),
         })
       }
       return
@@ -82,4 +113,42 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
   } catch {
     console.debug("Failed to parse strands event:", data)
   }
+}
+
+function isUserHandoffPayload(value: unknown): value is {
+  type: "user_handoff"
+  questions: Array<{ id: string; question: string; options: string[] }>
+} {
+  if (!value || typeof value !== "object") return false
+  const handoff = value as Record<string, unknown>
+  if (handoff.type !== "user_handoff" || !Array.isArray(handoff.questions)) return false
+  return handoff.questions.every(question => {
+    if (!question || typeof question !== "object") return false
+    const item = question as Record<string, unknown>
+    return (
+      typeof item.id === "string" &&
+      typeof item.question === "string" &&
+      Array.isArray(item.options) &&
+      item.options.length === 3 &&
+      item.options.every(option => typeof option === "string")
+    )
+  })
+}
+
+function isChatAgentPayload(value: unknown): value is {
+  id: "agent1"
+  mention: "@devops"
+  name: string
+  avatar: string
+  className: string
+} {
+  if (!value || typeof value !== "object") return false
+  const agent = value as Record<string, unknown>
+  return (
+    agent.id === "agent1" &&
+    agent.mention === "@devops" &&
+    typeof agent.name === "string" &&
+    typeof agent.avatar === "string" &&
+    typeof agent.className === "string"
+  )
 }

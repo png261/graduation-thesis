@@ -1,22 +1,79 @@
-import { Link, useLocation } from "react-router-dom"
+import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
   CalendarClock,
   Database,
   GitPullRequest,
+  LogOut,
   MessageSquare,
+  Plus,
   Settings,
+  Trash2,
+  UserCircle,
 } from "lucide-react"
+import { useEffect, useMemo } from "react"
+import { Button } from "@/components/ui/button"
+import infraqLogo from "@/assets/infraq-logo.svg"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import type { ChatSession } from "@/components/chat/types"
+import { isEmptyNewChatSession } from "@/components/chat/session-utils"
+import { useAuth } from "@/hooks/useAuth"
+import { cn } from "@/lib/utils"
+import { useWebAppStore } from "@/stores/webAppStore"
 
 const navItems = [
-  { to: "/", label: "Chat", icon: MessageSquare },
   { to: "/settings", label: "Settings", icon: Settings },
   { to: "/pull-requests", label: "Pull Requests", icon: GitPullRequest },
   { to: "/resource-catalog", label: "Resource Catalog", icon: Database },
   { to: "/drift-guard", label: "Drift Guard", icon: CalendarClock },
 ]
 
+function relativeTime(value?: string) {
+  if (!value) return ""
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const diff = Date.now() - date.getTime()
+  const minutes = Math.max(1, Math.round(diff / 60000))
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
 export function AppSidebar() {
   const location = useLocation()
+  const navigate = useNavigate()
+  const auth = useAuth()
+  const storedSessions = useWebAppStore(state => state.sessions)
+  const sessions = useMemo(
+    () =>
+      [...storedSessions]
+        .sort((a, b) => {
+          const bTime = Date.parse(b.endDate || b.startDate || "")
+          const aTime = Date.parse(a.endDate || a.startDate || "")
+          return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
+        }),
+    [storedSessions]
+  )
+  const activeSessionId = useWebAppStore(state => state.activeSessionId)
+  const setActiveSessionId = useWebAppStore(state => state.setActiveSessionId)
+  const requestNewChat = useWebAppStore(state => state.requestNewChat)
+  const deleteChatSession = useWebAppStore(state => state.deleteChatSession)
+  const hydrateChatSessions = useWebAppStore(state => state.hydrateChatSessions)
+  const profile = auth.user?.profile as Record<string, unknown> | undefined
+  const accountLabel = String(
+    profile?.email || profile?.preferred_username || profile?.name || profile?.sub || "Signed in"
+  )
+  const hasEmptyNewChat = sessions.some(isEmptyNewChatSession)
 
   function isCurrent(to: string): boolean {
     const [pathname, search = ""] = to.split("?")
@@ -29,13 +86,38 @@ export function AppSidebar() {
     return location.search === `?${search}`
   }
 
+  function openChatSession(session: ChatSession) {
+    setActiveSessionId(session.id)
+    navigate("/")
+  }
+
+  function startNewChat() {
+    if (hasEmptyNewChat) return
+    navigate("/")
+    requestNewChat()
+  }
+
+  function removeChatSession(sessionId: string) {
+    const idToken = auth.user?.id_token
+    if (!idToken) return
+    void deleteChatSession(sessionId, idToken)
+    if (activeSessionId === sessionId) {
+      navigate("/")
+    }
+  }
+
+  useEffect(() => {
+    const idToken = auth.user?.id_token
+    if (!idToken) return
+    void hydrateChatSessions(idToken)
+  }, [auth.user?.id_token, hydrateChatSessions])
+
   return (
-    <aside className="relative hidden h-screen w-64 shrink-0 border-r bg-white lg:block">
+    <aside className="relative hidden h-screen w-64 shrink-0 flex-col border-r bg-white lg:flex">
       <div className="border-b px-5 py-4">
-        <p className="text-sm font-medium text-slate-500">Infrastructure</p>
-        <h1 className="text-lg font-semibold text-slate-950">Agent Console</h1>
+        <img src={infraqLogo} alt="InfraQ" className="h-11 w-auto" />
       </div>
-      <nav className="flex flex-col gap-1 p-3">
+      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3">
         {navItems.map(item => {
           const Icon = item.icon
           return (
@@ -53,7 +135,106 @@ export function AppSidebar() {
             </Link>
           )
         })}
+
+        <div className="mt-2 flex min-h-0 flex-col gap-2 border-t border-slate-200 pt-3">
+          <Button
+            className="h-9 justify-start gap-2 border-slate-300 bg-white text-slate-950 hover:bg-slate-100"
+            disabled={hasEmptyNewChat}
+            onClick={startNewChat}
+            type="button"
+            variant="outline"
+          >
+            <Plus className="h-4 w-4" />
+            New Chat
+          </Button>
+          <div className="max-h-[min(460px,calc(100vh-300px))] overflow-y-auto pb-28 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {sessions.length > 0 ? (
+              <div className="flex flex-col gap-1">
+                {sessions.map(session => (
+                  <div
+                    className={cn(
+                      "group flex w-full min-w-0 items-start gap-1 rounded-md px-2 py-2 text-left transition",
+                      activeSessionId === session.id
+                        ? "bg-slate-100 text-slate-950"
+                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-950"
+                    )}
+                    key={session.id}
+                  >
+                    <button
+                      className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                      onClick={() => openChatSession(session)}
+                      type="button"
+                    >
+                      <MessageSquare className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
+                          {session.repository?.fullName ?? session.name ?? "New chat"}
+                        </span>
+                        <span className="mt-1 flex items-center gap-1 text-xs">
+                          {session.pullRequest?.number ? (
+                            <>
+                              <GitPullRequest className="h-3 w-3" />
+                              PR #{session.pullRequest.number}
+                            </>
+                          ) : (
+                            relativeTime(session.endDate)
+                          )}
+                        </span>
+                      </span>
+                    </button>
+                    <Button
+                      aria-label={`Delete ${session.repository?.fullName ?? session.name ?? "chat"}`}
+                      className="h-7 w-7 shrink-0 text-slate-400 opacity-0 hover:bg-red-50 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100"
+                      onClick={() => removeChatSession(session.id)}
+                      size="icon"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="px-2 py-4 text-center text-sm text-slate-500">
+                No chats yet.
+              </div>
+            )}
+          </div>
+        </div>
       </nav>
+      {auth.isAuthenticated && (
+        <div className="border-t border-slate-200 p-3">
+          <div className="mb-2 flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-slate-700">
+            <UserCircle className="h-4 w-4 shrink-0" />
+            <span className="truncate text-sm font-medium">{accountLabel}</span>
+          </div>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                className="h-9 w-full justify-start gap-2 border-slate-300 bg-white text-slate-950 hover:bg-slate-100"
+                variant="outline"
+              >
+                <LogOut className="h-4 w-4" />
+                Logout
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Confirm Logout</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure you want to log out? You will need to sign in again to access your
+                  account.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => auth.signOut()}>Confirm</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      )}
     </aside>
   )
 }

@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "deploy": "python3 scripts/deploy-all.py"
+  },
   "devDependencies": {
     "shadcn": "^4.7.0"
   }

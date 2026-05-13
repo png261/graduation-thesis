@@ -1,0 +1,5 @@
+{
+  "registries": {
+    "@componentry": "https://componentry.fun/r/{name}.json"
+  }
+}
