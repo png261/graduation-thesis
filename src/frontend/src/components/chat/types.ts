@@ -5,7 +5,7 @@ export type MessageRole = "user" | "assistant"
 
 export interface ChatAgent {
   id: "agent1"
-  mention: "@devops"
+  mention: "@orchestrator"
   name: string
   avatar: string
   className: string
@@ -32,10 +32,18 @@ export interface UserHandoff {
 
 export type ToolCallStatus = "streaming" | "executing" | "complete"
 
+export type ToolProgressEntry =
+  | string
+  | {
+      phase: string
+      message: string
+    }
+
 export interface ToolCall {
   toolUseId: string
   name: string
   input: string
+  progress?: ToolProgressEntry[]
   result?: string
   status: ToolCallStatus
 }

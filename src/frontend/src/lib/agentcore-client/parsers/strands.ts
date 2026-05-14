@@ -38,6 +38,26 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
       return
     }
 
+    if (json.type === "tool_stream") {
+      const toolUseId = json.tool_stream_event?.tool_use?.toolUseId
+      const progress = json.tool_stream_event?.data?.specialistToolProgress
+      if (
+        typeof toolUseId === "string" &&
+        progress &&
+        typeof progress === "object" &&
+        typeof progress.phase === "string" &&
+        typeof progress.message === "string"
+      ) {
+        callback({
+          type: "tool_progress",
+          toolUseId,
+          phase: progress.phase,
+          message: progress.message,
+        })
+      }
+      return
+    }
+
     // Text streaming
     if (typeof json.data === "string") {
       callback({ type: "text", content: json.data })
@@ -137,7 +157,7 @@ function isUserHandoffPayload(value: unknown): value is {
 
 function isChatAgentPayload(value: unknown): value is {
   id: "agent1"
-  mention: "@devops"
+  mention: "@orchestrator"
   name: string
   avatar: string
   className: string
@@ -146,7 +166,7 @@ function isChatAgentPayload(value: unknown): value is {
   const agent = value as Record<string, unknown>
   return (
     agent.id === "agent1" &&
-    agent.mention === "@devops" &&
+    agent.mention === "@orchestrator" &&
     typeof agent.name === "string" &&
     typeof agent.avatar === "string" &&
     typeof agent.className === "string"

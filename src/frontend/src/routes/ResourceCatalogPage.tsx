@@ -5,12 +5,14 @@ import { useNavigate } from "react-router-dom"
 import {
   AlertTriangle,
   Boxes,
+  CalendarClock,
   CheckCircle2,
   Clock3,
   Database,
   ExternalLink,
   FileClock,
   History,
+  Play,
   Network,
   Plus,
   RefreshCw,
@@ -34,18 +36,22 @@ import type { SelectedRepository } from "@/lib/agentcore-client/types"
 import { useWebAppStore } from "@/stores/webAppStore"
 import {
   AwsCredentialMetadata,
+  DriftGuard,
   ResourceScan,
   StateBackend,
   S3BucketInfo,
   createStateBackend,
   listAwsCredentials,
+  listDriftGuards,
   getStateBackendGraphUrl,
   listResourceScans,
   listS3Buckets,
   listStateBackends,
+  runDriftGuard,
+  saveDriftGuard,
 } from "@/services/resourcesService"
 
-type CatalogTab = "resources" | "visualize" | "state" | "drift" | "policy" | "scans"
+type CatalogTab = "resources" | "visualize" | "state" | "autoscan" | "drift" | "policy" | "scans"
 type ScanService = "s3" | "ec2" | "iam"
 type JsonRecord = Record<string, unknown>
 type AlertKind = "drift" | "policy"
@@ -70,6 +76,7 @@ const tabs: Array<{ value: CatalogTab; label: string; icon: typeof Boxes }> = [
   { value: "resources", label: "Resources", icon: Boxes },
   { value: "visualize", label: "Visualize", icon: Network },
   { value: "state", label: "State History", icon: FileClock },
+  { value: "autoscan", label: "Autoscan", icon: CalendarClock },
   { value: "drift", label: "Drift Alert", icon: AlertTriangle },
   { value: "policy", label: "Policy Alert", icon: ShieldAlert },
   { value: "scans", label: "Scan History", icon: History },
@@ -176,7 +183,7 @@ function alertMatchesResource(alert: unknown, resource: JsonRecord, after: JsonR
 }
 
 function buildAwsConsoleUrl(scan: ResourceScan, resource: JsonRecord, after: JsonRecord): string {
-  const region = scan.stateRegion || "us-east-1"
+  const region = scan.stateRegion || "ap-southeast-1"
   const typeName = text(resource.type).toLowerCase()
   const id = text(after.id) || text(after.instance_id)
   const bucket = text(after.bucket) || text(resource.name)
@@ -190,7 +197,7 @@ function buildAwsConsoleUrl(scan: ResourceScan, resource: JsonRecord, after: Jso
   if (typeName === "aws_s3_bucket" && bucket) {
     return `https://s3.console.aws.amazon.com/s3/buckets/${encodeURIComponent(bucket)}?region=${region}&bucketType=general`
   }
-  if (typeName.startsWith("aws_iam_")) return "https://us-east-1.console.aws.amazon.com/iam/home"
+  if (typeName.startsWith("aws_iam_")) return "https://ap-southeast-1.console.aws.amazon.com/iam/home"
   return ""
 }
 
@@ -285,7 +292,7 @@ function buildFixPrompt(params: {
         ? "Terraform drift"
         : "resource drift or policy"
   return [
-    `@devops Fix the ${issueLabel} issue found by Cloudrift in this Terraform repository.`,
+    `@orchestrator Fix the ${issueLabel} issue found by Cloudrift in this Terraform repository.`,
     "",
     `Repository: ${params.repository.fullName}`,
     `State backend: ${scanStateLabel(params.scan)}`,
@@ -699,6 +706,114 @@ function ScanHistoryTable({ scans }: { scans: ResourceScan[] }) {
   )
 }
 
+function AutoScanPanel({
+  backends,
+  guards,
+  scans,
+  selectedBackendId,
+  isRunning,
+  onSelectedBackendChange,
+  onRun,
+}: {
+  backends: StateBackend[]
+  guards: DriftGuard[]
+  scans: ResourceScan[]
+  selectedBackendId: string
+  isRunning: boolean
+  onSelectedBackendChange: (backendId: string) => void
+  onRun: () => void
+}) {
+  const selectedBackend = backends.find(backend => backend.backendId === selectedBackendId) ?? null
+  const selectedGuard = guards.find(guard => guard.backendId === selectedBackendId) ?? null
+  const rows = scans.filter(scan => scan.backendId === selectedBackendId || scan.guardId === selectedGuard?.guardId)
+
+  if (!backends.length) return <EmptyState label="No added state backend found. Add a state backend first." />
+
+  return (
+    <section className="grid gap-4 lg:grid-cols-[360px_1fr]">
+      <div className="rounded-md border bg-white p-5">
+        <div className="flex items-center gap-3">
+          <CalendarClock className="h-5 w-5 text-slate-800" />
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Autoscan</h2>
+            <p className="mt-1 text-sm text-slate-500">Choose an added state backend and run a Cloudrift scan.</p>
+          </div>
+        </div>
+
+        <label className="mt-5 flex flex-col gap-1 text-sm font-medium text-slate-700">
+          Added State
+          <select
+            className="h-9 rounded-md border bg-white px-3 text-sm"
+            value={selectedBackendId}
+            onChange={event => onSelectedBackendChange(event.target.value)}
+          >
+            {backends.map(backend => (
+              <option key={backend.backendId} value={backend.backendId}>
+                {backend.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {selectedBackend && (
+          <div className="mt-4 rounded-md border bg-slate-50 p-3 text-sm text-slate-600">
+            <p className="font-medium text-slate-900">{selectedBackend.name}</p>
+            <p className="mt-1 break-all">s3://{selectedBackend.bucket}/{selectedBackend.key}</p>
+            <p className="mt-1">{selectedBackend.region}</p>
+            <p className="mt-1 break-all">{selectedBackend.repository?.fullName || "No repository connected"}</p>
+          </div>
+        )}
+
+        <Button
+          type="button"
+          onClick={onRun}
+          disabled={!selectedBackend || !selectedBackend.repository?.fullName || isRunning}
+          className="mt-4 w-full gap-2"
+          title={!selectedBackend?.repository?.fullName ? "Connect this state backend to an installed GitHub repository first" : undefined}
+        >
+          <Play className="h-4 w-4" />
+          {isRunning ? "Starting Autoscan" : "Run Autoscan"}
+        </Button>
+      </div>
+
+      <section className="rounded-md border bg-white">
+        <div className="border-b p-4">
+          <h2 className="text-base font-semibold text-slate-900">Autoscan History</h2>
+          <p className="mt-1 text-sm text-slate-500">Recent scans for the selected added state.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] text-left text-sm">
+            <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Backend</th>
+                <th className="px-4 py-3">Alerts</th>
+                <th className="px-4 py-3">Started</th>
+                <th className="px-4 py-3">Updated</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {rows.map(scan => (
+                <tr key={scan.scanId} className="hover:bg-slate-50">
+                  <td className="px-4 py-4"><StatusBadge>{scan.status}</StatusBadge></td>
+                  <td className="px-4 py-4">
+                    <p className="font-semibold text-slate-900">{scan.backendName || scan.backendId}</p>
+                    <p className="break-all text-xs text-slate-500">s3://{scan.stateBucket}/{scan.stateKey}</p>
+                  </td>
+                  <td className="px-4 py-4 text-slate-600">{scan.driftAlerts.length} drift / {scan.policyAlerts.length} policy</td>
+                  <td className="px-4 py-4 text-slate-600">{formatDate(scan.startedAt)}</td>
+                  <td className="px-4 py-4 text-slate-600">{formatDate(scan.updatedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && <p className="p-4 text-sm text-slate-500">No autoscans for this state yet.</p>}
+        </div>
+      </section>
+    </section>
+  )
+}
+
 function AddStateBackendForm({
   open,
   credentials,
@@ -730,7 +845,7 @@ function AddStateBackendForm({
     name: "",
     bucket: "",
     key: "",
-    region: "us-east-2",
+    region: "ap-southeast-1",
     service: "s3" as ScanService,
     credentialId: credentials[0]?.credentialId || "",
     repository: repositories[0]?.fullName || "",
@@ -824,7 +939,7 @@ function AddStateBackendForm({
                   setBuckets([])
                   setForm(current => ({ ...current, region: event.target.value }))
                 }}
-                placeholder="us-east-2"
+                placeholder="ap-southeast-1"
               />
             </label>
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
@@ -949,11 +1064,14 @@ export default function ResourceCatalogPage() {
   const { repositories, isLoading: isLoadingRepositories, error: repositoriesError } = useInstalledRepositories(auth.user?.access_token)
   const [activeTab, setActiveTab] = useState<CatalogTab>("resources")
   const [backends, setBackends] = useState<StateBackend[]>([])
+  const [guards, setGuards] = useState<DriftGuard[]>([])
   const [scans, setScans] = useState<ResourceScan[]>([])
   const [credentials, setCredentials] = useState<AwsCredentialMetadata[]>([])
+  const [selectedAutoScanBackendId, setSelectedAutoScanBackendId] = useState("")
   const [isAddBackendOpen, setIsAddBackendOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isSavingBackend, setIsSavingBackend] = useState(false)
+  const [isRunningAutoScan, setIsRunningAutoScan] = useState(false)
   const [openingGraphBackendId, setOpeningGraphBackendId] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -964,14 +1082,17 @@ export default function ResourceCatalogPage() {
     setIsLoading(true)
     setError(null)
     try {
-      const [loadedBackends, loadedScans, loadedCredentials] = await Promise.all([
+      const [loadedBackends, loadedScans, loadedGuards, loadedCredentials] = await Promise.all([
         listStateBackends(idToken),
         listResourceScans(idToken),
+        listDriftGuards(idToken),
         listAwsCredentials(idToken).catch(() => ({ credentials: [], activeCredentialId: "" })),
       ])
       setBackends(loadedBackends)
       setScans(loadedScans)
+      setGuards(loadedGuards)
       setCredentials(loadedCredentials.credentials)
+      setSelectedAutoScanBackendId(current => current || loadedBackends[0]?.backendId || "")
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load resource catalog")
     } finally {
@@ -1009,6 +1130,7 @@ export default function ResourceCatalogPage() {
       try {
         const backend = await createStateBackend(payload, idToken)
         setBackends(current => [backend, ...current])
+        setSelectedAutoScanBackendId(backend.backendId)
         setIsAddBackendOpen(false)
         setActiveTab("visualize")
         setMessage(backend.graphKey ? "State backend added and resource graph generated" : "State backend added")
@@ -1029,6 +1151,58 @@ export default function ResourceCatalogPage() {
     },
     [auth.user?.id_token]
   )
+
+  const handleRunAutoScan = useCallback(async () => {
+    const idToken = auth.user?.id_token
+    const backend = backends.find(item => item.backendId === selectedAutoScanBackendId)
+    if (!idToken) {
+      setError("Sign in before running Autoscan")
+      return
+    }
+    if (!backend) {
+      setError("Choose an added state backend before running Autoscan")
+      return
+    }
+    if (!backend.repository?.fullName) {
+      setError("Connect this state backend to an installed GitHub repository before running Autoscan")
+      return
+    }
+    setIsRunningAutoScan(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const existingGuard = guards.find(guard => guard.backendId === backend.backendId)
+      const savedGuard = await saveDriftGuard(
+        {
+          guardId: existingGuard?.guardId,
+          name: existingGuard?.name || `Autoscan - ${backend.name}`,
+          backendId: backend.backendId,
+          repository: backend.repository.fullName,
+          frequency: "manual",
+          email: String((auth.user?.profile as Record<string, unknown> | undefined)?.email || ""),
+          enabled: true,
+        },
+        idToken
+      )
+      setGuards(current => [savedGuard, ...current.filter(item => item.guardId !== savedGuard.guardId)])
+      const result = await runDriftGuard(savedGuard.guardId, idToken)
+      if (result.scan) {
+        setScans(current => [result.scan!, ...current])
+        setGuards(current =>
+          current.map(guard =>
+            guard.guardId === savedGuard.guardId
+              ? { ...guard, lastScanId: result.scan!.scanId, lastRunAt: result.scan!.startedAt }
+              : guard
+          )
+        )
+      }
+      setMessage(result.skipped ? `Autoscan skipped: ${result.reason}` : "Autoscan started")
+    } catch (runError) {
+      setError(runError instanceof Error ? runError.message : "Failed to run Autoscan")
+    } finally {
+      setIsRunningAutoScan(false)
+    }
+  }, [auth.user?.id_token, auth.user?.profile, backends, guards, selectedAutoScanBackendId])
 
   const handleOpenGraph = useCallback(
     async (backend: StateBackend) => {
@@ -1186,6 +1360,17 @@ export default function ResourceCatalogPage() {
           />
         )}
         {activeTab === "state" && <StateHistoryTable backends={backends} scans={scans} />}
+        {activeTab === "autoscan" && (
+          <AutoScanPanel
+            backends={backends}
+            guards={guards}
+            scans={scans}
+            selectedBackendId={selectedAutoScanBackendId}
+            isRunning={isRunningAutoScan}
+            onSelectedBackendChange={setSelectedAutoScanBackendId}
+            onRun={() => void handleRunAutoScan()}
+          />
+        )}
         {activeTab === "drift" && <AlertsPanel scans={scans} backends={backends} kind="drift" onFixAlerts={handleFixAlerts} />}
         {activeTab === "policy" && <AlertsPanel scans={scans} backends={backends} kind="policy" onFixAlerts={handleFixAlerts} />}
         {activeTab === "scans" && <ScanHistoryTable scans={scans} />}

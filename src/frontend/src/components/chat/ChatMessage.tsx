@@ -48,6 +48,7 @@ export function ChatMessage({
               name: seg.toolCall.name,
               args: seg.toolCall.input,
               status: seg.toolCall.status,
+              progress: seg.toolCall.progress,
               result: seg.toolCall.result,
             })}
           </div>

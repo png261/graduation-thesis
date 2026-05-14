@@ -9,7 +9,7 @@ export class AgentCoreClient {
 
   constructor(config: AgentCoreConfig) {
     this.runtimeArn = config.runtimeArn
-    this.region = config.region ?? "us-east-1"
+    this.region = config.region ?? "ap-southeast-1"
     this.parser = parseStrandsChunk
   }
 

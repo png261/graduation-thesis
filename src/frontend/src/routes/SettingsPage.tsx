@@ -44,7 +44,7 @@ export default function SettingsPage() {
         if (loaded.agentRuntimeArn) {
           setClient(new AgentCoreClient({
             runtimeArn: loaded.agentRuntimeArn,
-            region: loaded.awsRegion || "us-east-1",
+            region: loaded.awsRegion || "ap-southeast-1",
           }))
         }
       })

@@ -269,6 +269,19 @@ describe("Component Integration Tests", () => {
       expect(serviceContent).toContain("/resources/s3-buckets")
     })
 
+    it("should merge Drift Guard into Resource Catalog as an Autoscan tab for added states", () => {
+      const catalogContent = readFileSync(resolve(__dirname, "../routes/ResourceCatalogPage.tsx"), "utf-8")
+      const sidebarContent = readFileSync(resolve(__dirname, "../components/layout/AppSidebar.tsx"), "utf-8")
+      const routesContent = readFileSync(resolve(__dirname, "../routes/index.tsx"), "utf-8")
+      expect(catalogContent).toContain('value: "autoscan", label: "Autoscan"')
+      expect(catalogContent).toContain("Added State")
+      expect(catalogContent).toContain("Run Autoscan")
+      expect(catalogContent).toContain("saveDriftGuard")
+      expect(catalogContent).toContain("runDriftGuard")
+      expect(sidebarContent).not.toContain('label: "Drift Guard"')
+      expect(routesContent).toContain('<Route path="/drift-guard" element={<Navigate to="/resource-catalog" replace />} />')
+    })
+
     it("should import ChatPage component", () => {
       const routesContent = readFileSync(resolve(__dirname, "../routes/index.tsx"), "utf-8")
       expect(routesContent).toMatch(/ChatPage.*import\(["']\.\/ChatPage["']\)/)

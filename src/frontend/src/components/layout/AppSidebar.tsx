@@ -1,6 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import {
-  CalendarClock,
   Database,
   GitPullRequest,
   LogOut,
@@ -34,7 +33,6 @@ const navItems = [
   { to: "/settings", label: "Settings", icon: Settings },
   { to: "/pull-requests", label: "Pull Requests", icon: GitPullRequest },
   { to: "/resource-catalog", label: "Resource Catalog", icon: Database },
-  { to: "/drift-guard", label: "Drift Guard", icon: CalendarClock },
 ]
 
 function relativeTime(value?: string) {

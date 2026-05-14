@@ -17,7 +17,7 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 
 
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 SESSION = boto3.Session(region_name=REGION)
 CLIENT = SESSION.client("bedrock-agentcore-control", region_name=REGION)
 

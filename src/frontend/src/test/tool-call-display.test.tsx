@@ -10,6 +10,34 @@ vi.mock("@excalidraw/excalidraw", () => ({
 vi.mock("@excalidraw/excalidraw/index.css", () => ({}))
 
 describe("ToolCallDisplay", () => {
+  it("shows completed agent reasoning and tool activity when expanded", () => {
+    render(
+      <ToolCallDisplay
+        name="architect_agent"
+        args='{"input":"Design a test architecture"}'
+        status="complete"
+        progress={[
+          { phase: "thinking", message: "architect_agent is thinking" },
+          { phase: "tool", message: "architect_agent is using list_aws_services" },
+          { phase: "text", message: "Drafting a minimal VPC and EC2 testing design" },
+          { phase: "completed", message: "architect_agent completed" },
+        ]}
+        result="Minimal architecture output"
+      />
+    )
+
+    expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /architect_agent/i }))
+
+    expect(screen.getByText("Agent reasoning and tools")).toBeInTheDocument()
+    expect(screen.getByText("Thinking")).toBeInTheDocument()
+    expect(screen.getByText("Tool")).toBeInTheDocument()
+    expect(screen.getByText("architect_agent is using list_aws_services")).toBeInTheDocument()
+    expect(screen.getByText("Drafting a minimal VPC and EC2 testing design")).toBeInTheDocument()
+    expect(screen.getByText("Minimal architecture output")).toBeInTheDocument()
+  })
+
   it("renders architecture diagrams from a public URL instead of a data URL", () => {
     const result = JSON.stringify({
       ok: true,

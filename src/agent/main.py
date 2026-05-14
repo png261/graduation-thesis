@@ -28,10 +28,21 @@ from strands_tools import file_read, file_write
 from strands_tools.diagram import diagram as strands_diagram
 from strands_tools.shell import shell as strands_shell
 from strands_tools.swarm import swarm as strands_swarm
-from tools.architecture_diagrams import create_architecture_diagram_tool
-from tools.excalidraw_view import create_excalidraw_view, read_excalidraw_guide
-from tools.gateway import create_gateway_mcp_client
-from tools.opentofu_mcp import create_opentofu_mcp_client
+from agents.iac_tools import (
+    checkov_scan,
+    infracost_breakdown,
+    terraform_init,
+    terraform_plan,
+    terraform_validate,
+    tflint_scan,
+)
+from agents.orchestator.agent import create_agent as create_orchestrator_agent
+from agents.orchestator.system_prompt import CHAT_AGENTS, LEGACY_AGENT_MENTIONS
+from agents.orchestator.tools.architecture_diagrams import create_architecture_diagram_tool
+from agents.orchestator.tools.excalidraw_view import create_excalidraw_view, read_excalidraw_guide
+from agents.orchestator.tools.gateway import create_gateway_mcp_client
+from agents.orchestator.tools.opentofu_mcp import create_opentofu_mcp_client
+from agents.runtime import AgentRuntimeTools
 from utils.auth import extract_user_id_from_context, get_openai_credentials
 from utils.github_app import (
     create_pull_request as create_github_pull_request,
@@ -49,60 +60,6 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 MAX_FILE_PREVIEW_BYTES = int(os.environ.get("MAX_FILE_PREVIEW_BYTES", str(1024 * 1024)))
-
-SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to tools via the Gateway "
-    "and session-scoped runtime files. "
-    "Use the Strands file_write tool for creating or updating files, and file_read for "
-    "reading, searching, or listing files. Your working directory is a dedicated folder for "
-    "this chat session, so relative file paths are isolated from other chats. "
-    "You also have Strands community tools: shell for workspace-scoped command execution, "
-    "diagram for cloud/UML diagrams, and swarm for coordinating specialist agents. "
-    "Use shell only in the current session workspace or connected repository, prefer "
-    "read-only commands unless the user asked for changes, and do not run destructive "
-    "commands unless the user explicitly requested them. "
-    "Use the Terraform/OpenTofu skill guidance for Terraform or OpenTofu authoring, "
-    "review, debugging, tests, CI, scans, state operations, and module design. "
-    "Use the OpenTofu MCP registry tools for provider, module, resource, and data "
-    "source documentation instead of guessing provider schemas. "
-    "When asked to visualize AWS architecture, generate awslabs diagram-as-code YAML "
-    "using https://github.com/awslabs/diagram-as-code/blob/main/doc/mcp-server.md "
-    "and call render_architecture_diagram so the diagram is rendered by awsdac MCP "
-    "and saved to the session workspace. The YAML must put DefinitionFiles, Resources, "
-    "and Links under the top-level Diagram key. Use a simple reachable tree such as "
-    "Canvas -> AWSCloud -> VPC -> Subnet -> Instance. Do not invent a Region or "
-    "Container wrapper, and do not list the same resource under multiple parents. "
-    "Do not use Python, Code Interpreter, "
-    "or the Mingrammer diagrams package for architecture diagrams. "
-    "When asked to sketch an idea, workflow, handoff, sequence, or rough plan, "
-    "call read_excalidraw_guide once if needed, then call create_excalidraw_view with "
-    "Excalidraw-compatible elements so the chat can stream an inline drawing. "
-    "When you need a critical missing detail before acting, do not guess. "
-    "Call handoff_to_user with one or more clarification questions. Each question "
-    "must include exactly three concise options, and the user may also provide a custom "
-    "answer. Ask all blocking questions together when possible, then wait for the user "
-    "before continuing. "
-    "When asked about your tools, list them and explain what they do."
-)
-
-CHAT_AGENTS = {
-    "agent1": {
-        "id": "agent1",
-        "mention": "@devops",
-        "name": "InfraQ",
-        "avatar": "IQ",
-        "className": "bg-slate-950 text-white",
-        "persona": (
-            "You are InfraQ. Be the default implementation and operations agent: "
-            "practical, direct, and focused on safe infrastructure changes, deployment, "
-            "verification, CI/CD, observability, and pull request delivery."
-        ),
-    },
-}
-
-LEGACY_AGENT_MENTIONS = {
-    "@agent1": "agent1",
-}
 
 
 def _public_agent(agent: dict) -> dict:
@@ -281,34 +238,6 @@ def _create_handoff_to_user_tool(results: list[dict]):
         return json.dumps(handoff)
 
     return handoff_to_user
-
-
-def _repo_prompt(repository: dict | None, chat_agent: dict | None = None) -> str:
-    prompt = SYSTEM_PROMPT
-    if chat_agent:
-        prompt = f"{prompt} {chat_agent['persona']}"
-    if not repository:
-        return (
-            f"{prompt} This chat does not currently have a GitHub repository connected. "
-            "Answer general questions normally. If the user asks you to inspect repository files, "
-            "change code, create a commit, open a pull request, or do work that requires repository "
-            "access, explain that they can connect a GitHub repository from the chat and then continue "
-            "the same conversation."
-        )
-    full_name = repository.get("fullName") or repository.get("full_name")
-    return (
-        f"{prompt} You are working inside the cloned GitHub repository {full_name}. "
-        "Only read and write files inside the current repository working directory. "
-        "Do not use absolute paths outside the repository. "
-        "Do not run git commands, create commits, or push branches yourself. "
-        "For visualization-only requests, such as generating an architecture diagram, "
-        "read the repository, call render_architecture_diagram, and show the generated "
-        "diagram without creating a pull request unless the user explicitly asks you to "
-        "change repository files. "
-        "After editing and verifying the required files, call the create_pull_request tool exactly once. "
-        "Generate the tool title and body from your actual changes; use a concise title under 72 characters "
-        "and a markdown body that summarizes changed files and fixes."
-    )
 
 
 def _use_shared_files_workdir(repository: dict | None = None, session_id: str | None = None) -> str:
@@ -524,6 +453,139 @@ def _prompt_with_attachment_content_blocks(prompt: str, attachments: list[dict])
     return content_blocks
 
 
+def _compact_stream_event(event: dict) -> dict | None:
+    """Reduce Strands stream events to the frontend SSE contract.
+
+    Raw Strands events can include full message history, tool config, system prompts,
+    model objects, and trace objects on every streamed token. Forwarding those large
+    payloads over AgentCore's HTTP/2 stream can break long chats. Keep only the
+    fields consumed by the frontend parser.
+    """
+    if isinstance(event.get("data"), str):
+        return {"data": event["data"]}
+
+    if event.get("current_tool_use"):
+        compact: dict = {
+            "current_tool_use": _compact_tool_use(event["current_tool_use"]),
+        }
+        delta = _compact_tool_delta(event.get("delta"))
+        if delta:
+            compact["delta"] = delta
+        return compact
+
+    if event.get("type") == "tool_stream":
+        return _compact_tool_stream_event(event)
+
+    if event.get("message"):
+        message = _compact_message(event["message"])
+        if message:
+            return {"message": message}
+        return None
+
+    if event.get("result") is not None:
+        result = event["result"]
+        stop_reason = getattr(result, "stop_reason", None)
+        if isinstance(result, dict):
+            stop_reason = result.get("stop_reason") or result.get("stopReason")
+        return {"result": {"stop_reason": stop_reason or "end_turn"}}
+
+    if event.get("init_event_loop"):
+        return {"init_event_loop": True}
+    if event.get("start_event_loop"):
+        return {"start_event_loop": True}
+    if event.get("start"):
+        return {"start": True}
+    if event.get("force_stop"):
+        return {
+            "force_stop": True,
+            "force_stop_reason": str(event.get("force_stop_reason", "")),
+        }
+    if event.get("status") == "error":
+        return {"status": "error", "error": str(event.get("error", ""))}
+
+    return None
+
+
+def _compact_tool_use(tool_use: dict) -> dict:
+    return {
+        "toolUseId": tool_use.get("toolUseId"),
+        "name": tool_use.get("name"),
+        "input": tool_use.get("input", ""),
+    }
+
+
+def _compact_tool_delta(delta: dict | None) -> dict | None:
+    if not isinstance(delta, dict):
+        return None
+    tool_input = ((delta.get("toolUse") or {}).get("input"))
+    if not isinstance(tool_input, str):
+        return None
+    return {"toolUse": {"input": tool_input}}
+
+
+def _compact_tool_stream_event(event: dict) -> dict | None:
+    stream_event = event.get("tool_stream_event")
+    if not isinstance(stream_event, dict):
+        return None
+    tool_use = stream_event.get("tool_use")
+    data = stream_event.get("data")
+    if not isinstance(tool_use, dict) or not isinstance(data, dict):
+        return None
+    progress = data.get("specialistToolProgress")
+    if not isinstance(progress, dict):
+        return None
+    return {
+        "type": "tool_stream",
+        "tool_stream_event": {
+            "tool_use": _compact_tool_use(tool_use),
+            "data": {
+                "specialistToolProgress": {
+                    "phase": str(progress.get("phase", "")),
+                    "message": str(progress.get("message", "")),
+                }
+            },
+        },
+    }
+
+
+def _compact_message(message: dict) -> dict | None:
+    role = message.get("role")
+    content = message.get("content")
+    if role not in {"assistant", "user"} or not isinstance(content, list):
+        return None
+
+    compact_content = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if "toolUse" in block and isinstance(block["toolUse"], dict):
+            compact_content.append({"toolUse": _compact_tool_use(block["toolUse"])})
+        elif "toolResult" in block and isinstance(block["toolResult"], dict):
+            compact_content.append({"toolResult": _compact_tool_result(block["toolResult"])})
+
+    if role == "assistant":
+        return {"role": role, "content": compact_content}
+    if compact_content:
+        return {"role": role, "content": compact_content}
+    return None
+
+
+def _compact_tool_result(tool_result: dict) -> dict:
+    content = []
+    for item in tool_result.get("content", []):
+        if not isinstance(item, dict):
+            continue
+        if "text" in item:
+            content.append({"text": str(item["text"])})
+        elif "json" in item:
+            content.append({"text": json.dumps(item["json"], default=str)})
+    return {
+        "toolUseId": tool_result.get("toolUseId"),
+        "status": tool_result.get("status", "success"),
+        "content": content,
+    }
+
+
 class OpenRouterModel(OpenAIModel):
     """OpenAI-compatible model adapter that omits token-limit request fields."""
 
@@ -616,29 +678,36 @@ def create_strands_agent(
 
     session_manager = _create_session_manager(user_id, session_id)
 
-    gateway_client = create_gateway_mcp_client()
-    opentofu_client = create_opentofu_mcp_client()
-    tools = [
-        gateway_client,
-        opentofu_client,
-        _create_handoff_to_user_tool(handoff_results if handoff_results is not None else []),
-        create_architecture_diagram_tool(),
-        read_excalidraw_guide,
-        create_excalidraw_view,
-        file_read,
-        file_write,
-        strands_shell,
-        strands_diagram,
-        strands_swarm,
-    ]
+    create_pull_request_tool = None
     if repository is not None and pull_request_results is not None:
-        tools.append(_create_pull_request_tool(repository, session_id, pull_request_results))
+        create_pull_request_tool = _create_pull_request_tool(repository, session_id, pull_request_results)
 
-    return Agent(
-        name="strands_agent",
-        system_prompt=_repo_prompt(repository, chat_agent),
-        tools=tools,
+    runtime_tools = AgentRuntimeTools(
+        gateway=create_gateway_mcp_client(),
+        opentofu=create_opentofu_mcp_client(),
+        handoff_to_user=_create_handoff_to_user_tool(handoff_results if handoff_results is not None else []),
+        render_architecture_diagram=create_architecture_diagram_tool(),
+        read_excalidraw_guide=read_excalidraw_guide,
+        create_excalidraw_view=create_excalidraw_view,
+        file_read=file_read,
+        file_write=file_write,
+        shell=strands_shell,
+        terraform_init=terraform_init,
+        terraform_plan=terraform_plan,
+        terraform_validate=terraform_validate,
+        tflint_scan=tflint_scan,
+        infracost_breakdown=infracost_breakdown,
+        checkov_scan=checkov_scan,
+        diagram=strands_diagram,
+        swarm=strands_swarm,
+        create_pull_request=create_pull_request_tool,
+    )
+
+    return create_orchestrator_agent(
         model=openai_model,
+        repository=repository,
+        chat_agent=chat_agent,
+        runtime_tools=runtime_tools,
         session_manager=session_manager,
         trace_attributes={"user.id": user_id, "session.id": session_id},
     )
@@ -809,13 +878,16 @@ async def invocations(payload, context: RequestContext):
         agent = create_strands_agent(user_id, session_id, repository, chat_agent, pull_request_results, handoff_results)
         saved_attachments = _save_prompt_attachments(payload.get("attachments"))
         agent_query = _prompt_with_attachment_content_blocks(user_query, saved_attachments)
+        agent.state.set("original_user_prompt", user_query)
 
         assistant_chunks = []
         async for event in agent.stream_async(agent_query):
-            event_dict = json.loads(json.dumps(dict(event), default=str))
+            event_dict = dict(event)
             if isinstance(event_dict.get("data"), str):
                 assistant_chunks.append(event_dict["data"])
-            yield event_dict
+            compact_event = _compact_stream_event(event_dict)
+            if compact_event is not None:
+                yield compact_event
 
         session_title = _session_title_from_agent_response("".join(assistant_chunks))
         if session_title:

@@ -33,4 +33,35 @@ describe("parseStrandsChunk", () => {
       },
     ])
   })
+
+  it("emits specialist tool progress from tool stream events", () => {
+    const events: StreamEvent[] = []
+    parseStrandsChunk(
+      `data: ${JSON.stringify({
+        type: "tool_stream",
+        tool_stream_event: {
+          tool_use: {
+            toolUseId: "tool-2",
+            name: "architect_agent",
+          },
+          data: {
+            specialistToolProgress: {
+              phase: "text",
+              message: "architect_agent is drafting a VPC design",
+            },
+          },
+        },
+      })}`,
+      event => events.push(event)
+    )
+
+    expect(events).toEqual([
+      {
+        type: "tool_progress",
+        toolUseId: "tool-2",
+        phase: "text",
+        message: "architect_agent is drafting a VPC design",
+      },
+    ])
+  })
 })

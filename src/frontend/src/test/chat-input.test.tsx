@@ -31,7 +31,7 @@ describe("ChatInput", () => {
       />
     )
 
-    fireEvent.mouseDown(screen.getByRole("button", { name: "Mention agent" }))
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "@" } })
     expect(setInput).toHaveBeenCalledWith("@")
 
     rerender(
@@ -44,8 +44,8 @@ describe("ChatInput", () => {
       />
     )
 
-    fireEvent.mouseDown(screen.getByRole("button", { name: /DevOps Agent/i }))
-    expect(setInput).toHaveBeenLastCalledWith("@devops ")
+    fireEvent.mouseDown(screen.getByRole("button", { name: /InfraQ Orchestrator/i }))
+    expect(setInput).toHaveBeenLastCalledWith("@orchestrator ")
   })
 
   it("renders a GitHub repository selector and reports changes", () => {

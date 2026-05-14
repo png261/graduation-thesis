@@ -30,7 +30,7 @@ export function useInstalledRepositories(accessToken?: string | null): Installed
       if (!config.agentRuntimeArn) throw new Error("Agent Runtime ARN not found in configuration")
       const client = new AgentCoreClient({
         runtimeArn: config.agentRuntimeArn,
-        region: config.awsRegion || "us-east-1",
+        region: config.awsRegion || "ap-southeast-1",
       })
       const result = await client.githubAction(
         "listInstalledRepositories",

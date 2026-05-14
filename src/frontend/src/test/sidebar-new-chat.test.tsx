@@ -141,8 +141,8 @@ describe("New Chat from sidebar", () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
-          agentRuntimeArn: "arn:aws:bedrock-agentcore:us-east-2:123456789012:runtime/test",
-          awsRegion: "us-east-2",
+          agentRuntimeArn: "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/test",
+          awsRegion: "ap-southeast-1",
         }),
       })
     )

@@ -17,7 +17,7 @@ import { useWebAppStore } from "@/stores/webAppStore"
 import { Button } from "@/components/ui/button"
 import { CursorDrivenParticleTypography } from "@/components/ui/cursor-driven-particle-typography"
 import { ensureToolCallSegment } from "./tool-call-state"
-import { ChevronLeft, ChevronRight } from "lucide-react"
+import { ArrowDown, ChevronLeft, ChevronRight } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -80,7 +80,10 @@ export default function ChatInterface() {
   const repositoryChatRequest = useWebAppStore(state => state.repositoryChatRequest)
   const selectedAgent = CHAT_AGENTS[0]
 
-  // Ref for message container to enable auto-scrolling
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false)
+
+  // Refs for manually returning to the latest response without forcing auto-scroll.
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const hasRequestedChatSessionsRef = useRef(false)
@@ -91,8 +94,8 @@ export default function ChatInterface() {
   )
 
   // Register default tool renderer (wildcard "*")
-  useDefaultTool(({ name, args, status, result }) => (
-    <ToolCallDisplay name={name} args={args} status={status} result={result} />
+  useDefaultTool(({ name, args, status, progress, result }) => (
+    <ToolCallDisplay name={name} args={args} status={status} progress={progress} result={result} />
   ))
 
   // Load agent configuration and create client on mount
@@ -111,7 +114,7 @@ export default function ChatInterface() {
 
         const agentClient = new AgentCoreClient({
           runtimeArn: config.agentRuntimeArn,
-          region: config.awsRegion || "us-east-1",
+          region: config.awsRegion || "ap-southeast-1",
         })
 
         setClient(agentClient)
@@ -125,9 +128,24 @@ export default function ChatInterface() {
     loadConfig()
   }, [])
 
-  useEffect(() => {
+  const updateScrollToLatestVisibility = useCallback(() => {
+    const container = messagesContainerRef.current
+    if (!container) {
+      setShowScrollToLatest(false)
+      return
+    }
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    setShowScrollToLatest(messages.length > 0 && distanceFromBottom > 160)
+  }, [messages.length])
+
+  const scrollToLatestResponse = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+    setShowScrollToLatest(false)
+  }, [])
+
+  useEffect(() => {
+    updateScrollToLatestVisibility()
+  }, [messages, updateScrollToLatestVisibility])
 
   useEffect(() => {
     if (!sessions.some(session => session.id === sessionId) && sessions[0]) {
@@ -426,6 +444,21 @@ export default function ChatInterface() {
             updateMessage()
             break
           }
+          case "tool_progress": {
+            const tc = toolCallMap.get(event.toolUseId)
+            if (tc) {
+              tc.status = "executing"
+              const progress = tc.progress ?? []
+              const last = progress[progress.length - 1]
+              const lastPhase = typeof last === "string" ? "" : last?.phase
+              const lastMessage = typeof last === "string" ? last : last?.message
+              if (lastPhase !== event.phase || lastMessage !== event.message) {
+                tc.progress = [...progress.slice(-49), { phase: event.phase, message: event.message }]
+              }
+            }
+            updateMessage()
+            break
+          }
           case "tool_result": {
             const tc = toolCallMap.get(event.toolUseId)
             if (tc) {
@@ -697,13 +730,26 @@ export default function ChatInterface() {
             <div className="max-w-4xl mx-auto w-full h-full">
               <ChatMessages
                 messages={messages}
+                messagesContainerRef={messagesContainerRef}
                 messagesEndRef={messagesEndRef}
+                onScroll={updateScrollToLatestVisibility}
               />
             </div>
           </div>
         </>
       )}
       </section>
+      {showScrollToLatest && (
+        <button
+          type="button"
+          onClick={scrollToLatestResponse}
+          className="absolute bottom-32 left-1/2 z-50 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-lg transition-colors hover:bg-slate-50"
+          aria-label="Scroll to latest response"
+        >
+          <ArrowDown className="h-4 w-4" />
+          <span>Latest response</span>
+        </button>
+      )}
       {repository && (
         <button
           type="button"

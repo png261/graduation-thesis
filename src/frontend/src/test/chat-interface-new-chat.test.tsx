@@ -127,8 +127,8 @@ describe("ChatInterface new repository chat", () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
-          agentRuntimeArn: "arn:aws:bedrock-agentcore:us-east-2:123456789012:runtime/test",
-          awsRegion: "us-east-2",
+          agentRuntimeArn: "arn:aws:bedrock-agentcore:ap-southeast-1:123456789012:runtime/test",
+          awsRegion: "ap-southeast-1",
         }),
       })
     )
@@ -157,7 +157,7 @@ describe("ChatInterface new repository chat", () => {
   it("shows visible starter content after a repository chat is created", async () => {
     render(<ChatInterface />)
 
-    expect(screen.getByText("Infrastructure Agent")).toBeInTheDocument()
+    expect(screen.getByText("InfraQ")).toBeInTheDocument()
     expect(screen.queryByText("Ask me anything to get started")).not.toBeInTheDocument()
     expect(screen.getByRole("form", { name: "chat input" })).toBeInTheDocument()
     expect(screen.queryByText("Connect a GitHub Repository")).not.toBeInTheDocument()
@@ -185,7 +185,7 @@ describe("ChatInterface new repository chat", () => {
 
     render(<ChatInterface />)
 
-    expect(screen.getByText("Infrastructure Agent")).toBeInTheDocument()
+    expect(screen.getByText("InfraQ")).toBeInTheDocument()
     expect(screen.queryByText("Ask me anything to get started")).not.toBeInTheDocument()
     expect(screen.getByRole("form", { name: "chat input" })).toBeInTheDocument()
     expect(screen.getByText(/No repository connected/i)).toBeInTheDocument()
@@ -264,6 +264,54 @@ describe("ChatInterface new repository chat", () => {
       expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-repository-locked", "false")
     )
     expect(screen.getByRole("button", { name: "Connect Repository" })).toBeEnabled()
+  })
+
+  it("does not auto-scroll messages and shows a latest response button when scrolled up", async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    store.useWebAppStore.setState({
+      sessions: [
+        {
+          id: "session-with-history",
+          name: "History chat",
+          history: [
+            {
+              role: "user",
+              content: "Initial question",
+              timestamp: "2026-05-11T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Long response",
+              timestamp: "2026-05-11T04:01:00.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:00:00.000Z",
+          endDate: "2026-05-11T04:01:00.000Z",
+          repository: null,
+        },
+      ],
+      activeSessionId: "session-with-history",
+      newChatRequestId: 0,
+      repositoryChatRequest: null,
+      chatSessionsLoadedFor: "id-token",
+    })
+
+    render(<ChatInterface />)
+
+    expect(screen.getByText("Long response")).toBeInTheDocument()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    const messageContainer = screen.getByTestId("chat-messages")
+    Object.defineProperty(messageContainer, "scrollHeight", { configurable: true, value: 1200 })
+    Object.defineProperty(messageContainer, "clientHeight", { configurable: true, value: 400 })
+    Object.defineProperty(messageContainer, "scrollTop", { configurable: true, value: 200 })
+    fireEvent.scroll(messageContainer)
+
+    const latestButton = await screen.findByRole("button", { name: "Scroll to latest response" })
+    fireEvent.click(latestButton)
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth" })
   })
 
   it("clones the chosen repository into the current session workspace", async () => {

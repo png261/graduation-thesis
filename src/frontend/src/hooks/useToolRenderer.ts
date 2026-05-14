@@ -1,10 +1,11 @@
 import type { ReactNode } from "react"
-import type { ToolCallStatus } from "@/components/chat/types"
+import type { ToolCallStatus, ToolProgressEntry } from "@/components/chat/types"
 
 export interface ToolRenderProps {
   name: string
   args: string
   status: ToolCallStatus
+  progress?: ToolProgressEntry[]
   result?: string
 }
 

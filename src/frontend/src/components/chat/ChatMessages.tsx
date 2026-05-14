@@ -4,15 +4,22 @@ import { ChatMessage } from "./ChatMessage"
 
 interface ChatMessagesProps {
   messages: Message[]
+  messagesContainerRef: RefObject<HTMLDivElement | null>
   messagesEndRef: RefObject<HTMLDivElement | null>
+  onScroll?: () => void
 }
 
 export function ChatMessages({
   messages,
+  messagesContainerRef,
   messagesEndRef,
+  onScroll,
 }: ChatMessagesProps) {
   return (
     <div
+      ref={messagesContainerRef}
+      onScroll={onScroll}
+      data-testid="chat-messages"
       className={`flex h-full w-full flex-col gap-4 bg-white p-4 pb-36 ${
         messages.length > 0 ? "overflow-y-auto" : "overflow-hidden"
       }`}

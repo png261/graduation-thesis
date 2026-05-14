@@ -10,6 +10,7 @@ import logging
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -27,6 +28,7 @@ AWSDAC_MCP_SERVER_URL = (
     "https://github.com/awslabs/diagram-as-code/releases/download/"
     f"{AWSDAC_MCP_SERVER_VERSION}/awsdac-mcp-server-{AWSDAC_MCP_SERVER_VERSION}_linux-arm64.zip"
 )
+GITHUB_API = "https://api.github.com/repos"
 
 
 def send_response(
@@ -155,6 +157,25 @@ def create_otel_wrapper(package_dir: Path) -> None:
     )
 
 
+def create_python_console_wrapper(package_dir: Path, command_name: str, module_name: str, function_name: str) -> None:
+    """
+    Create a console script wrapper for a Python module entry point.
+
+    Wheels are extracted directly into the runtime ZIP, so pip-generated console
+    scripts are not available unless we create the specific wrappers we need.
+    """
+    bin_dir = package_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+
+    script = bin_dir / command_name
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        f"from {module_name} import {function_name}\n"
+        f"{function_name}()\n"
+    )
+    script.chmod(0o755)
+
+
 def install_awsdac_mcp_server(package_dir: Path, download_dir: Path) -> None:
     """
     Install awsdac MCP server into the deployment package.
@@ -182,6 +203,88 @@ def install_awsdac_mcp_server(package_dir: Path, download_dir: Path) -> None:
         target_path.write_bytes(archive.read(candidates[0]))
 
     target_path.chmod(0o755)
+
+
+def latest_github_asset_url(repo: str, asset_fragments: list[str]) -> str:
+    url = f"{GITHUB_API}/{repo}/releases/latest"
+    request = urllib.request.Request(url, headers={"User-Agent": "infraq-zip-packager"})
+    with urllib.request.urlopen(request) as response:  # nosec B310 - fixed GitHub API URL
+        payload = json.loads(response.read().decode("utf-8"))
+    for asset in payload.get("assets", []):
+        name = asset.get("name", "")
+        if all(fragment in name for fragment in asset_fragments):
+            download_url = asset.get("browser_download_url")
+            if download_url:
+                return download_url
+    raise RuntimeError(f"No release asset found for {repo} matching {asset_fragments}")
+
+
+def install_zip_binary(download_url: str, binary_name: str, package_dir: Path, download_dir: Path) -> None:
+    archive_path = download_dir / f"{binary_name}.zip"
+    logger.info(f"Downloading {binary_name} from {download_url}")
+    urllib.request.urlretrieve(download_url, archive_path)  # nosec B310 - URL comes from GitHub release metadata
+
+    bin_dir = package_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    target_path = bin_dir / binary_name
+
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        candidates = [
+            name
+            for name in archive.namelist()
+            if Path(name).name == binary_name and not name.endswith("/")
+        ]
+        if not candidates:
+            raise RuntimeError(f"{binary_name} binary not found in release archive")
+        target_path.write_bytes(archive.read(candidates[0]))
+
+    target_path.chmod(0o755)
+
+
+def install_tar_binary(download_url: str, binary_name: str, package_dir: Path, download_dir: Path) -> None:
+    archive_path = download_dir / f"{binary_name}.tar.gz"
+    logger.info(f"Downloading {binary_name} from {download_url}")
+    urllib.request.urlretrieve(download_url, archive_path)  # nosec B310 - URL comes from GitHub release metadata
+
+    bin_dir = package_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    target_path = bin_dir / binary_name
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        candidates = [
+            member
+            for member in archive.getmembers()
+            if member.isfile() and Path(member.name).name.startswith(binary_name)
+        ]
+        if not candidates:
+            raise RuntimeError(f"{binary_name} binary not found in release archive")
+        source = archive.extractfile(candidates[0])
+        if source is None:
+            raise RuntimeError(f"Could not extract {binary_name} from release archive")
+        target_path.write_bytes(source.read())
+
+    target_path.chmod(0o755)
+
+
+def install_infra_cli_tools(package_dir: Path, download_dir: Path) -> None:
+    install_zip_binary(
+        latest_github_asset_url("opentofu/opentofu", ["linux_arm64", ".zip"]),
+        "tofu",
+        package_dir,
+        download_dir,
+    )
+    install_zip_binary(
+        latest_github_asset_url("terraform-linters/tflint", ["linux_arm64", ".zip"]),
+        "tflint",
+        package_dir,
+        download_dir,
+    )
+    install_tar_binary(
+        latest_github_asset_url("infracost/infracost", ["linux-arm64", ".tar.gz"]),
+        "infracost",
+        package_dir,
+        download_dir,
+    )
 
 
 def create_deployment_zip(package_dir: Path, output_path: Path) -> None:
@@ -258,6 +361,9 @@ def handler(event: dict, context) -> None:
 
             # Install diagram-as-code MCP renderer for architecture diagram generation
             install_awsdac_mcp_server(package_dir, download_dir)
+
+            # Install CLI tools used by specialized infrastructure agents
+            install_infra_cli_tools(package_dir, download_dir)
 
             # Write agent code files
             import base64

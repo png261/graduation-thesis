@@ -3,8 +3,8 @@ import type { ChatAgent } from "./types"
 export const CHAT_AGENTS: ChatAgent[] = [
   {
     id: "agent1",
-    mention: "@devops",
-    name: "InfraQ",
+    mention: "@orchestrator",
+    name: "InfraQ Orchestrator",
     avatar: "IQ",
     className: "bg-slate-950 text-white",
   },
@@ -12,6 +12,7 @@ export const CHAT_AGENTS: ChatAgent[] = [
 
 const LEGACY_AGENT_MENTIONS: Record<string, ChatAgent["id"]> = {
   "@agent1": "agent1",
+  "@devops": "agent1",
 }
 
 function escapeRegex(value: string) {

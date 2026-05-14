@@ -56,8 +56,8 @@ describe("Configuration Value Compatibility", () => {
 
   it("should accept valid AWS regions with VITE_ prefix", () => {
     const validRegions = [
-      "us-east-1",
-      "us-east-2",
+      "ap-southeast-1",
+      "ap-southeast-1",
       "us-west-1",
       "us-west-2",
       "eu-west-1",
@@ -157,7 +157,7 @@ describe("Configuration Value Compatibility", () => {
   })
 
   it("should build valid authority URLs from region and user pool ID", () => {
-    const validRegions = ["us-east-1", "us-west-2", "eu-west-1"]
+    const validRegions = ["ap-southeast-1", "us-west-2", "eu-west-1"]
 
     fc.assert(
       fc.property(
@@ -186,7 +186,7 @@ describe("Configuration Value Compatibility", () => {
     fc.assert(
       fc.property(
         fc.record({
-          region: fc.constantFrom("us-east-1", "us-west-2", "eu-west-1"),
+          region: fc.constantFrom("ap-southeast-1", "us-west-2", "eu-west-1"),
           userPoolId: fc.stringMatching(/^[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{9}$/),
           clientId: fc.stringMatching(/^[a-z0-9]{26}$/),
           redirectUri: fc.webUrl(),

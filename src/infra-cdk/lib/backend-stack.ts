@@ -175,7 +175,7 @@ export class BackendStack extends cdk.NestedStack {
           this.readDirRecursive(moduleDir, target, agentCode)
         }
       }
-      for (const module of ["tools", "utils", "skills"]) {
+      for (const module of ["agents", "utils"]) {
         const moduleDir = path.join(agentDir, module) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         if (fs.existsSync(moduleDir)) {
           this.readDirRecursive(moduleDir, module, agentCode)
@@ -416,8 +416,11 @@ export class BackendStack extends cdk.NestedStack {
     // requestHeaderConfiguration allows the agent to read the Authorization header
     // from RequestContext.request_headers, which is needed to securely extract the
     // user ID from the validated JWT token (sub claim) instead of trusting the payload body.
-    this.agentRuntime = new agentcore.Runtime(this, "Runtime", {
-      runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${this.agentName.valueAsString}`,
+    const runtimeConstructId = deploymentType === "docker" ? "RuntimeDocker" : "Runtime"
+    const runtimeNameSuffix = deploymentType === "docker" ? "_docker" : ""
+
+    this.agentRuntime = new agentcore.Runtime(this, runtimeConstructId, {
+      runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${this.agentName.valueAsString}${runtimeNameSuffix}`,
       agentRuntimeArtifact: agentRuntimeArtifact,
       executionRole: agentRole,
       networkConfiguration: networkConfiguration,
@@ -615,7 +618,7 @@ backend_id = os.environ["BACKEND_ID"]
 backend_name = os.environ.get("BACKEND_NAME", "")
 state_bucket = os.environ.get("STATE_BUCKET", "")
 state_key = os.environ.get("STATE_KEY", "")
-state_region = os.environ.get("STATE_REGION") or os.environ.get("AWS_REGION") or "us-east-1"
+state_region = os.environ.get("STATE_REGION") or os.environ.get("AWS_REGION") or "ap-southeast-1"
 scan_service = (os.environ.get("SCAN_SERVICE") or "s3").lower()
 drift_guard_id = os.environ.get("DRIFT_GUARD_ID", "")
 alert_topic_arn = os.environ.get("ALERT_TOPIC_ARN", "")

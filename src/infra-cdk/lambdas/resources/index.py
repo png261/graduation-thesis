@@ -246,7 +246,7 @@ def _save_aws_credential(user_id: str, payload: dict[str, Any]) -> dict[str, Any
             session_kwargs: dict[str, Any] = {
                 "aws_access_key_id": access_key_id,
                 "aws_secret_access_key": secret_access_key,
-                "region_name": region or "us-east-1",
+                "region_name": region or "ap-southeast-1",
             }
             if session_token:
                 session_kwargs["aws_session_token"] = session_token
@@ -296,7 +296,7 @@ def _save_aws_credential(user_id: str, payload: dict[str, Any]) -> dict[str, Any
 
 def _aws_session_for_credential(user_id: str, credential_id: str | None = None, region: str | None = None) -> boto3.Session:
     credential = _credential_payload(user_id, credential_id)
-    selected_region = (region or credential.get("region") or "us-east-1").strip()
+    selected_region = (region or credential.get("region") or "ap-southeast-1").strip()
     if not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", selected_region):
         raise ValueError("region is invalid")
     session_kwargs: dict[str, Any] = {
@@ -312,7 +312,7 @@ def _aws_session_for_credential(user_id: str, credential_id: str | None = None, 
 def _list_s3_buckets(user_id: str, query: dict[str, Any] | None) -> dict[str, Any]:
     query = query or {}
     credential_id = str(query.get("credentialId") or "").strip() or None
-    region = str(query.get("region") or "").strip() or "us-east-1"
+    region = str(query.get("region") or "").strip() or "ap-southeast-1"
     session = _aws_session_for_credential(user_id, credential_id, region)
     response = session.client("s3").list_buckets()
     buckets = [

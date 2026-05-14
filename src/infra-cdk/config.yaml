@@ -5,7 +5,7 @@ stack_name_base: InfraQ-stack
 admin_user_email: admin@example.com
 
 backend:
-  deployment_type: zip # Available deployment types: docker, zip (default, no local Docker required)
+  deployment_type: docker # Available deployment types: docker, zip (default, no local Docker required)
   network_mode: PUBLIC # Avoid AgentCore VPC ENIs; runtime files use local /tmp storage.
 
   # Long-term memory uses a SemanticMemoryStrategy to extract and store facts across sessions.

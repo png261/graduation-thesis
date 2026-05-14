@@ -14,7 +14,7 @@ export type SelectedRepository = {
 
 export type ChatAgentPayload = {
   id: "agent1"
-  mention: "@devops"
+  mention: "@orchestrator"
   name: string
   avatar: string
   className: string
@@ -43,6 +43,7 @@ export type StreamEvent =
   | { type: "tool_use_start"; toolUseId: string; name: string }
   | { type: "tool_use_delta"; toolUseId: string; input: string }
   | { type: "tool_use_input_snapshot"; toolUseId: string; input: string }
+  | { type: "tool_progress"; toolUseId: string; phase: string; message: string }
   | { type: "tool_result"; toolUseId: string; result: string }
   | { type: "message"; role: string; content: unknown[] }
   | { type: "result"; stopReason: string }

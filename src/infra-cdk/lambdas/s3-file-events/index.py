@@ -12,7 +12,7 @@ from botocore.awsrequest import AWSRequest
 
 SESSION = boto3.Session()
 CREDENTIALS = SESSION.get_credentials()
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 APPSYNC_API_URL = os.environ["APPSYNC_API_URL"]
 
 MUTATION = """

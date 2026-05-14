@@ -10,6 +10,7 @@ import logging
 import os
 import json
 
+import boto3
 import jwt
 from bedrock_agentcore.identity.auth import requires_access_token, requires_api_key
 from bedrock_agentcore.runtime import RequestContext
@@ -103,34 +104,67 @@ def get_gateway_access_token(access_token: str) -> str:
     return access_token
 
 
-@requires_api_key(
-    provider_name=os.environ.get("OPENAI_CREDENTIAL_PROVIDER_NAME", ""),
-)
 def get_openai_credentials(
-    api_key: str,
-    base_url: str | None = None,
-    model_id: str | None = None,
+    *,
+    api_key: str | None = None,
 ) -> dict[str, str]:
     """
     Fetch OpenAI API credentials from AgentCore Identity.
 
-    The @requires_api_key decorator handles credential retrieval:
-    1. Credential Retrieval: Calls GetResourceApiKey API to fetch credentials from Token Vault
-    2. Returns api_key from the credential provider
-
-    The provider_name must match the Name field in the CDK ApiKeyCredentialProvider resource.
-
-    This is synchronous because it's called during agent setup before the async
-    message processing loop.
+    This resolves the provider directly because AgentCore Identity stores API key
+    values under api_key_value, while OpenAI clients require the actual bearer key.
 
     Returns:
         dict: Dictionary containing 'api_key', plus base_url and model_id from environment fallbacks
     """
+    resolved_api_key = _normalize_api_key(api_key) or _get_api_key_from_provider(
+        os.environ.get("OPENAI_CREDENTIAL_PROVIDER_NAME", "")
+    )
+    if not resolved_api_key:
+        raise ValueError("OpenAI API key credential provider returned an empty API key")
+    logger.info("Resolved OpenAI API key credential with length %d", len(resolved_api_key))
+
     return {
-        "api_key": api_key,
-        "base_url": base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "model_id": model_id or os.environ.get("OPENAI_MODEL_ID", "gpt-4o"),
+        "api_key": resolved_api_key,
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "model_id": os.environ.get("OPENAI_MODEL_ID", "gpt-4o"),
     }
+
+
+def _normalize_api_key(value: str | None) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return raw_value
+    if not isinstance(parsed, dict):
+        return raw_value
+    return str(parsed.get("api_key") or parsed.get("api_key_value") or "").strip()
+
+
+def _get_api_key_from_provider(provider_name: str) -> str:
+    if not provider_name:
+        return ""
+    try:
+        control = boto3.client(
+            "bedrock-agentcore-control",
+            region_name=os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
+        )
+        provider = control.get_api_key_credential_provider(name=provider_name)
+        secret_arn = (provider.get("apiKeySecretArn") or {}).get("secretArn")
+        if not secret_arn:
+            return ""
+        secrets = boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
+        )
+        secret_value = secrets.get_secret_value(SecretId=secret_arn).get("SecretString", "")
+        return _normalize_api_key(secret_value)
+    except Exception:
+        logger.exception("Failed to resolve OpenAI API key from provider %s", provider_name)
+        return ""
 
 
 @requires_api_key(
