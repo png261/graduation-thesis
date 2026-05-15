@@ -9,12 +9,8 @@ class AgentRuntimeTools:
     gateway: Any
     opentofu: Any
     handoff_to_user: Any
-    render_architecture_diagram: Any
-    read_excalidraw_guide: Any
-    create_excalidraw_view: Any
     file_read: Any
     file_write: Any
-    shell: Any
     terraform_init: Any
     terraform_plan: Any
     terraform_validate: Any

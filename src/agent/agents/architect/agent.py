@@ -3,6 +3,7 @@
 from strands import Agent
 
 from agents.architect.config import DESCRIPTION, NAME
+from agents.architect.output import ArchitectOutput
 from agents.architect.system_prompt import SYSTEM_PROMPT
 from agents.architect.tools import create_tools
 from agents.runtime import AgentRuntimeTools
@@ -29,4 +30,5 @@ def create_tool(model, runtime_tools: AgentRuntimeTools, trace_attributes: dict)
         model=model,
         runtime_tools=runtime_tools,
         trace_attributes=trace_attributes,
+        output_model=ArchitectOutput,
     )

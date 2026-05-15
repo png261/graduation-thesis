@@ -87,4 +87,19 @@ describe("ChatInput", () => {
     expect(screen.getByRole("combobox", { name: "GitHub repository" })).toBeDisabled()
     expect(screen.getByText("Repository locked")).toBeInTheDocument()
   })
+
+  it("uses destructive red styling for the stop button while loading", () => {
+    render(
+      <ChatInput
+        input="Run terraform plan"
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading
+        onStop={vi.fn()}
+        agents={CHAT_AGENTS}
+      />
+    )
+
+    expect(screen.getByRole("button", { name: /stop/i })).toHaveClass("bg-red-600")
+  })
 })

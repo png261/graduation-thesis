@@ -13,6 +13,10 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
   try {
     const json = JSON.parse(data)
 
+    if (json.status === "error") {
+      throw new Error(typeof json.error === "string" && json.error ? json.error : "Agent runtime returned an error")
+    }
+
     if (json.pullRequest) {
       callback({ type: "pull_request", pullRequest: json.pullRequest })
       return
@@ -130,7 +134,8 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
       callback({ type: "lifecycle", event })
       return
     }
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error
     console.debug("Failed to parse strands event:", data)
   }
 }

@@ -12,6 +12,18 @@ export type SelectedRepository = {
   url?: string
 }
 
+export type SelectedStateBackend = {
+  backendId: string
+  name: string
+  bucket: string
+  key: string
+  region: string
+  service?: string
+  credentialId?: string
+  credentialName?: string
+  repository?: SelectedRepository | null
+}
+
 export type ChatAgentPayload = {
   id: "agent1"
   mention: "@orchestrator"

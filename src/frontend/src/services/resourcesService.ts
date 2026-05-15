@@ -93,6 +93,25 @@ export type StateBackend = {
   updatedAt: string
 }
 
+export type StateBackendResource = {
+  address?: string
+  mode?: string
+  type?: string
+  name?: string
+  module?: string
+  index?: string | number
+  providerName?: string
+  values?: Record<string, unknown>
+  backendId: string
+  backendName?: string
+  stateBucket?: string
+  stateKey?: string
+  stateRegion?: string
+  service?: string
+  repository?: SelectedRepository | null
+  updatedAt?: string
+}
+
 export type StateBackendPayload = {
   name: string
   bucket: string
@@ -212,6 +231,7 @@ export type GitHubPullRequestStatus = {
   draft?: boolean
   url?: string
   author?: string
+  authorType?: string
   headBranch?: string
   baseBranch?: string
   headSha?: string
@@ -288,6 +308,17 @@ export async function createStateBackend(
     body: JSON.stringify(payload),
   })
   return response.backend
+}
+
+export async function listStateBackendResources(
+  backendId: string,
+  idToken: string
+): Promise<StateBackendResource[]> {
+  const response = await request<{ resources: StateBackendResource[] }>(
+    `/resources/state-backends/${encodeURIComponent(backendId)}/resources`,
+    idToken
+  )
+  return response.resources
 }
 
 export async function listS3Buckets(

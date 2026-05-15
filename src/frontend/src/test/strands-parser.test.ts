@@ -9,10 +9,10 @@ describe("parseStrandsChunk", () => {
       `data: ${JSON.stringify({
         current_tool_use: {
           toolUseId: "tool-1",
-          name: "create_excalidraw_view",
+          name: "diagram",
           input: {
-            title: "Streaming sketch",
-            elements: '[{"type":"rectangle","id":"box","x":10,"y":10,"width":100,"height":60}]',
+            diagram_type: "graph",
+            nodes: [{ id: "vpc", label: "VPC" }],
           },
         },
       })}`,
@@ -23,13 +23,12 @@ describe("parseStrandsChunk", () => {
       {
         type: "tool_use_start",
         toolUseId: "tool-1",
-        name: "create_excalidraw_view",
+        name: "diagram",
       },
       {
         type: "tool_use_input_snapshot",
         toolUseId: "tool-1",
-        input:
-          '{"title":"Streaming sketch","elements":"[{\\"type\\":\\"rectangle\\",\\"id\\":\\"box\\",\\"x\\":10,\\"y\\":10,\\"width\\":100,\\"height\\":60}]"}',
+        input: '{"diagram_type":"graph","nodes":[{"id":"vpc","label":"VPC"}]}',
       },
     ])
   })
@@ -63,5 +62,17 @@ describe("parseStrandsChunk", () => {
         message: "architect_agent is drafting a VPC design",
       },
     ])
+  })
+
+  it("throws runtime status errors so the chat can show an error state", () => {
+    expect(() =>
+      parseStrandsChunk(
+        `data: ${JSON.stringify({
+          status: "error",
+          error: "Error code: 402 - INSUFFICIENT_BALANCE",
+        })}`,
+        () => undefined
+      )
+    ).toThrow("Error code: 402 - INSUFFICIENT_BALANCE")
   })
 })

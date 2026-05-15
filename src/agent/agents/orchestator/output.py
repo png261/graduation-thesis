@@ -1,8 +1,11 @@
+"""Structured output model for the orchestrator agent."""
+
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from agents.specialist_output import SpecialistResponse
 
-class SecurityProverOutput(BaseModel):
-    pass
+
+class OrchestratorOutput(SpecialistResponse):
+    agent: Literal["orchestrator_agent"] = "orchestrator_agent"

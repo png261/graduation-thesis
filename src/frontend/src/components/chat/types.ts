@@ -1,5 +1,5 @@
 // Define message types
-import type { SelectedRepository } from "@/lib/agentcore-client/types"
+import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 
 export type MessageRole = "user" | "assistant"
 
@@ -56,6 +56,7 @@ export interface Message {
   role: MessageRole
   content: string
   timestamp: string
+  status?: "pending" | "complete" | "stopped" | "error"
   agent?: ChatAgent
   attachments?: ChatAttachment[]
   segments?: MessageSegment[]
@@ -85,6 +86,7 @@ export interface ChatSession {
   startDate: string
   endDate: string
   repository?: SelectedRepository | null
+  stateBackend?: SelectedStateBackend | null
   pullRequest?: PullRequestInfo | null
   pendingUserHandoff?: UserHandoff | null
 }

@@ -14,25 +14,16 @@ import {
   FileText,
   Folder,
   ImageIcon,
-  Radio,
   RefreshCw,
   ScrollText,
   Settings2,
   Sheet,
-  WifiOff,
+  Workflow,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { AgentCoreClient } from "@/lib/agentcore-client"
-import type { SelectedRepository } from "@/lib/agentcore-client/types"
-import type { PullRequestInfo } from "@/components/chat/types"
+import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 import {
   FileContent,
   FileEvent,
@@ -47,9 +38,8 @@ type FileSystemPanelProps = {
   accessToken?: string | null
   client?: AgentCoreClient | null
   repository?: SelectedRepository | null
+  stateBackend?: SelectedStateBackend | null
   sessionId?: string
-  pullRequest?: PullRequestInfo | null
-  onPullRequestChange?: (pullRequest: PullRequestInfo | null) => void
 }
 
 type FileChangeStatus = "added" | "modified" | "deleted" | "unchanged"
@@ -59,6 +49,35 @@ type FileDiff = {
   status: FileChangeStatus
   originalContent: string
   currentContent: string
+}
+
+type TerraformGraphNode = {
+  data?: {
+    id?: string
+    label?: string
+    type?: string
+    parent?: string
+    change?: string
+  }
+  classes?: string
+}
+
+type TerraformGraphEdge = {
+  data?: {
+    id?: string
+    source?: string
+    target?: string
+  }
+}
+
+type TerraformGraph = {
+  terraformPath?: string
+  tool?: string
+  summary?: Record<string, number>
+  graph?: {
+    nodes?: TerraformGraphNode[]
+    edges?: TerraformGraphEdge[]
+  }
 }
 
 type ArboristFileNode = {
@@ -301,11 +320,23 @@ function statusClassName(status?: FileChangeStatus) {
   }
 }
 
-function parseChangedFile(line: string): { path: string; status: FileChangeStatus } | null {
-  if (!line.trim()) return null
-  const code = line.slice(0, 2)
-  const rawPath = line.slice(3).trim()
-  const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop()?.trim() ?? rawPath : rawPath
+export function parseChangedFile(line: string): { path: string; status: FileChangeStatus } | null {
+  const value = line.trim()
+  if (!value) return null
+
+  let code = ""
+  let rawPath = value
+  const tabParts = value.split("\t").filter(Boolean)
+  const porcelainMatch = /^(.{1,2})\s+(.+)$/.exec(value)
+  if (tabParts.length >= 2 && /^[ MADRCU?!]{1,3}\d*$/.test(tabParts[0])) {
+    code = tabParts[0]
+    rawPath = tabParts[tabParts.length - 1]
+  } else if (porcelainMatch && /^[ MADRCU?!]{1,3}\d*$/.test(porcelainMatch[1])) {
+    code = porcelainMatch[1]
+    rawPath = porcelainMatch[2]
+  }
+
+  const path = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop()?.trim() ?? rawPath : rawPath.trim()
   if (!path) return null
   if (code.includes("D")) return { path, status: "deleted" }
   if (code.includes("A") || code.includes("?")) return { path, status: "added" }
@@ -332,6 +363,195 @@ function filterChangedTreeData(nodes: ArboristFileNode[]): ArboristFileNode[] {
       return children.length > 0 ? { ...node, children } : null
     })
     .filter((node): node is ArboristFileNode => Boolean(node))
+}
+
+function graphNodeLabel(node: TerraformGraphNode) {
+  return node.data?.label || node.data?.id?.split(".").pop() || node.data?.id || "resource"
+}
+
+function graphNodeClass(node: TerraformGraphNode) {
+  return node.data?.change || node.classes || node.data?.type || "resource"
+}
+
+function graphNodeClassName(node: TerraformGraphNode) {
+  const className = graphNodeClass(node)
+  if (className.includes("create")) return "fill-emerald-50 stroke-emerald-500"
+  if (className.includes("delete")) return "fill-red-50 stroke-red-500"
+  if (className.includes("replace")) return "fill-violet-50 stroke-violet-500"
+  if (className.includes("update")) return "fill-amber-50 stroke-amber-500"
+  if (className.includes("data")) return "fill-pink-50 stroke-pink-500"
+  if (className.includes("output")) return "fill-yellow-50 stroke-yellow-500"
+  if (className.includes("module")) return "fill-indigo-50 stroke-indigo-500"
+  return "fill-slate-50 stroke-slate-400"
+}
+
+function graphSummaryItems(summary?: Record<string, number>) {
+  return [
+    ["create", summary?.create ?? 0],
+    ["update", summary?.update ?? 0],
+    ["replace", summary?.replace ?? 0],
+    ["delete", summary?.delete ?? 0],
+    ["total", summary?.total ?? 0],
+  ] as const
+}
+
+function formatTerraformGraphError(message: string): string {
+  if (
+    message.includes("UnauthorizedOperation") ||
+    message.includes("AccessDenied") ||
+    /Describe[A-Za-z]+/.test(message)
+  ) {
+    return [
+      "Terraform could access the selected state backend, but the AWS provider still needs read permissions to run plan.",
+      "Grant the selected AWS credential permissions for the provider data sources/resources shown in the error, then run plan again.",
+      message,
+    ].join("\n\n")
+  }
+  return message
+}
+
+function layoutGraph(nodes: TerraformGraphNode[], edges: TerraformGraphEdge[]) {
+  const visibleNodes = nodes.filter(node => node.data?.id && !node.data.parent)
+  const ids = new Set(visibleNodes.map(node => node.data?.id as string))
+  const incoming = new Map<string, number>()
+  const outgoing = new Map<string, string[]>()
+  for (const node of visibleNodes) {
+    const id = node.data?.id as string
+    incoming.set(id, 0)
+    outgoing.set(id, [])
+  }
+  for (const edge of edges) {
+    const source = edge.data?.source
+    const target = edge.data?.target
+    if (!source || !target || !ids.has(source) || !ids.has(target)) continue
+    outgoing.get(source)?.push(target)
+    incoming.set(target, (incoming.get(target) ?? 0) + 1)
+  }
+
+  const levels = new Map<string, number>()
+  const queue = visibleNodes
+    .map(node => node.data?.id as string)
+    .filter(id => (incoming.get(id) ?? 0) === 0)
+  if (queue.length === 0) queue.push(...visibleNodes.map(node => node.data?.id as string).slice(0, 1))
+
+  while (queue.length > 0) {
+    const id = queue.shift() as string
+    const currentLevel = levels.get(id) ?? 0
+    for (const target of outgoing.get(id) ?? []) {
+      levels.set(target, Math.max(levels.get(target) ?? 0, currentLevel + 1))
+      incoming.set(target, Math.max(0, (incoming.get(target) ?? 0) - 1))
+      if ((incoming.get(target) ?? 0) === 0) queue.push(target)
+    }
+  }
+  for (const node of visibleNodes) {
+    const id = node.data?.id as string
+    if (!levels.has(id)) levels.set(id, 0)
+  }
+
+  const grouped = new Map<number, TerraformGraphNode[]>()
+  for (const node of visibleNodes) {
+    const id = node.data?.id as string
+    const level = levels.get(id) ?? 0
+    grouped.set(level, [...(grouped.get(level) ?? []), node])
+  }
+
+  const levelCount = Math.max(1, grouped.size)
+  const maxRows = Math.max(1, ...Array.from(grouped.values()).map(group => group.length))
+  const width = Math.max(760, levelCount * 230)
+  const height = Math.max(420, maxRows * 104 + 80)
+  const positioned = new Map<string, { node: TerraformGraphNode; x: number; y: number }>()
+  for (const [level, group] of grouped) {
+    group.forEach((node, index) => {
+      const id = node.data?.id as string
+      const gap = height / (group.length + 1)
+      positioned.set(id, {
+        node,
+        x: 110 + level * 230,
+        y: Math.max(56, gap * (index + 1)),
+      })
+    })
+  }
+
+  const visibleEdges = edges.filter(edge => {
+    const source = edge.data?.source
+    const target = edge.data?.target
+    return Boolean(source && target && positioned.has(source) && positioned.has(target))
+  })
+
+  return { width, height, nodes: Array.from(positioned.values()), edges: visibleEdges, positioned }
+}
+
+function TerraformGraphPreview({ graph }: { graph: TerraformGraph | null }) {
+  const nodes = graph?.graph?.nodes ?? []
+  const edges = graph?.graph?.edges ?? []
+  const layout = useMemo(() => layoutGraph(nodes, edges), [edges, nodes])
+
+  if (!graph) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">
+        Run plan to generate the graph.
+      </div>
+    )
+  }
+
+  if (layout.nodes.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">
+        Terraform plan returned no graphable resources.
+      </div>
+    )
+  }
+
+  return (
+    <div className="h-full overflow-auto bg-white">
+      <div className="sticky top-0 z-10 flex flex-wrap gap-2 border-b border-slate-200 bg-white/95 px-3 py-2 text-xs text-slate-600">
+        {graphSummaryItems(graph.summary).map(([label, value]) => (
+          <span key={label} className="rounded border border-slate-200 px-2 py-1">
+            {label}: {value}
+          </span>
+        ))}
+      </div>
+      <svg
+        className="min-h-full min-w-full"
+        height={layout.height}
+        role="img"
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
+        width={layout.width}
+      >
+        <defs>
+          <marker id="terraform-graph-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+            <path d="M0,0 L8,4 L0,8 z" fill="#64748b" />
+          </marker>
+        </defs>
+        {layout.edges.map(edge => {
+          const source = layout.positioned.get(edge.data?.source ?? "")
+          const target = layout.positioned.get(edge.data?.target ?? "")
+          if (!source || !target) return null
+          const path = `M ${source.x + 78} ${source.y} C ${source.x + 142} ${source.y}, ${target.x - 142} ${target.y}, ${target.x - 78} ${target.y}`
+          return (
+            <path
+              className="fill-none stroke-slate-400"
+              d={path}
+              key={edge.data?.id ?? `${edge.data?.source}-${edge.data?.target}`}
+              markerEnd="url(#terraform-graph-arrow)"
+              strokeWidth="1.5"
+            />
+          )
+        })}
+        {layout.nodes.map(({ node, x, y }) => (
+          <g key={node.data?.id} transform={`translate(${x - 78} ${y - 26})`}>
+            <rect className={cn("stroke-2", graphNodeClassName(node))} height="52" rx="6" width="156" />
+            <text className="fill-slate-900 text-[12px] font-semibold" textAnchor="middle" x="78" y="23">
+              {graphNodeLabel(node).slice(0, 24)}
+            </text>
+            <text className="fill-slate-500 text-[10px]" textAnchor="middle" x="78" y="39">
+              {graphNodeClass(node).slice(0, 22)}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
 }
 
 function FileTreeNode({ node, style, dragHandle }: NodeRendererProps<ArboristFileNode>) {
@@ -416,9 +636,8 @@ export function FileSystemPanel({
   accessToken,
   client,
   repository,
+  stateBackend,
   sessionId,
-  pullRequest,
-  onPullRequestChange,
 }: FileSystemPanelProps) {
   const { ref: treeContainerRef, size: treeSize } = useElementSize()
   const [events, setEvents] = useState<FileEvent[]>([])
@@ -426,17 +645,17 @@ export function FileSystemPanel({
   const [selectedDisplayPath, setSelectedDisplayPath] = useState<string | null>(null)
   const [preview, setPreview] = useState<FileContent | null>(null)
   const [fileDiff, setFileDiff] = useState<FileDiff | null>(null)
-  const [prPreview, setPrPreview] = useState<any>(null)
-  const [isPrDialogOpen, setIsPrDialogOpen] = useState(false)
-  const [isPrLoading, setIsPrLoading] = useState(false)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [isDiffLoading, setIsDiffLoading] = useState(false)
+  const [isGraphLoading, setIsGraphLoading] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [status, setStatus] = useState<"loading" | "connected" | "disabled" | "error">("loading")
   const [error, setError] = useState<string | null>(null)
+  const [graphError, setGraphError] = useState<string | null>(null)
+  const [terraformGraph, setTerraformGraph] = useState<TerraformGraph | null>(null)
   const [fileStatusByPath, setFileStatusByPath] = useState<Map<string, FileChangeStatus>>(new Map())
   const [fileScope, setFileScope] = useState<"changes" | "all">("changes")
-  const [fileView, setFileView] = useState<"diff" | "file">("diff")
+  const [fileView, setFileView] = useState<"diff" | "file" | "graph">("diff")
   const [treePanePercent, setTreePanePercent] = useState(32)
   const changeStatusTimerRef = useRef<number | null>(null)
   const displayRootPrefixes = useMemo(() => workspacePrefixes(sessionId, repository), [repository, sessionId])
@@ -462,14 +681,10 @@ export function FileSystemPanel({
     setSelectedDisplayPath(null)
     setPreview(null)
     setFileDiff(null)
+    setTerraformGraph(null)
+    setGraphError(null)
     setFileStatusByPath(new Map())
   }, [displayRootPrefixesKey])
-
-  useEffect(() => {
-    if (pullRequest?.number || pullRequest?.url) {
-      setPrPreview((current: any) => ({ ...(current ?? {}), ...pullRequest }))
-    }
-  }, [pullRequest])
 
   const refreshChangeStatus = useCallback(async () => {
     if (!client || !repository || !sessionId || !accessToken) return
@@ -521,60 +736,32 @@ export function FileSystemPanel({
     [accessToken, client, refreshChangeStatus, repository, sessionId]
   )
 
-  const openPullRequestPreview = useCallback(async () => {
+  const refreshTerraformGraph = useCallback(async () => {
     if (!client || !repository || !sessionId || !accessToken) return
-    setIsPrLoading(true)
-    setIsPrDialogOpen(true)
+    setIsGraphLoading(true)
+    setGraphError(null)
+    setFileView("graph")
     try {
       const response = await client.githubAction(
-        "previewPullRequest",
-        sessionId,
-        accessToken,
-        repository
-      )
-      const preview = (response as any)?.preview ?? response
-      setPrPreview(preview)
-      if (preview?.number || preview?.url) onPullRequestChange?.(preview)
-      setFileStatusByPath(statusMapFromPreview(preview))
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to preview pull request")
-      setPrPreview(null)
-    } finally {
-      setIsPrLoading(false)
-    }
-  }, [accessToken, client, onPullRequestChange, repository, sessionId])
-
-  const viewPullRequest = useCallback(() => {
-    const url = pullRequest?.url ?? prPreview?.url
-    if (url) {
-      window.open(url, "_blank", "noopener,noreferrer")
-      return
-    }
-    void openPullRequestPreview()
-  }, [openPullRequestPreview, prPreview?.url, pullRequest?.url])
-
-  const createPullRequest = useCallback(async () => {
-    if (!client || !repository || !sessionId || !accessToken || !prPreview) return
-    setIsPrLoading(true)
-    try {
-      const response = await client.githubAction(
-        "createPullRequest",
+        "generateTerraformGraph",
         sessionId,
         accessToken,
         repository,
-        { title: prPreview.title, body: prPreview.body }
+        undefined,
+        { terraformPath: ".", stateBackend }
       )
-      const nextPullRequest = (response as any)?.pullRequest ?? response
-      setPrPreview(nextPullRequest)
-      onPullRequestChange?.(nextPullRequest)
+      setTerraformGraph(((response as any)?.terraformGraph ?? null) as TerraformGraph | null)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create pull request")
+      const message = formatTerraformGraphError(
+        err instanceof Error ? err.message : "Failed to generate Terraform graph"
+      )
+      setGraphError(message)
+      setError(message)
     } finally {
-      setIsPrLoading(false)
+      setIsGraphLoading(false)
     }
-  }, [accessToken, client, onPullRequestChange, prPreview, repository, sessionId])
+  }, [accessToken, client, repository, sessionId, stateBackend])
 
   useEffect(() => {
     if (!client || !accessToken || !sessionId) {
@@ -689,42 +876,6 @@ export function FileSystemPanel({
 
   return (
     <aside className="flex h-full min-w-0 flex-col border-l border-slate-200 bg-white pb-36">
-      <div className="flex items-center justify-end border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <Button
-            aria-label="Reload filesystem"
-            className="h-8 w-8 p-0"
-            disabled={!client || !accessToken || !sessionId || isRefreshing}
-            onClick={() => {
-              void refreshFiles({ showLoading: true })
-              void refreshChangeStatus()
-            }}
-            size="sm"
-            type="button"
-            variant="ghost"
-          >
-            <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button
-            disabled={!client || !repository || !accessToken || !sessionId || isPrLoading}
-            onClick={viewPullRequest}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            View PR
-          </Button>
-          {status === "connected" ? (
-            <Radio className="h-4 w-4 text-emerald-600" />
-          ) : status === "loading" ? (
-            <RefreshCw className="h-4 w-4 animate-spin text-slate-500" />
-          ) : (
-            <WifiOff className="h-4 w-4 text-amber-600" />
-          )}
-          <span className="capitalize">{status}</span>
-        </div>
-      </div>
-
       {error && (
         <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-700">
           {error}
@@ -754,6 +905,20 @@ export function FileSystemPanel({
               variant={fileScope === "all" ? "default" : "ghost"}
             >
               All Files
+            </Button>
+            <Button
+              aria-label="Reload filesystem"
+              className="ml-auto h-7 w-7 p-0"
+              disabled={!client || !accessToken || !sessionId || isRefreshing}
+              onClick={() => {
+                void refreshFiles({ showLoading: true })
+                void refreshChangeStatus()
+              }}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             </Button>
           </div>
           <div ref={treeContainerRef} className="min-h-0 flex-1">
@@ -806,9 +971,9 @@ export function FileSystemPanel({
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-2">
                 <div className="truncate text-sm font-semibold text-slate-800">
-                  {selectedDisplayPath ?? selectedKey ?? "Select a file"}
+                  {fileView === "graph" ? "Terraform graph" : selectedDisplayPath ?? selectedKey ?? "Select a file"}
                 </div>
-                {statusLabel(selectedChangeStatus) && (
+                {fileView !== "graph" && statusLabel(selectedChangeStatus) && (
                   <span
                     className={cn(
                       "rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none",
@@ -820,16 +985,19 @@ export function FileSystemPanel({
                 )}
               </div>
               <div className="truncate text-xs text-slate-500">
-                {fileDiff && selectedChangeStatus !== "unchanged"
+                {fileView === "graph"
+                  ? `${terraformGraph?.tool ?? "rover"}${terraformGraph?.summary?.total !== undefined ? ` · ${terraformGraph.summary.total} planned resources` : ""}`
+                  : fileDiff && selectedChangeStatus !== "unchanged"
                   ? `Diff against last commit · ${selectedChangeStatus}`
                   : preview
                   ? `${preview.encoding}${preview.size ? ` · ${formatSize(preview.size)}` : ""}`
                   : "Read-only preview"}
               </div>
             </div>
-            {(isPreviewLoading || isDiffLoading) && <RefreshCw className="h-4 w-4 animate-spin text-slate-500" />}
-            {selectedChangeStatus !== "unchanged" && (
-              <div className="flex shrink-0 items-center gap-1">
+            {(isPreviewLoading || isDiffLoading || isGraphLoading) && <RefreshCw className="h-4 w-4 animate-spin text-slate-500" />}
+            <div className="flex shrink-0 items-center gap-1">
+              {selectedChangeStatus !== "unchanged" && (
+                <>
                 <Button
                   className="h-7 px-2 text-xs"
                   onClick={() => setFileView("diff")}
@@ -848,12 +1016,52 @@ export function FileSystemPanel({
                 >
                   File
                 </Button>
-              </div>
-            )}
+                </>
+              )}
+              <Button
+                className="h-7 px-2 text-xs"
+                onClick={() => {
+                  setFileView("graph")
+                  if (!terraformGraph && !isGraphLoading) void refreshTerraformGraph()
+                }}
+                size="sm"
+                type="button"
+                variant={fileView === "graph" ? "default" : "ghost"}
+              >
+                <Workflow className="mr-1 h-3.5 w-3.5" />
+                Graph
+              </Button>
+              {fileView === "graph" && (
+                <Button
+                  className="h-7 px-2 text-xs"
+                  disabled={!client || !repository || !accessToken || !sessionId || isGraphLoading}
+                  onClick={() => void refreshTerraformGraph()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <RefreshCw className={cn("mr-1 h-3.5 w-3.5", isGraphLoading && "animate-spin")} />
+                  Run plan
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="min-h-0 flex-1">
-            {fileDiff && selectedChangeStatus !== "unchanged" && fileView === "diff" ? (
+            {fileView === "graph" ? (
+              graphError ? (
+                <div className="flex h-full whitespace-pre-line items-center justify-center px-6 text-center text-sm text-red-700">
+                  {graphError}
+                </div>
+              ) : isGraphLoading && !terraformGraph ? (
+                <div className="flex h-full items-center justify-center gap-2 px-6 text-center text-sm text-slate-500">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Running terraform plan...
+                </div>
+              ) : (
+                <TerraformGraphPreview graph={terraformGraph} />
+              )
+            ) : fileDiff && selectedChangeStatus !== "unchanged" && fileView === "diff" ? (
               <DiffEditor
                 height="100%"
                 language={selectedLanguage}
@@ -893,49 +1101,6 @@ export function FileSystemPanel({
           </div>
         </div>
       </div>
-
-      <Dialog open={isPrDialogOpen} onOpenChange={setIsPrDialogOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Pull Request Preview</DialogTitle>
-          </DialogHeader>
-          <div className="max-h-[60vh] overflow-auto rounded border bg-slate-50 p-3 text-sm">
-            {isPrLoading ? (
-              "Loading..."
-            ) : prPreview?.created ? (
-              <a className="text-sky-700 underline" href={prPreview.url} rel="noreferrer" target="_blank">
-                Pull request #{prPreview.number}
-              </a>
-            ) : prPreview ? (
-              <div className="flex flex-col gap-3">
-                <div>
-                  <div className="font-semibold">{prPreview.title}</div>
-                  <div className="text-xs text-slate-500">
-                    {prPreview.headBranch} → {prPreview.baseBranch}
-                  </div>
-                </div>
-                <pre className="whitespace-pre-wrap text-xs">{prPreview.diffStat || "No diff stat"}</pre>
-                <pre className="whitespace-pre-wrap text-xs">{prPreview.diff || "No tracked diff"}</pre>
-                {prPreview.untrackedFiles?.length > 0 && (
-                  <pre className="whitespace-pre-wrap text-xs">
-                    Untracked files: {prPreview.untrackedFiles.join(", ")}
-                  </pre>
-                )}
-              </div>
-            ) : (
-              "No preview loaded."
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              disabled={isPrLoading || !prPreview?.hasChanges || prPreview?.created}
-              onClick={() => void createPullRequest()}
-            >
-              Create Pull Request
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </aside>
   )
 }

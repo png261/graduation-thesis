@@ -9,5 +9,4 @@ TOOL_NAMES = (
     "file_read",
     "file_write",
     "terraform_validate",
-    "shell",
 )

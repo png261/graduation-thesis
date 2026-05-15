@@ -6,7 +6,7 @@ describe("tool call state", () => {
   it("deduplicates repeated tool_use_start events for the same toolUseId", () => {
     const segments: MessageSegment[] = []
     const toolCallMap = new Map<string, ToolCall>()
-    const event = { toolUseId: "tool-1", name: "render_architecture_diagram" }
+    const event = { toolUseId: "tool-1", name: "diagram" }
 
     const first = ensureToolCallSegment(segments, toolCallMap, event)
     const second = ensureToolCallSegment(segments, toolCallMap, event)
@@ -18,7 +18,7 @@ describe("tool call state", () => {
       type: "tool",
       toolCall: {
         toolUseId: "tool-1",
-        name: "render_architecture_diagram",
+        name: "diagram",
       },
     })
   })

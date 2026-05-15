@@ -1,30 +1,15 @@
-"""
-Pydantic output model for the Architect agent.
-"""
+"""Structured output model for the architect agent."""
+
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any, Literal
 
-from agents._base_models import EdgeOut, ResourceNodeOut, SpecsOut
+from pydantic import Field
+
+from agents.specialist_output import SpecialistArtifact, SpecialistResponse
 
 
-class ArchitectOutput(BaseModel):
-    """
-    Typed I-IR plan P0 produced by the Architect agent.
-    P = (V, E, S) — resource graph with specs and invariants.
-    """
-    resources: list[ResourceNodeOut] = Field(
-        description="Resource nodes V; every cloud resource must have an entry",
-    )
-    edges: list[EdgeOut] = Field(
-        default_factory=list,
-        description="Dependency and connectivity edges E",
-    )
-    specs: SpecsOut = Field(
-        default_factory=SpecsOut,
-        description="Non-functional constraints S: budget, regions, SLO",
-    )
-    invariants: list[str] = Field(
-        default_factory=list,
-        description="Plain-text invariants I, e.g. 'residency=US', 'encryption=required'",
-    )
+class ArchitectOutput(SpecialistResponse):
+    agent: Literal["architect_agent"] = "architect_agent"
+    architecture: dict[str, Any] = Field(default_factory=dict, description="Architecture resources, relationships, and constraints.")
+    diagram: SpecialistArtifact | None = Field(default=None, description="Generated architecture diagram artifact when one was created.")

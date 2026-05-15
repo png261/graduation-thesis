@@ -23,11 +23,6 @@ logger.setLevel(logging.INFO)
 
 s3 = boto3.client("s3")
 
-AWSDAC_MCP_SERVER_VERSION = "v0.22.3"
-AWSDAC_MCP_SERVER_URL = (
-    "https://github.com/awslabs/diagram-as-code/releases/download/"
-    f"{AWSDAC_MCP_SERVER_VERSION}/awsdac-mcp-server-{AWSDAC_MCP_SERVER_VERSION}_linux-arm64.zip"
-)
 GITHUB_API = "https://api.github.com/repos"
 
 
@@ -174,35 +169,6 @@ def create_python_console_wrapper(package_dir: Path, command_name: str, module_n
         f"{function_name}()\n"
     )
     script.chmod(0o755)
-
-
-def install_awsdac_mcp_server(package_dir: Path, download_dir: Path) -> None:
-    """
-    Install awsdac MCP server into the deployment package.
-
-    Args:
-        package_dir: Root package directory.
-        download_dir: Directory for temporary downloads.
-    """
-    logger.info(f"Downloading awsdac MCP server from {AWSDAC_MCP_SERVER_URL}")
-    archive_path = download_dir / "awsdac-mcp-server.zip"
-    urllib.request.urlretrieve(AWSDAC_MCP_SERVER_URL, archive_path)  # nosec B310 - pinned release URL
-
-    bin_dir = package_dir / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    target_path = bin_dir / "awsdac-mcp-server"
-
-    with zipfile.ZipFile(archive_path, "r") as archive:
-        candidates = [
-            name
-            for name in archive.namelist()
-            if Path(name).name == "awsdac-mcp-server" and not name.endswith("/")
-        ]
-        if not candidates:
-            raise RuntimeError("awsdac-mcp-server binary not found in release archive")
-        target_path.write_bytes(archive.read(candidates[0]))
-
-    target_path.chmod(0o755)
 
 
 def latest_github_asset_url(repo: str, asset_fragments: list[str]) -> str:
@@ -358,9 +324,6 @@ def handler(event: dict, context) -> None:
 
             # Create OpenTelemetry wrapper
             create_otel_wrapper(package_dir)
-
-            # Install diagram-as-code MCP renderer for architecture diagram generation
-            install_awsdac_mcp_server(package_dir, download_dir)
 
             # Install CLI tools used by specialized infrastructure agents
             install_infra_cli_tools(package_dir, download_dir)

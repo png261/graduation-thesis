@@ -12,11 +12,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { FileText, Github, Paperclip, Send, Square, X } from "lucide-react"
+import { Database, FileText, Github, Paperclip, Send, Square, X } from "lucide-react"
 import type { ChatAgent, ChatAttachment, UserHandoff } from "./types"
-import type { SelectedRepository } from "@/lib/agentcore-client/types"
+import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 
 export const NO_REPOSITORY_VALUE = "__no_repository__"
+export const NO_STATE_BACKEND_VALUE = "__no_state_backend__"
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 const MAX_ATTACHMENTS = 6
 
@@ -37,6 +38,11 @@ interface ChatInputProps {
   repositoryLocked?: boolean
   isLoadingRepositories?: boolean
   repositoryError?: string | null
+  stateBackends?: SelectedStateBackend[]
+  selectedStateBackendId?: string
+  onStateBackendChange?: (backendId: string) => void
+  isLoadingStateBackends?: boolean
+  stateBackendError?: string | null
   userHandoff?: UserHandoff | null
   onUserHandoffSubmit?: (answers: string) => void
 }
@@ -58,6 +64,11 @@ export function ChatInput({
   repositoryLocked = false,
   isLoadingRepositories = false,
   repositoryError = null,
+  stateBackends = [],
+  selectedStateBackendId = NO_STATE_BACKEND_VALUE,
+  onStateBackendChange,
+  isLoadingStateBackends = false,
+  stateBackendError = null,
   userHandoff = null,
   onUserHandoffSubmit,
 }: ChatInputProps) {
@@ -441,8 +452,37 @@ export function ChatInput({
             {repositoryLocked && (
               <span className="text-xs font-medium text-slate-500">Repository locked</span>
             )}
+            <Select
+              value={selectedStateBackendId || NO_STATE_BACKEND_VALUE}
+              onValueChange={onStateBackendChange}
+              disabled={isLoadingStateBackends || disabled}
+            >
+              <SelectTrigger
+                aria-label="Terraform state backend"
+                className="h-9 max-w-[280px] min-w-[220px] border-slate-200 bg-white text-slate-700"
+                size="sm"
+              >
+                <Database className="h-4 w-4" />
+                <SelectValue
+                  placeholder={isLoadingStateBackends ? "Loading states..." : "Select state"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value={NO_STATE_BACKEND_VALUE}>No state backend</SelectItem>
+                  {stateBackends.map(backend => (
+                    <SelectItem key={backend.backendId} value={backend.backendId}>
+                      {backend.name} ({backend.region})
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
             {repositoryError && (
               <span className="text-xs font-medium text-red-600">{repositoryError}</span>
+            )}
+            {stateBackendError && (
+              <span className="text-xs font-medium text-red-600">{stateBackendError}</span>
             )}
             {attachmentError && (
               <span className="text-xs font-medium text-red-600">{attachmentError}</span>
@@ -451,7 +491,11 @@ export function ChatInput({
           <Button
             type={isLoading ? "button" : "submit"}
             disabled={isLoading ? disabled : !canSubmit || disabled}
-            className="h-10 border border-slate-950 bg-slate-950 text-white hover:bg-slate-800"
+            className={`h-10 border text-white ${
+              isLoading
+                ? "border-red-600 bg-red-600 hover:bg-red-700"
+                : "border-slate-950 bg-slate-950 hover:bg-slate-800"
+            }`}
             onClick={isLoading ? onStop : undefined}
           >
             {isLoading ? (

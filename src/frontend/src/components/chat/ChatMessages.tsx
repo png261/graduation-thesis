@@ -20,7 +20,7 @@ export function ChatMessages({
       ref={messagesContainerRef}
       onScroll={onScroll}
       data-testid="chat-messages"
-      className={`flex h-full w-full flex-col gap-4 bg-white p-4 pb-36 ${
+      className={`flex h-full w-full flex-col gap-4 bg-white p-4 pb-36 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
         messages.length > 0 ? "overflow-y-auto" : "overflow-hidden"
       }`}
     >

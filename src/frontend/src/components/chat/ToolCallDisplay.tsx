@@ -1,15 +1,12 @@
 "use client"
 
-import { lazy, Suspense, useState } from "react"
+import { useState } from "react"
 import { Wrench, Loader2, CheckCircle2, ChevronRight, ChevronDown, ExternalLink } from "lucide-react"
 import type { ToolRenderProps } from "@/hooks/useToolRenderer"
 import type { ToolProgressEntry } from "./types"
-import type { ExcalidrawElement, ExcalidrawView } from "./excalidraw-types"
-
-const ExcalidrawSketch = lazy(() => import("./ExcalidrawSketch"))
 
 export function parseDiagramResult(name: string, result?: string) {
-  if (name !== "render_architecture_diagram" || !result) return null
+  if (name !== "diagram" || !result) return null
   try {
     const parsed = JSON.parse(result) as {
       ok?: boolean
@@ -29,171 +26,9 @@ export function parseDiagramResult(name: string, result?: string) {
   }
 }
 
-export function parseExcalidrawView(name: string, result?: string, args?: string): ExcalidrawView | null {
-  if (name !== "create_excalidraw_view") return null
-
-  const fromResult = parseExcalidrawResult(result)
-  if (fromResult) return fromResult
-
-  return parseExcalidrawArgs(args)
-}
-
-function parseExcalidrawResult(result?: string): ExcalidrawView | null {
-  if (!result) return null
-  try {
-    const parsed = JSON.parse(result) as Partial<ExcalidrawView>
-    if (parsed.ok !== true || parsed.type !== "excalidraw_view" || !Array.isArray(parsed.elements)) {
-      return null
-    }
-    return parsed as ExcalidrawView
-  } catch {
-    return null
-  }
-}
-
-function parseExcalidrawArgs(args?: string): ExcalidrawView | null {
-  if (!args) return null
-  try {
-    const parsed = JSON.parse(args) as { elements?: string; title?: string }
-    if (typeof parsed.elements !== "string") return null
-    const elements = JSON.parse(parsed.elements) as ExcalidrawElement[]
-    if (!Array.isArray(elements)) return null
-    return {
-      ok: true,
-      type: "excalidraw_view",
-      title: parsed.title || "Streaming sketch",
-      elements,
-      source: "streaming-tool-input",
-    }
-  } catch {
-    return parsePartialExcalidrawArgs(args)
-  }
-}
-
-function parsePartialExcalidrawArgs(args: string): ExcalidrawView | null {
-  const elementsText = extractJsonStringValuePrefix(args, "elements")
-  if (!elementsText) return null
-
-  const elements = extractCompleteArrayObjects(elementsText) as ExcalidrawElement[]
-  if (elements.length === 0) return null
-
-  return {
-    ok: true,
-    type: "excalidraw_view",
-    title: extractJsonStringValuePrefix(args, "title") || "Streaming sketch",
-    elements,
-    element_count: elements.length,
-    source: "partial-streaming-tool-input",
-  }
-}
-
-function extractJsonStringValuePrefix(source: string, key: string): string | null {
-  const keyIndex = source.indexOf(`"${key}"`)
-  if (keyIndex < 0) return null
-
-  const colonIndex = source.indexOf(":", keyIndex)
-  if (colonIndex < 0) return null
-
-  const quoteIndex = source.indexOf('"', colonIndex + 1)
-  if (quoteIndex < 0) return null
-
-  let raw = ""
-  let escaped = false
-  for (let index = quoteIndex + 1; index < source.length; index += 1) {
-    const char = source[index]
-    if (escaped) {
-      raw += `\\${char}`
-      escaped = false
-      continue
-    }
-    if (char === "\\") {
-      escaped = true
-      continue
-    }
-    if (char === '"') break
-    raw += char
-  }
-
-  return decodeJsonStringPrefix(raw)
-}
-
-function decodeJsonStringPrefix(raw: string): string {
-  const candidates = [
-    raw,
-    raw.replace(/\\u[0-9a-fA-F]{0,3}$/, "").replace(/\\$/, ""),
-    raw.replace(/\\[^"\\/bfnrtu]$/, ""),
-  ]
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(`"${candidate}"`) as string
-    } catch {
-      // Continue with a more forgiving fallback below.
-    }
-  }
-
-  return raw
-    .replace(/\\"/g, '"')
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\r")
-    .replace(/\\t/g, "\t")
-    .replace(/\\\\/g, "\\")
-}
-
-function extractCompleteArrayObjects(source: string): Record<string, unknown>[] {
-  const arrayStart = source.indexOf("[")
-  if (arrayStart < 0) return []
-
-  const objects: Record<string, unknown>[] = []
-  let inString = false
-  let escaped = false
-  let objectDepth = 0
-  let objectStart = -1
-
-  for (let index = arrayStart + 1; index < source.length; index += 1) {
-    const char = source[index]
-    if (inString) {
-      if (escaped) {
-        escaped = false
-      } else if (char === "\\") {
-        escaped = true
-      } else if (char === '"') {
-        inString = false
-      }
-      continue
-    }
-
-    if (char === '"') {
-      inString = true
-      continue
-    }
-    if (char === "{") {
-      if (objectDepth === 0) objectStart = index
-      objectDepth += 1
-      continue
-    }
-    if (char === "}") {
-      objectDepth -= 1
-      if (objectDepth === 0 && objectStart >= 0) {
-        const rawObject = source.slice(objectStart, index + 1)
-        try {
-          const parsed = JSON.parse(rawObject) as Record<string, unknown>
-          if (parsed && typeof parsed === "object") objects.push(parsed)
-        } catch {
-          // Ignore incomplete or malformed streamed objects.
-        }
-        objectStart = -1
-      }
-    }
-  }
-
-  return objects
-}
-
 export function ToolCallDisplay({ name, args, status, progress, result }: ToolRenderProps) {
   const [expanded, setExpanded] = useState(false)
   const diagram = parseDiagramResult(name, result)
-  const excalidrawView = parseExcalidrawView(name, result, args)
-  const showRawDetails = !excalidrawView
   const activity = normalizeProgress(progress)
 
   return (
@@ -253,27 +88,6 @@ export function ToolCallDisplay({ name, args, status, progress, result }: ToolRe
         </figure>
       )}
 
-      {excalidrawView && (
-        <Suspense
-          fallback={
-            <figure className="my-2 overflow-hidden rounded border border-slate-200 bg-white">
-              <div className="border-b border-slate-200 px-3 py-2 text-xs font-medium text-slate-600">
-                {excalidrawView.title || "Excalidraw view"}
-              </div>
-              <div
-                className="flex h-[420px] w-full items-center justify-center bg-white text-xs text-slate-500"
-                role="img"
-                aria-label={excalidrawView.title || "Excalidraw view"}
-              >
-                Loading Excalidraw...
-              </div>
-            </figure>
-          }
-        >
-          <ExcalidrawSketch view={excalidrawView} />
-        </Suspense>
-      )}
-
       {expanded && (
         <div className="ml-6 mt-1 border-l-2 border-gray-200 pl-3 space-y-2">
           {activity.length > 0 && (
@@ -293,7 +107,7 @@ export function ToolCallDisplay({ name, args, status, progress, result }: ToolRe
               </div>
             </div>
           )}
-          {showRawDetails && args && (
+          {args && (
             <div>
               <div className="text-xs text-gray-400">Input</div>
               <pre className="text-xs text-gray-600 whitespace-pre-wrap break-words mt-0.5">
@@ -301,7 +115,7 @@ export function ToolCallDisplay({ name, args, status, progress, result }: ToolRe
               </pre>
             </div>
           )}
-          {showRawDetails && result && (
+          {result && (
             <div>
               <div className="text-xs text-gray-400">Result</div>
               <pre className="text-xs text-gray-600 whitespace-pre-wrap break-words mt-0.5">

@@ -1,4 +1,4 @@
-"""Strands agent with Gateway MCP tools, Memory, and awsdac MCP."""
+"""Strands agent with Gateway MCP tools and Memory."""
 
 import base64
 from datetime import datetime, timezone
@@ -25,9 +25,8 @@ from strands import Agent, ToolContext, tool
 from strands.models import OpenAIModel
 from openai import AsyncOpenAI
 from strands_tools import file_read, file_write
-from strands_tools.diagram import diagram as strands_diagram
-from strands_tools.shell import shell as strands_shell
 from strands_tools.swarm import swarm as strands_swarm
+from agents.artifacts import session_artifact_dir
 from agents.iac_tools import (
     checkov_scan,
     infracost_breakdown,
@@ -38,14 +37,14 @@ from agents.iac_tools import (
 )
 from agents.orchestator.agent import create_agent as create_orchestrator_agent
 from agents.orchestator.system_prompt import CHAT_AGENTS, LEGACY_AGENT_MENTIONS
-from agents.orchestator.tools.architecture_diagrams import create_architecture_diagram_tool
-from agents.orchestator.tools.excalidraw_view import create_excalidraw_view, read_excalidraw_guide
 from agents.orchestator.tools.gateway import create_gateway_mcp_client
 from agents.orchestator.tools.opentofu_mcp import create_opentofu_mcp_client
+from agents.orchestator.tools.safe_diagram import diagram as safe_diagram
 from agents.runtime import AgentRuntimeTools
 from utils.auth import extract_user_id_from_context, get_openai_credentials
 from utils.github_app import (
     create_pull_request as create_github_pull_request,
+    generate_terraform_plan_graph,
     get_file_diff,
     list_installed_repositories,
     list_pull_requests,
@@ -241,12 +240,14 @@ def _create_handoff_to_user_tool(results: list[dict]):
 
 
 def _use_shared_files_workdir(repository: dict | None = None, session_id: str | None = None) -> str:
+    safe_session_id = session_id or "agentcore"
+    os.environ["SHARED_FILES_SESSION_ID"] = safe_session_id
     if repository:
-        repo_path = setup_repository_workspace(repository, session_id or "agentcore")
+        repo_path = setup_repository_workspace(repository, safe_session_id)
         os.chdir(repo_path)
         return str(repo_path)
 
-    workspace_path = str(scratch_workspace_path(session_id or "agentcore"))
+    workspace_path = str(scratch_workspace_path(safe_session_id))
     try:
         os.chdir(workspace_path)
     except FileNotFoundError:
@@ -359,13 +360,12 @@ def _attachment_image_format(content_type: str, filename: str) -> str | None:
     return None
 
 
-def _save_prompt_attachments(attachments: list | None) -> list[dict]:
+def _save_prompt_attachments(attachments: list | None, session_id: str) -> list[dict]:
     if not isinstance(attachments, list):
         return []
 
     saved = []
-    attachment_dir = os.path.join(os.getcwd(), "attachments")
-    os.makedirs(attachment_dir, exist_ok=True)
+    attachment_dir = session_artifact_dir(session_id, "attachments", shared_files_base_path())
 
     for index, attachment in enumerate(attachments[:6], start=1):
         if not isinstance(attachment, dict):
@@ -385,20 +385,19 @@ def _save_prompt_attachments(attachments: list | None) -> list[dict]:
             continue
 
         filename = _safe_attachment_name(str(attachment.get("name") or ""), f"attachment-{index}")
-        path = os.path.join(attachment_dir, filename)
+        path = attachment_dir / filename
         stem, ext = os.path.splitext(filename)
         suffix = 1
-        while os.path.exists(path):
-            path = os.path.join(attachment_dir, f"{stem}-{suffix}{ext}")
+        while path.exists():
+            path = attachment_dir / f"{stem}-{suffix}{ext}"
             suffix += 1
 
-        with open(path, "wb") as file_obj:
-            file_obj.write(content)
+        path.write_bytes(content)
 
         saved.append(
             {
                 "name": filename,
-                "path": os.path.relpath(path, os.getcwd()),
+                "path": str(path),
                 "type": str(attachment.get("type") or "application/octet-stream"),
                 "size": len(content),
                 "content": content,
@@ -415,7 +414,7 @@ def _augment_prompt_with_attachments(prompt: str, attachments: list[dict]) -> st
     lines = [
         prompt,
         "",
-        "The user attached the following file(s). They have been saved in the current session workspace:",
+        "The user attached the following file(s). They have been saved outside the repository in session artifact storage:",
     ]
     image_count = 0
     for item in attachments:
@@ -424,6 +423,7 @@ def _augment_prompt_with_attachments(prompt: str, attachments: list[dict]) -> st
             image_count += 1
         lines.append(f"- {item['name']} ({item['type']}, {item['size']} bytes): {item['path']}")
     lines.append("Use file_read for text attachments when useful.")
+    lines.append("Do not copy attachment files into the connected repository unless the user explicitly asks for that exact file to be added.")
     if image_count:
         lines.append(
             "The image attachment content is included directly in this model message. "
@@ -451,6 +451,25 @@ def _prompt_with_attachment_content_blocks(prompt: str, attachments: list[dict])
         )
 
     return content_blocks
+
+
+def _json_safe_context(value):
+    if isinstance(value, bytes):
+        return {"__bytes_base64__": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, list):
+        return [_json_safe_context(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_context(item) for key, item in value.items()}
+    return value
+
+
+def _empty_agent_response_message(saved_attachments: list[dict]) -> str:
+    if any(_attachment_image_format(item["type"], item["name"]) for item in saved_attachments):
+        return (
+            "The pasted image was received, but the configured model returned an empty response. "
+            "Try again with a vision-capable model if you need image analysis."
+        )
+    return "The configured model returned an empty response."
 
 
 def _compact_stream_event(event: dict) -> dict | None:
@@ -653,10 +672,11 @@ def create_strands_agent(
     session_id: str,
     repository: dict | None = None,
     chat_agent: dict | None = None,
+    state_backend: dict | None = None,
     pull_request_results: list[dict] | None = None,
     handoff_results: list[dict] | None = None,
 ) -> Agent:
-    """Create a Strands agent with Gateway tools, memory, and awsdac MCP."""
+    """Create a Strands agent with Gateway tools and memory."""
 
     _use_shared_files_workdir(repository, session_id)
 
@@ -686,19 +706,15 @@ def create_strands_agent(
         gateway=create_gateway_mcp_client(),
         opentofu=create_opentofu_mcp_client(),
         handoff_to_user=_create_handoff_to_user_tool(handoff_results if handoff_results is not None else []),
-        render_architecture_diagram=create_architecture_diagram_tool(),
-        read_excalidraw_guide=read_excalidraw_guide,
-        create_excalidraw_view=create_excalidraw_view,
         file_read=file_read,
         file_write=file_write,
-        shell=strands_shell,
         terraform_init=terraform_init,
         terraform_plan=terraform_plan,
         terraform_validate=terraform_validate,
         tflint_scan=tflint_scan,
         infracost_breakdown=infracost_breakdown,
         checkov_scan=checkov_scan,
-        diagram=strands_diagram,
+        diagram=safe_diagram,
         swarm=strands_swarm,
         create_pull_request=create_pull_request_tool,
     )
@@ -707,6 +723,7 @@ def create_strands_agent(
         model=openai_model,
         repository=repository,
         chat_agent=chat_agent,
+        state_backend=state_backend,
         runtime_tools=runtime_tools,
         session_manager=session_manager,
         trace_attributes={"user.id": user_id, "session.id": session_id},
@@ -723,6 +740,7 @@ async def invocations(payload, context: RequestContext):
     user_query = payload.get("prompt")
     session_id = payload.get("runtimeSessionId")
     repository = payload.get("repository")
+    state_backend = payload.get("stateBackend")
 
     if not all([user_query, session_id]):
         yield {
@@ -759,6 +777,21 @@ async def invocations(payload, context: RequestContext):
                 yield {"status": "error", "error": "filePath is required"}
                 return
             yield {"status": "ok", "fileDiff": get_file_diff(repository, session_id, file_path)}
+            return
+        if github_action == "generateTerraformGraph":
+            if not repository:
+                yield {"status": "error", "error": "repository is required"}
+                return
+            terraform_path = str(payload.get("terraformPath") or ".").strip() or "."
+            yield {
+                "status": "ok",
+                "terraformGraph": generate_terraform_plan_graph(
+                    repository,
+                    session_id,
+                    terraform_path,
+                    state_backend,
+                ),
+            }
             return
 
         filesystem_action = payload.get("filesystemAction")
@@ -875,10 +908,19 @@ async def invocations(payload, context: RequestContext):
 
         pull_request_results: list[dict] = []
         handoff_results: list[dict] = []
-        agent = create_strands_agent(user_id, session_id, repository, chat_agent, pull_request_results, handoff_results)
-        saved_attachments = _save_prompt_attachments(payload.get("attachments"))
+        agent = create_strands_agent(
+            user_id,
+            session_id,
+            repository,
+            chat_agent,
+            state_backend,
+            pull_request_results,
+            handoff_results,
+        )
+        saved_attachments = _save_prompt_attachments(payload.get("attachments"), session_id)
         agent_query = _prompt_with_attachment_content_blocks(user_query, saved_attachments)
         agent.state.set("original_user_prompt", user_query)
+        agent.state.set("original_user_context", _json_safe_context(agent_query))
 
         assistant_chunks = []
         async for event in agent.stream_async(agent_query):
@@ -888,6 +930,11 @@ async def invocations(payload, context: RequestContext):
             compact_event = _compact_stream_event(event_dict)
             if compact_event is not None:
                 yield compact_event
+
+        if not "".join(assistant_chunks).strip() and not handoff_results:
+            fallback_message = _empty_agent_response_message(saved_attachments)
+            assistant_chunks.append(fallback_message)
+            yield {"data": fallback_message}
 
         session_title = _session_title_from_agent_response("".join(assistant_chunks))
         if session_title:

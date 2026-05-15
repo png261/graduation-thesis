@@ -4,6 +4,7 @@ from strands import Agent
 
 from agents.runtime import AgentRuntimeTools
 from agents.security_prover.config import DESCRIPTION, NAME
+from agents.security_prover.output import SecurityProverOutput
 from agents.security_prover.system_prompt import SYSTEM_PROMPT
 from agents.security_prover.tools import create_tools
 from agents.tool_adapter import create_agent_text_tool
@@ -29,4 +30,5 @@ def create_tool(model, runtime_tools: AgentRuntimeTools, trace_attributes: dict)
         model=model,
         runtime_tools=runtime_tools,
         trace_attributes=trace_attributes,
+        output_model=SecurityProverOutput,
     )

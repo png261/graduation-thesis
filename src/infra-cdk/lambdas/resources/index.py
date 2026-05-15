@@ -13,8 +13,12 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import boto3
+import jwt
 from botocore.exceptions import ClientError, UnknownServiceError
 
 TABLE_NAME = os.environ["TABLE_NAME"]
@@ -40,6 +44,7 @@ sns = boto3.client("sns")
 s3 = boto3.client("s3")
 RESOURCE_GRAPH_BUCKET = os.environ.get("RESOURCE_GRAPH_BUCKET", "")
 AWS_ICONS_PATH = os.environ.get("AWS_ICONS_PATH", "/opt/aws-official-icons")
+GITHUB_API = "https://api.github.com"
 
 
 def _now() -> str:
@@ -348,15 +353,108 @@ def _github_webhook_secret_metadata() -> dict[str, Any]:
     }
 
 
-def _github_app_bot_login() -> str:
+def _normalize_bot_login(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.endswith("[bot]"):
+        return text
+    if re.fullmatch(r"[A-Za-z0-9-]+", text):
+        return f"{text}[bot]"
+    return ""
+
+
+def _github_app_bot_logins() -> set[str]:
     try:
         payload = _github_secret_payload()
     except PermissionError:
-        return ""
-    app_slug = str(payload.get("app_slug") or payload.get("appSlug") or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9-]+", app_slug):
-        return ""
-    return f"{app_slug}[bot]"
+        payload = {}
+    candidates: list[Any] = [
+        payload.get("app_slug"),
+        payload.get("appSlug"),
+        payload.get("bot_login"),
+        payload.get("botLogin"),
+    ]
+    for key in ("bot_logins", "botLogins", "app_slugs", "appSlugs", "previous_app_slugs", "previousAppSlugs"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+        elif value:
+            candidates.extend(str(value).split(","))
+    candidates.extend(os.environ.get("GITHUB_APP_BOT_LOGINS", "").split(","))
+    return {login for login in (_normalize_bot_login(candidate) for candidate in candidates) if login}
+
+
+def _github_app_bot_login() -> str:
+    return next(iter(_github_app_bot_logins()), "")
+
+
+def _github_request(method: str, path: str, token: str, body: dict[str, Any] | None = None) -> Any:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = Request(
+        f"{GITHUB_API}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "infraq-resources-api",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read()
+            return json.loads(raw.decode("utf-8")) if raw else {}
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API {method} {path} failed: {exc.code} {details}") from exc
+
+
+def _github_app_jwt(payload: dict[str, Any]) -> str:
+    now = int(time.time())
+    app_id = str(payload.get("app_id") or payload.get("appId") or "").strip()
+    private_key = str(
+        payload.get("private_key") or payload.get("privateKey") or payload.get("private_key_pem") or ""
+    ).replace("\\n", "\n")
+    if not app_id or not private_key:
+        raise PermissionError("GitHub App credentials require app_id and private_key")
+    return jwt.encode({"iat": now - 60, "exp": now + 540, "iss": app_id}, private_key, algorithm="RS256")
+
+
+def _github_installation_token(owner: str, repo: str) -> str:
+    app_payload = _github_secret_payload()
+    app_token = _github_app_jwt(app_payload)
+    try:
+        installation = _github_request("GET", f"/repos/{owner}/{repo}/installation", app_token)
+        installation_id = installation["id"]
+        token_response = _github_request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
+            app_token,
+            {"repositories": [repo]},
+        )
+        return token_response["token"]
+    except RuntimeError as exc:
+        if " failed: 404 " not in str(exc):
+            raise
+
+    target = f"{owner}/{repo}".lower()
+    installations = _github_request("GET", "/app/installations", app_token)
+    if not isinstance(installations, list):
+        raise RuntimeError("GitHub API did not return an installation list")
+    for installation in installations:
+        installation_id = installation.get("id") if isinstance(installation, dict) else None
+        if not installation_id:
+            continue
+        token_response = _github_request("POST", f"/app/installations/{installation_id}/access_tokens", app_token, {})
+        installation_token = token_response["token"]
+        repositories = _github_request("GET", "/installation/repositories", installation_token)
+        for item in repositories.get("repositories", []) if isinstance(repositories, dict) else []:
+            if str(item.get("full_name") or "").lower() == target:
+                return installation_token
+    raise PermissionError("GitHub App is not installed on this repository")
 
 
 def _is_github_app_pull_request(
@@ -364,14 +462,23 @@ def _is_github_app_pull_request(
     head_branch: Any,
     created_by_github_app: Any = False,
     bot_login: str | None = None,
+    bot_logins: set[str] | None = None,
+    author_type: Any = "",
 ) -> bool:
     if created_by_github_app is True:
         return True
+    author_login = str(author or "")
+    if str(author_type or "").lower() == "bot" and author_login.endswith("[bot]"):
+        return True
     if str(head_branch or "").startswith("agentcore/"):
+        return True
+    if author_login.endswith("[bot]"):
         return True
     if bot_login is None:
         bot_login = _github_app_bot_login()
-    return bool(bot_login and str(author or "") == bot_login)
+    if bot_logins is None:
+        bot_logins = {bot_login} if bot_login else _github_app_bot_logins()
+    return bool(author_login and author_login in bot_logins)
 
 
 def _int_value(value: Any) -> int:
@@ -446,6 +553,7 @@ def _pull_request_item(repo: str, pr: dict[str, Any], event_name: str, action: s
     timestamp = _now()
     state = "merged" if pr.get("merged") is True else pr.get("state") or ""
     author = user.get("login") if isinstance(user, dict) else ""
+    author_type = user.get("type") if isinstance(user, dict) else ""
     head_branch = head.get("ref") if isinstance(head, dict) else ""
     return {
         "pk": f"GITHUB#{repo}",
@@ -462,11 +570,12 @@ def _pull_request_item(repo: str, pr: dict[str, Any], event_name: str, action: s
         "draft": bool(pr.get("draft")),
         "url": pr.get("html_url") or "",
         "author": author,
+        "authorType": author_type,
         "headBranch": head_branch,
         "baseBranch": base.get("ref") if isinstance(base, dict) else "",
         "headSha": head.get("sha") if isinstance(head, dict) else "",
         "labels": [label.get("name") for label in labels if isinstance(label, dict) and label.get("name")],
-        "createdByGitHubApp": _is_github_app_pull_request(author, head_branch),
+        "createdByGitHubApp": _is_github_app_pull_request(author, head_branch, author_type=author_type),
         "createdAt": pr.get("created_at") or timestamp,
         "githubUpdatedAt": pr.get("updated_at") or timestamp,
         "updatedAt": timestamp,
@@ -481,6 +590,62 @@ def _pull_request_item(repo: str, pr: dict[str, Any], event_name: str, action: s
         "changedFiles": _int_value(pr.get("changed_files")),
         "reactions": _pull_request_reactions(pr),
     }
+
+
+def _github_pull_request_item(repo: str, pr: dict[str, Any]) -> dict[str, Any]:
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    user = pr.get("user") or {}
+    labels = pr.get("labels") or []
+    author = user.get("login") if isinstance(user, dict) else ""
+    author_type = user.get("type") if isinstance(user, dict) else ""
+    head_branch = head.get("ref") if isinstance(head, dict) else ""
+    state = "merged" if pr.get("merged") is True else pr.get("state") or ""
+    return {
+        "repository": repo,
+        "number": pr.get("number"),
+        "title": pr.get("title") or "",
+        "state": state,
+        "githubState": pr.get("state") or "",
+        "merged": bool(pr.get("merged")),
+        "mergedAt": pr.get("merged_at") or "",
+        "closedAt": pr.get("closed_at") or "",
+        "draft": bool(pr.get("draft")),
+        "url": pr.get("html_url") or "",
+        "author": author,
+        "authorType": author_type,
+        "headBranch": head_branch,
+        "baseBranch": base.get("ref") if isinstance(base, dict) else "",
+        "headSha": head.get("sha") if isinstance(head, dict) else "",
+        "labels": [label.get("name") for label in labels if isinstance(label, dict) and label.get("name")],
+        "createdByGitHubApp": _is_github_app_pull_request(author, head_branch, author_type=author_type),
+        "createdAt": pr.get("created_at") or "",
+        "githubUpdatedAt": pr.get("updated_at") or "",
+        "updatedAt": pr.get("updated_at") or "",
+        "comments": _int_value(pr.get("comments")),
+        "reviewComments": _int_value(pr.get("review_comments")),
+        "reactions": _pull_request_reactions(pr),
+    }
+
+
+def _list_live_github_pull_requests(repository: str, state: str) -> list[dict[str, Any]]:
+    owner, repo_name = repository.split("/", 1)
+    token = _github_installation_token(owner, repo_name)
+    github_state = state if state in {"open", "closed"} else "all"
+    items: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        query = urlencode({"state": github_state, "per_page": 100, "sort": "updated", "direction": "desc", "page": page})
+        page_items = _github_request("GET", f"/repos/{owner}/{repo_name}/pulls?{query}", token)
+        if not isinstance(page_items, list):
+            raise RuntimeError("GitHub API did not return a pull request list")
+        items.extend(_github_pull_request_item(repository, item) for item in page_items)
+        if len(page_items) < 100:
+            break
+        page += 1
+    if state == "merged":
+        return [item for item in items if item.get("merged") is True or item.get("state") == "merged"]
+    return items
 
 
 def _update_pr_check_status(repo: str, number: Any, update: dict[str, Any]) -> None:
@@ -585,23 +750,55 @@ def _list_github_pull_requests(repository: str, state: str = "open") -> list[dic
     repo = repository.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("repository must use owner/name format")
-    response = table.query(
-        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
-        ExpressionAttributeValues={":pk": f"GITHUB#{repo}", ":prefix": "PR#"},
-        ScanIndexForward=False,
-    )
-    items = response.get("Items", [])
-    bot_login = _github_app_bot_login()
-    items = [
+    query_kwargs = {
+        "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+        "ExpressionAttributeValues": {":pk": f"GITHUB#{repo}", ":prefix": "PR#"},
+        "ScanIndexForward": False,
+    }
+    items: list[dict[str, Any]] = []
+    while True:
+        response = table.query(**query_kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        query_kwargs["ExclusiveStartKey"] = last_key
+    bot_logins = _github_app_bot_logins()
+    stored_items = [
         item
         for item in items
         if _is_github_app_pull_request(
             item.get("author"),
             item.get("headBranch"),
             item.get("createdByGitHubApp"),
-            bot_login,
+            bot_logins=bot_logins,
+            author_type=item.get("authorType"),
         )
     ]
+    try:
+        live_items = [
+            item
+            for item in _list_live_github_pull_requests(repo, state)
+            if _is_github_app_pull_request(
+                item.get("author"),
+                item.get("headBranch"),
+                item.get("createdByGitHubApp"),
+                bot_logins=bot_logins,
+                author_type=item.get("authorType"),
+            )
+        ]
+    except Exception:
+        live_items = []
+    merged_by_number: dict[int, dict[str, Any]] = {}
+    for item in stored_items:
+        number = _int_value(item.get("number"))
+        if number:
+            merged_by_number[number] = item
+    for item in live_items:
+        number = _int_value(item.get("number"))
+        if number:
+            merged_by_number[number] = {**merged_by_number.get(number, {}), **item}
+    items = list(merged_by_number.values())
     if state in {"open", "closed", "merged"}:
         items = [item for item in items if item.get("state") == state]
     return sorted(items, key=lambda item: item.get("githubUpdatedAt") or item.get("updatedAt", ""), reverse=True)
@@ -652,6 +849,93 @@ def _list_state_backends(user_id: str) -> list[dict[str, Any]]:
         ScanIndexForward=False,
     )
     return sorted(response.get("Items", []), key=lambda item: item.get("updatedAt", ""), reverse=True)
+
+
+def _state_backend_session(user_id: str, backend: dict[str, Any]) -> boto3.Session:
+    credential = _credential_payload(user_id, backend.get("credentialId"))
+    session_kwargs = {
+        "aws_access_key_id": credential["accessKeyId"],
+        "aws_secret_access_key": credential["secretAccessKey"],
+        "region_name": backend["region"],
+    }
+    if credential.get("sessionToken"):
+        session_kwargs["aws_session_token"] = credential["sessionToken"]
+    return boto3.Session(**session_kwargs)
+
+
+def _read_state_backend_payload(user_id: str, backend: dict[str, Any]) -> dict[str, Any]:
+    target_session = _state_backend_session(user_id, backend)
+    state_object = target_session.client("s3").get_object(Bucket=backend["bucket"], Key=backend["key"])
+    return json.loads(state_object["Body"].read().decode("utf-8"))
+
+
+def _state_resource_values(values: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "id",
+        "arn",
+        "name",
+        "name_prefix",
+        "bucket",
+        "bucket_domain_name",
+        "bucket_regional_domain_name",
+        "instance_id",
+        "instance_type",
+        "ami",
+        "vpc_id",
+        "subnet_id",
+        "security_groups",
+        "vpc_security_group_ids",
+        "function_name",
+        "role",
+        "handler",
+        "runtime",
+        "queue_url",
+        "topic_arn",
+        "key_id",
+        "key_arn",
+        "db_name",
+        "db_instance_identifier",
+        "identifier",
+        "engine",
+        "load_balancer_type",
+        "dns_name",
+        "tags",
+        "tags_all",
+    }
+    return {key: values[key] for key in sorted(allowed_keys) if key in values}
+
+
+def _list_state_backend_resources(user_id: str, backend_id: str) -> dict[str, Any]:
+    backend = _get_state_backend(user_id, backend_id)
+    state_payload = _read_state_backend_payload(user_id, backend)
+    show_payload = _state_show_payload(state_payload)
+    resources = []
+    for resource in _iter_state_resources(show_payload.get("values", {}).get("root_module", {})):
+        resource_type = str(resource.get("type") or "")
+        if not resource_type.startswith("aws_"):
+            continue
+        values = resource.get("values") if isinstance(resource.get("values"), dict) else {}
+        resources.append(
+            {
+                "address": resource.get("address"),
+                "mode": resource.get("mode") or "managed",
+                "type": resource_type,
+                "name": resource.get("name"),
+                "module": resource.get("module"),
+                "index": resource.get("index"),
+                "providerName": "registry.terraform.io/hashicorp/aws",
+                "values": _state_resource_values(values),
+                "backendId": backend["backendId"],
+                "backendName": backend.get("name"),
+                "stateBucket": backend.get("bucket"),
+                "stateKey": backend.get("key"),
+                "stateRegion": backend.get("region"),
+                "service": backend.get("service"),
+                "repository": backend.get("repository"),
+                "updatedAt": backend.get("updatedAt"),
+            }
+        )
+    return {"backendId": backend_id, "resources": resources, "resourceCount": len(resources)}
 
 
 def _chat_session_id(value: Any) -> str:
@@ -713,6 +997,44 @@ def _sanitize_repository(repository: Any) -> dict[str, Any] | None:
     }
 
 
+def _sanitize_session_state_backend(state_backend: Any) -> dict[str, Any] | None:
+    if not isinstance(state_backend, dict):
+        return None
+    backend_id = str(state_backend.get("backendId") or "").strip()
+    name = str(state_backend.get("name") or "").strip()
+    bucket = str(state_backend.get("bucket") or "").strip()
+    key = str(state_backend.get("key") or "").strip()
+    region = str(state_backend.get("region") or "").strip()
+    service = str(state_backend.get("service") or "s3").strip().lower()
+    credential_id = str(state_backend.get("credentialId") or "").strip()
+    credential_name = str(state_backend.get("credentialName") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", backend_id):
+        raise ValueError("stateBackend.backendId is invalid")
+    if not name or len(name) > 120:
+        raise ValueError("stateBackend.name is invalid")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
+        raise ValueError("stateBackend.bucket is invalid")
+    if not key or len(key) > 1024:
+        raise ValueError("stateBackend.key is invalid")
+    if not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", region):
+        raise ValueError("stateBackend.region is invalid")
+    if service not in {"s3", "ec2", "iam"}:
+        raise ValueError("stateBackend.service is invalid")
+    if credential_id and not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", credential_id):
+        raise ValueError("stateBackend.credentialId is invalid")
+    return {
+        "backendId": backend_id,
+        "name": name[:120],
+        "bucket": bucket,
+        "key": key,
+        "region": region,
+        "service": service,
+        **({"credentialId": credential_id} if credential_id else {}),
+        **({"credentialName": credential_name[:120]} if credential_name else {}),
+        **({"repository": _sanitize_repository(state_backend.get("repository"))} if state_backend.get("repository") else {}),
+    }
+
+
 def _sanitize_pull_request(pull_request: Any) -> dict[str, Any] | None:
     if not isinstance(pull_request, dict):
         return None
@@ -743,6 +1065,7 @@ def _sanitize_chat_session(session: Any) -> dict[str, Any]:
     name = str(session.get("name") or "New chat").strip()[:120] or "New chat"
     history = session.get("history") if isinstance(session.get("history"), list) else []
     repository = _sanitize_repository(session.get("repository"))
+    state_backend = _sanitize_session_state_backend(session.get("stateBackend"))
     sanitized = {
         "sessionId": session_id,
         "id": session_id,
@@ -751,6 +1074,7 @@ def _sanitize_chat_session(session: Any) -> dict[str, Any]:
         "startDate": str(session.get("startDate") or _now()),
         "endDate": str(session.get("endDate") or _now()),
         "repository": repository,
+        "stateBackend": state_backend,
         "pullRequest": _sanitize_pull_request(session.get("pullRequest")),
     }
     while len(json.dumps(sanitized, default=_json_default).encode("utf-8")) > 350000 and sanitized["history"]:
@@ -921,7 +1245,7 @@ def _save_user_config(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _iter_state_resources(module_payload: dict[str, Any]):
+def _iter_state_resources(module_payload: dict[str, Any], module_address: str = ""):
     for resource in module_payload.get("resources", []):
         if not isinstance(resource, dict):
             continue
@@ -931,12 +1255,15 @@ def _iter_state_resources(module_payload: dict[str, Any]):
         resource_name = resource.get("name")
         if not resource_type or not resource_name:
             continue
+        resource_module = str(resource.get("module") or module_address or "")
         if "values" in resource:
             values = resource.get("values") if isinstance(resource.get("values"), dict) else {}
             yield {
-                "address": resource.get("address") or f"{resource_type}.{resource_name}",
+                "address": resource.get("address") or f"{resource_module + '.' if resource_module else ''}{resource_type}.{resource_name}",
+                "mode": resource.get("mode") or "managed",
                 "type": resource_type,
                 "name": resource_name,
+                "module": resource_module,
                 "values": values,
             }
             continue
@@ -947,18 +1274,21 @@ def _iter_state_resources(module_payload: dict[str, Any]):
             attributes = instance.get("attributes")
             if not isinstance(attributes, dict):
                 continue
-            address = resource.get("address") or f"{resource_type}.{resource_name}"
+            address = resource.get("address") or f"{resource_module + '.' if resource_module else ''}{resource_type}.{resource_name}"
             if len(instances) > 1:
                 address = f"{address}[{index}]"
             yield {
                 "address": address,
+                "mode": resource.get("mode") or "managed",
                 "type": resource_type,
                 "name": resource_name,
+                "module": resource_module,
+                "index": instance.get("index_key", index) if len(instances) > 1 else instance.get("index_key"),
                 "values": attributes,
             }
     for child in module_payload.get("child_modules", []):
         if isinstance(child, dict):
-            yield from _iter_state_resources(child)
+            yield from _iter_state_resources(child, str(child.get("address") or module_address))
 
 
 def _state_show_payload(state_payload: dict[str, Any]) -> dict[str, Any]:
@@ -980,46 +1310,54 @@ def _safe_tf_name(value: Any, fallback: str) -> str:
     return cleaned[:80]
 
 
+def _module_name_from_address(module_address: str) -> str:
+    parts = [part for part in module_address.split(".") if part and part != "module"]
+    return _safe_tf_name(parts[-1] if parts else "module", "module")
+
+
 def _write_terraformgraph_inputs(workdir: Path, state_payload: dict[str, Any]) -> tuple[Path, int]:
     source_dir = workdir / "terraform-src"
     source_dir.mkdir(parents=True, exist_ok=True)
     show_payload = _state_show_payload(state_payload)
     resources = list(_iter_state_resources(show_payload.get("values", {}).get("root_module", {})))
-    seen: set[tuple[str, str]] = set()
-    lines: list[str] = []
+    grouped: dict[tuple[str, str, str], int] = {}
     for index, resource in enumerate(resources):
         resource_type = str(resource.get("type") or "")
         if not resource_type.startswith("aws_"):
             continue
         name = _safe_tf_name(resource.get("name"), f"resource_{index}")
-        key = (resource_type, name)
-        if key in seen:
-            name = _safe_tf_name(f"{name}_{index}", f"resource_{index}")
-            key = (resource_type, name)
-        seen.add(key)
-        lines.append(f'resource "{resource_type}" "{name}" {{}}\n')
-    if not lines:
+        module_address = str(resource.get("module") or "")
+        key = (module_address, resource_type, name)
+        grouped[key] = grouped.get(key, 0) + 1
+    if not grouped:
         raise ValueError("No AWS managed resources found in state file")
-    (source_dir / "main.tf").write_text("\n".join(lines), encoding="utf-8")
+    root_lines: list[str] = []
+    module_lines: dict[str, list[str]] = {}
+    for (module_address, resource_type, name), count in sorted(grouped.items()):
+        block = f'resource "{resource_type}" "{name}" {{\n'
+        if count > 1:
+            block += f"  count = {count}\n"
+        block += "}\n"
+        if module_address:
+            module_name = _module_name_from_address(module_address)
+            module_lines.setdefault(module_name, []).append(block)
+        else:
+            root_lines.append(block)
+    for module_name, lines in sorted(module_lines.items()):
+        root_lines.append(f'module "{module_name}" {{\n  source = "./modules/{module_name}"\n}}\n')
+        module_dir = source_dir / "modules" / module_name
+        module_dir.mkdir(parents=True, exist_ok=True)
+        (module_dir / "main.tf").write_text("\n".join(lines), encoding="utf-8")
+    (source_dir / "main.tf").write_text("\n".join(root_lines), encoding="utf-8")
     state_file = workdir / "terraformgraph-state.json"
     state_file.write_text(json.dumps(show_payload), encoding="utf-8")
-    return state_file, len(lines)
+    return state_file, sum(grouped.values())
 
 
 def _generate_backend_graph(user_id: str, backend: dict[str, Any]) -> dict[str, Any]:
     if not RESOURCE_GRAPH_BUCKET:
         raise ValueError("Resource graph bucket is not configured")
-    credential = _credential_payload(user_id, backend.get("credentialId"))
-    session_kwargs = {
-        "aws_access_key_id": credential["accessKeyId"],
-        "aws_secret_access_key": credential["secretAccessKey"],
-        "region_name": backend["region"],
-    }
-    if credential.get("sessionToken"):
-        session_kwargs["aws_session_token"] = credential["sessionToken"]
-    target_session = boto3.Session(**session_kwargs)
-    state_object = target_session.client("s3").get_object(Bucket=backend["bucket"], Key=backend["key"])
-    state_payload = json.loads(state_object["Body"].read().decode("utf-8"))
+    state_payload = _read_state_backend_payload(user_id, backend)
     with tempfile.TemporaryDirectory(prefix="terraformgraph-") as tmp:
         workdir = Path(tmp)
         state_file, resource_count = _write_terraformgraph_inputs(workdir, state_payload)
@@ -1678,6 +2016,9 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         plan_match = re.search(r"/resources/state-backends/([^/]+)/plan$", path)
         if plan_match and method == "POST":
             return _response(200, {"backend": _save_backend_plan(user_id, plan_match.group(1), _body(event))}, origin)
+        backend_resources_match = re.search(r"/resources/state-backends/([^/]+)/resources$", path)
+        if backend_resources_match and method == "GET":
+            return _response(200, _list_state_backend_resources(user_id, backend_resources_match.group(1)), origin)
         backend_graph_match = re.search(r"/resources/state-backends/([^/]+)/graph$", path)
         if backend_graph_match and method == "GET":
             return _response(200, {"graph": _backend_graph_url(user_id, backend_graph_match.group(1))}, origin)

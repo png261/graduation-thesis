@@ -1,12 +1,34 @@
 import { describe, it, expect } from "vitest"
 import { readFileSync } from "fs"
 import { resolve } from "path"
+import { parseChangedFile } from "../components/files/FileSystemPanel"
 
 describe("Component Integration Tests", () => {
+  describe("FileSystemPanel changed-file parsing", () => {
+    it("should preserve full filenames for status and plain changed-file entries", () => {
+      expect(parseChangedFile("M\tfrontend/src/App.tsx")).toEqual({
+        path: "frontend/src/App.tsx",
+        status: "modified",
+      })
+      expect(parseChangedFile("M  frontend/src/App.tsx")).toEqual({
+        path: "frontend/src/App.tsx",
+        status: "modified",
+      })
+      expect(parseChangedFile("frontend/src/App.tsx")).toEqual({
+        path: "frontend/src/App.tsx",
+        status: "modified",
+      })
+      expect(parseChangedFile("R100\told-name.tf\tnew-name.tf")).toEqual({
+        path: "new-name.tf",
+        status: "modified",
+      })
+    })
+  })
+
   describe("App Component Structure", () => {
     it("should import BrowserRouter from react-router-dom", () => {
       const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
-      expect(appContent).toMatch(/import \{ BrowserRouter \} from ["']react-router-dom["']/)
+      expect(appContent).toMatch(/import \{[^}]*BrowserRouter[^}]*\} from ["']react-router-dom["']/)
     })
 
     it("should import AuthProvider", () => {
@@ -114,13 +136,13 @@ describe("Component Integration Tests", () => {
         "utf-8"
       )
       expect(chatInterfaceContent).toContain("useWebAppStore")
-      expect(chatInterfaceContent).toContain("Connect Repository")
-      expect(chatInterfaceContent).toContain("Installed repository")
       expect(chatInterfaceContent).toContain("listInstalledRepositories")
       expect(chatInterfaceContent).not.toContain("pendingSessionId")
       expect(chatInterfaceContent).not.toContain("Clone Repository and Start")
-      expect(chatInterfaceContent).toContain("No repository connected")
-      expect(chatInterfaceContent).toContain("Chat works without a repository")
+      expect(chatInterfaceContent).not.toContain("No repository connected")
+      expect(chatInterfaceContent).not.toContain("Chat works without a repository")
+      expect(chatInterfaceContent).not.toContain("Connect Repository")
+      expect(chatInterfaceContent).not.toContain("Installed repository")
       expect(chatInterfaceContent).not.toContain("Connected to ${repository.fullName}")
       expect(chatInterfaceContent).not.toContain("Create a chat session connected to a GitHub repository before chatting.")
       const storeContent = readFileSync(resolve(__dirname, "../stores/webAppStore.ts"), "utf-8")
@@ -197,6 +219,27 @@ describe("Component Integration Tests", () => {
       )
       expect(filePanelContent).toContain('aria-label="Reload filesystem"')
       expect(filePanelContent).toContain("refreshFiles({ showLoading: true })")
+      expect(filePanelContent).toContain("ml-auto h-7 w-7")
+    })
+
+    it("should remove the global app header while keeping filesystem status controls out of the file panel", () => {
+      const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
+      const chatInterfaceContent = readFileSync(resolve(__dirname, "../components/chat/ChatInterface.tsx"), "utf-8")
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      expect(appContent).toContain("<main")
+      expect(appContent).not.toContain("<header")
+      expect(appContent).not.toContain("infraqLogo")
+      expect(appContent).not.toContain("pullRequestUrl")
+      expect(appContent).not.toContain("View PR")
+      expect(chatInterfaceContent).not.toContain("infraqLogo")
+      expect(chatInterfaceContent).not.toContain("onViewPullRequestReady")
+      expect(filePanelContent).not.toContain("onViewPullRequestReady")
+      expect(filePanelContent).not.toContain("Radio")
+      expect(filePanelContent).not.toContain("WifiOff")
+      expect(filePanelContent).not.toContain("<span className=\"capitalize\">{status}</span>")
     })
 
     it("should scope the file tree to the active chat session", () => {
@@ -210,7 +253,7 @@ describe("Component Integration Tests", () => {
       expect(filePanelContent).not.toContain("HardDrive")
     })
 
-    it("should support GitHub repository creation and pull request preview", () => {
+    it("should support installed GitHub repositories and changed-file status preview", () => {
       const filePanelContent = readFileSync(
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
         "utf-8"
@@ -219,14 +262,71 @@ describe("Component Integration Tests", () => {
         resolve(__dirname, "../lib/agentcore-client/client.ts"),
         "utf-8"
       )
-      expect(filePanelContent).toContain("Pull Request Preview")
       expect(filePanelContent).toContain("previewPullRequest")
-      expect(filePanelContent).toContain("createPullRequest")
+      expect(filePanelContent).not.toContain("Pull Request Preview")
+      expect(filePanelContent).not.toContain("createPullRequest")
       expect(agentClientContent).toContain("listInstalledRepositories")
       expect(agentClientContent).not.toContain("createRepository")
       expect(agentClientContent).toContain("githubAction")
       expect(agentClientContent).toContain('parsed.status === "error"')
       expect(agentClientContent).toContain("throw new Error")
+    })
+
+    it("should expose a direct Terraform plan graph tab in the filesystem panel", () => {
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      const agentClientContent = readFileSync(
+        resolve(__dirname, "../lib/agentcore-client/client.ts"),
+        "utf-8"
+      )
+      expect(filePanelContent).toContain("Graph")
+      expect(filePanelContent).toContain("Run plan")
+      expect(filePanelContent).toContain("refreshTerraformGraph")
+      expect(filePanelContent).toContain("TerraformGraphPreview")
+      expect(agentClientContent).toContain("generateTerraformGraph")
+    })
+
+    it("should expose resizable filesystem panes and chat follow-scroll behavior", () => {
+      const chatInterfaceContent = readFileSync(
+        resolve(__dirname, "../components/chat/ChatInterface.tsx"),
+        "utf-8"
+      )
+      const chatMessagesContent = readFileSync(
+        resolve(__dirname, "../components/chat/ChatMessages.tsx"),
+        "utf-8"
+      )
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      expect(chatInterfaceContent).toContain("filesystemPanelWidth")
+      expect(chatInterfaceContent).toContain("handleFilesystemResize")
+      expect(chatInterfaceContent).toContain("shouldFollowLatestRef")
+      expect(chatInterfaceContent).toContain("window.requestAnimationFrame")
+      expect(chatMessagesContent).toContain("[scrollbar-width:none]")
+      expect(chatMessagesContent).toContain("[&::-webkit-scrollbar]:hidden")
+      expect(filePanelContent).toContain("handleTreeResize")
+      expect(filePanelContent).toContain("treePanePercent")
+    })
+
+    it("should support collapsed sidebar and unbounded hidden-scrollbar chat list", () => {
+      const appContent = readFileSync(resolve(__dirname, "../App.tsx"), "utf-8")
+      const sidebarContent = readFileSync(resolve(__dirname, "../components/layout/AppSidebar.tsx"), "utf-8")
+      expect(appContent).toContain("isSidebarCollapsed")
+      expect(sidebarContent).toContain("onCollapsedChange")
+      expect(sidebarContent).not.toContain("max-h-[min(460px,calc(100vh-300px))]")
+      expect(sidebarContent).toContain("[scrollbar-width:none]")
+      expect(sidebarContent).toContain("[&::-webkit-scrollbar]:hidden")
+    })
+
+    it("should render a static Cloudrift analytics chart in resource catalog", () => {
+      const resourceCatalogContent = readFileSync(resolve(__dirname, "../routes/ResourceCatalogPage.tsx"), "utf-8")
+      expect(resourceCatalogContent).toContain("CloudriftAnalyticsChart")
+      expect(resourceCatalogContent).toContain("Cloudrift Analysis")
+      expect(resourceCatalogContent).toContain("Top Resource Types")
+      expect(resourceCatalogContent).toContain("Scan Health")
     })
   })
 

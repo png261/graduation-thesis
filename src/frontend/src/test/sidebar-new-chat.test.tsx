@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom"
 import ChatInterface from "@/components/chat/ChatInterface"
 import { AppSidebar } from "@/components/layout/AppSidebar"
 import { useWebAppStore } from "@/stores/webAppStore"
+import { reconcileRunningSessions, registerRunningSession, unregisterRunningSession } from "@/components/chat/running-sessions"
 
 vi.mock("@/stores/webAppStore", async () => {
   const { create } = await vi.importActual<typeof import("zustand")>("zustand")
@@ -18,7 +19,30 @@ vi.mock("@/stores/webAppStore", async () => {
     pullRequestsByKey: {},
     setSessions: (sessions: unknown[]) => set({ sessions }),
     setActiveSessionId: (activeSessionId: string) => set({ activeSessionId }),
-    requestNewChat: () => set({ newChatRequestId: Date.now() }),
+    requestNewChat: () =>
+      set(state => {
+        const existingEmptySession = state.sessions.find(
+          (session: any) => !session.repository && !session.pullRequest && (session.history?.length ?? 0) === 0
+        )
+        const now = new Date().toISOString()
+        const nextSession = existingEmptySession ?? {
+          id: crypto.randomUUID(),
+          name: "New chat",
+          history: [],
+          startDate: now,
+          endDate: now,
+          repository: null,
+          pullRequest: null,
+        }
+        return {
+          sessions: [
+            nextSession,
+            ...state.sessions.filter((session: any) => session.id !== nextSession.id),
+          ],
+          activeSessionId: nextSession.id,
+          newChatRequestId: Date.now(),
+        }
+      }),
     requestRepositoryChat: vi.fn(),
     upsertSession: vi.fn(),
     deleteSession: (sessionId: string) => set(state => {
@@ -115,6 +139,12 @@ vi.mock("@/components/ui/cursor-driven-particle-typography", () => ({
 
 describe("New Chat from sidebar", () => {
   beforeEach(() => {
+    reconcileRunningSessions([])
+    unregisterRunningSession("repo-session")
+    unregisterRunningSession("empty-new-chat")
+    unregisterRunningSession("active-session")
+    unregisterRunningSession("old-session")
+    unregisterRunningSession("next-session")
     useWebAppStore.setState({
       sessions: [
         {
@@ -159,13 +189,71 @@ describe("New Chat from sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: /new chat/i }))
 
     await waitFor(() => {
-      expect(screen.getByText(/No repository connected/i)).toBeInTheDocument()
+      expect(screen.queryByText(/No repository connected/i)).not.toBeInTheDocument()
     })
     expect(screen.getByRole("form", { name: "chat input" })).toBeInTheDocument()
-    expect(screen.getAllByText("Infrastructure Agent").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("InfraQ").length).toBeGreaterThan(0)
     expect(screen.getByText("New chat")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /^new chat$/i })).toBeDisabled()
     expect(useWebAppStore.getState().sessions.filter(session => !session.repository && session.history.length === 0)).toHaveLength(1)
+  })
+
+  it("keeps the desktop sidebar fixed and marks responding chats", () => {
+    registerRunningSession("repo-session", new AbortController())
+
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    expect(screen.getByRole("complementary")).toHaveClass("fixed")
+    expect(screen.getByLabelText("Agent responding")).toBeInTheDocument()
+    expect(screen.getByText("Responding...")).toBeInTheDocument()
+
+    unregisterRunningSession("repo-session")
+  })
+
+  it("does not mark a stale reloaded pending chat as responding without a live run", () => {
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "repo-session",
+          name: "Repository chat",
+          history: [
+            {
+              role: "user",
+              content: "Run terraform plan",
+              timestamp: "2026-05-11T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Thinking...",
+              status: "pending",
+              timestamp: "2026-05-11T04:00:01.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:00:00.000Z",
+          endDate: "2026-05-11T04:00:01.000Z",
+          repository: {
+            owner: "png261",
+            name: "hcp-terraform",
+            fullName: "png261/hcp-terraform",
+            defaultBranch: "main",
+          },
+        },
+      ],
+      activeSessionId: "repo-session",
+    })
+
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    expect(screen.queryByLabelText("Agent responding")).not.toBeInTheDocument()
+    expect(screen.queryByText("Responding...")).not.toBeInTheDocument()
   })
 
   it("does not create a second empty new chat", async () => {

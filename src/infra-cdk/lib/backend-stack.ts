@@ -601,6 +601,7 @@ export class BackendStack extends cdk.NestedStack {
               `python - <<'PY'
 import json
 import os
+import subprocess
 import time
 import traceback
 
@@ -1164,6 +1165,8 @@ PY`,
     const backendResource = backendsResource.addResource("{backendId}")
     const backendPlanResource = backendResource.addResource("plan")
     backendPlanResource.addMethod("POST", integration, methodOptions)
+    const backendResourcesResource = backendResource.addResource("resources")
+    backendResourcesResource.addMethod("GET", integration, methodOptions)
     const backendGraphResource = backendResource.addResource("graph")
     backendGraphResource.addMethod("GET", integration, methodOptions)
 

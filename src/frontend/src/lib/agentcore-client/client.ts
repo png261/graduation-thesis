@@ -1,4 +1,4 @@
-import type { AgentCoreConfig, ChatAgentPayload, ChatAttachmentPayload, ChunkParser, SelectedRepository, StreamCallback } from "./types"
+import type { AgentCoreConfig, ChatAgentPayload, ChatAttachmentPayload, ChunkParser, SelectedRepository, SelectedStateBackend, StreamCallback } from "./types"
 import { parseStrandsChunk } from "./parsers/strands"
 import { readSSEStream } from "./utils/sse"
 
@@ -25,6 +25,7 @@ export class AgentCoreClient {
     repository?: SelectedRepository | null,
     agent?: ChatAgentPayload | null,
     attachments?: ChatAttachmentPayload[],
+    stateBackend?: SelectedStateBackend | null,
     signal?: AbortSignal
   ): Promise<void> {
     if (!accessToken) throw new Error("No valid access token found.")
@@ -42,6 +43,7 @@ export class AgentCoreClient {
       repository,
       agent,
       attachments,
+      stateBackend,
     }
 
     // User identity is extracted server-side from the validated JWT token
@@ -72,6 +74,7 @@ export class AgentCoreClient {
       | "previewPullRequest"
       | "createPullRequest"
       | "getFileDiff"
+      | "generateTerraformGraph"
       | "listPullRequests"
       | "listInstalledRepositories"
       | "setupRepositoryWorkspace",
@@ -79,7 +82,12 @@ export class AgentCoreClient {
     accessToken: string,
     repository?: SelectedRepository | null,
     pullRequest?: { title?: string; body?: string },
-    options?: { filePath?: string; pullRequestState?: "open" | "closed" | "all" }
+    options?: {
+      filePath?: string
+      pullRequestState?: "open" | "closed" | "all"
+      terraformPath?: string
+      stateBackend?: SelectedStateBackend | null
+    }
   ): Promise<unknown> {
     if (!accessToken) throw new Error("No valid access token found.")
     if (!this.runtimeArn) throw new Error("Agent Runtime ARN not configured.")
@@ -103,6 +111,8 @@ export class AgentCoreClient {
         githubAction: action,
         repository: repository ?? undefined,
         filePath: options?.filePath,
+        terraformPath: options?.terraformPath,
+        stateBackend: options?.stateBackend ?? undefined,
         pullRequest,
         pullRequestState: options?.pullRequestState,
       }),

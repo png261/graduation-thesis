@@ -84,12 +84,21 @@ def _run(command: list[str], cwd: Path, timeout: int = 180) -> str:
 
 
 @tool
-def terraform_init(path: str = ".", upgrade: bool = False) -> str:
+def terraform_init(
+    path: str = ".",
+    upgrade: bool = False,
+    backend_bucket: str = "",
+    backend_key: str = "",
+    backend_region: str = "",
+) -> str:
     """Run Terraform/OpenTofu init in a workspace-relative directory.
 
     Args:
         path: Directory containing Terraform/OpenTofu files. Must be inside the session workspace.
         upgrade: Whether to pass -upgrade.
+        backend_bucket: Optional S3 backend bucket to pass as -backend-config=bucket=...
+        backend_key: Optional S3 backend key to pass as -backend-config=key=...
+        backend_region: Optional S3 backend region to pass as -backend-config=region=...
 
     Returns:
         JSON string with command, cwd, return code, stdout, and stderr.
@@ -99,6 +108,12 @@ def terraform_init(path: str = ".", upgrade: bool = False) -> str:
     args = [command or "tofu", "init", "-input=false"]
     if upgrade:
         args.append("-upgrade")
+    if backend_bucket.strip():
+        args.append(f"-backend-config=bucket={backend_bucket.strip()}")
+    if backend_key.strip():
+        args.append(f"-backend-config=key={backend_key.strip()}")
+    if backend_region.strip():
+        args.append(f"-backend-config=region={backend_region.strip()}")
     return _run(args, cwd, timeout=240)
 
 

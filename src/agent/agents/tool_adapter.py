@@ -1,7 +1,10 @@
 """Helpers for exposing specialist agents as orchestrator tools."""
 
+import base64
+import json
 from collections.abc import Callable
 
+from pydantic import BaseModel
 from strands import Agent, ToolContext, tool
 
 from agents.runtime import AgentRuntimeTools
@@ -18,6 +21,7 @@ def create_agent_text_tool(
     model: object,
     runtime_tools: AgentRuntimeTools,
     trace_attributes: dict,
+    output_model: type[BaseModel] | None = None,
 ):
     """Create a non-streaming specialist tool that returns the agent's final text.
 
@@ -33,6 +37,7 @@ def create_agent_text_tool(
         agent = create_agent(model, runtime_tools, trace_attributes)
         specialist_input = _with_original_user_prompt(
             original_user_prompt=tool_context.agent.state.get("original_user_prompt"),
+            original_context=tool_context.agent.state.get("original_user_context"),
             specialist_input=input,
         )
         yield _progress("started", f"{name} started")
@@ -41,7 +46,8 @@ def create_agent_text_tool(
         text_buffer = ""
         last_text_progress_length = 0
         yielded_thinking = False
-        async for event in agent.stream_async(specialist_input):
+        stream_kwargs = {"structured_output_model": output_model} if output_model is not None else {}
+        async for event in agent.stream_async(specialist_input, **stream_kwargs):
             event_dict = dict(event)
             if "result" in event_dict:
                 result = event_dict["result"]
@@ -67,11 +73,37 @@ def create_agent_text_tool(
                 yielded_thinking = True
                 yield _progress("thinking", f"{name} is thinking")
 
+        pending_handoff = agent.state.get("pending_user_handoff")
+        if pending_handoff:
+            tool_context.agent.state.set("pending_user_handoff", pending_handoff)
+            tool_context.invocation_state["stop_event_loop"] = True
+            yield _progress("handoff", f"{name} requested user input")
+            yield json.dumps(
+                {
+                    "agent": name,
+                    "status": "needs_input",
+                    "summary": f"{name} needs user input before continuing.",
+                    "handoff_questions": [
+                        str(question.get("question") or "")
+                        for question in pending_handoff.get("questions", [])
+                        if isinstance(question, dict)
+                    ],
+                },
+                indent=2,
+            )
+            return
+
         if result is None:
             yield f"{name} did not produce a result"
             return
 
-        final_text = str(result).strip()
+        structured_output = getattr(result, "structured_output", None)
+        if isinstance(structured_output, BaseModel):
+            final_text = structured_output.model_dump_json(indent=2)
+        elif structured_output is not None:
+            final_text = str(structured_output).strip()
+        else:
+            final_text = str(result).strip()
         final_preview = _tail_preview(final_text)
         if final_preview and len(text_buffer) > last_text_progress_length:
             yield _progress("text", final_preview)
@@ -81,7 +113,27 @@ def create_agent_text_tool(
     return specialist_agent
 
 
-def _with_original_user_prompt(original_user_prompt: object, specialist_input: str) -> str:
+def _with_original_user_prompt(
+    original_user_prompt: object,
+    specialist_input: str,
+    original_context: object = None,
+) -> str | list[dict]:
+    if isinstance(original_context, list):
+        context_blocks = _restore_context_blocks(original_context)
+        context_text = _extract_text_from_context_blocks(context_blocks)
+        delegated = str(specialist_input or "").strip()
+        if delegated and delegated not in context_text:
+            return [
+                *context_blocks,
+                {
+                    "text": (
+                        "Orchestrator delegation:\n"
+                        f"{delegated}"
+                    )
+                },
+            ]
+        return context_blocks
+
     original = str(original_user_prompt or "").strip()
     delegated = str(specialist_input or "").strip()
     if not original:
@@ -96,6 +148,27 @@ def _with_original_user_prompt(original_user_prompt: object, specialist_input: s
         "Orchestrator delegation:\n"
         f"{delegated}"
     )
+
+
+def _restore_context_blocks(value):
+    if isinstance(value, list):
+        return [_restore_context_blocks(item) for item in value]
+    if isinstance(value, dict):
+        if set(value.keys()) == {"__bytes_base64__"}:
+            try:
+                return base64.b64decode(str(value["__bytes_base64__"]), validate=True)
+            except Exception:
+                return b""
+        return {key: _restore_context_blocks(item) for key, item in value.items()}
+    return value
+
+
+def _extract_text_from_context_blocks(blocks: list[dict]) -> str:
+    chunks = []
+    for block in blocks:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            chunks.append(block["text"])
+    return "\n".join(chunks)
 
 
 def _progress(phase: str, message: str) -> dict[str, dict[str, str]]:

@@ -245,7 +245,7 @@ export default function PullRequestsPage() {
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Pull Requests</h1>
           <p className="mt-1 text-sm text-slate-500">
-            GitHub App-created pull requests with status, activity, reactions, and source chat links.
+            GitHub bot-created pull requests with status, activity, reactions, and source chat links.
           </p>
         </div>
         <Button
@@ -336,7 +336,7 @@ export default function PullRequestsPage() {
             <div>
               <h2 className="text-base font-semibold text-slate-900">Pull Request Timeline</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Showing {state === "all" ? "all" : state} GitHub App-created pull request records.
+                Showing {state === "all" ? "all" : state} GitHub bot-created pull request records.
               </p>
             </div>
             <span className="rounded-md border bg-slate-50 px-2 py-1 text-xs text-slate-600">
@@ -346,7 +346,7 @@ export default function PullRequestsPage() {
 
           {displayedPullRequests.length === 0 ? (
             <p className="p-5 text-sm text-slate-500">
-              No GitHub App-created pull request records found for this repository yet.
+              No GitHub bot-created pull request records found for this repository yet.
             </p>
           ) : (
             <div className="divide-y">

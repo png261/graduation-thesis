@@ -1,7 +1,14 @@
+"""Structured output model for the engineer agent."""
+
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+from pydantic import Field
+
+from agents.specialist_output import SpecialistResponse
 
 
-class EngineerOutput(BaseModel):
-    pass
+class EngineerOutput(SpecialistResponse):
+    agent: Literal["engineer_agent"] = "engineer_agent"
+    implementation_notes: list[str] = Field(default_factory=list, description="Notable implementation choices and tradeoffs.")

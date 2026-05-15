@@ -4,12 +4,12 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { useNavigate } from "react-router-dom"
 import {
   AlertTriangle,
+  BarChart3,
   Boxes,
   CalendarClock,
   CheckCircle2,
   Clock3,
   Database,
-  ExternalLink,
   FileClock,
   History,
   Play,
@@ -39,6 +39,7 @@ import {
   DriftGuard,
   ResourceScan,
   StateBackend,
+  StateBackendResource,
   S3BucketInfo,
   createStateBackend,
   listAwsCredentials,
@@ -47,6 +48,7 @@ import {
   listResourceScans,
   listS3Buckets,
   listStateBackends,
+  listStateBackendResources,
   runDriftGuard,
   saveDriftGuard,
 } from "@/services/resourcesService"
@@ -56,9 +58,18 @@ type ScanService = "s3" | "ec2" | "iam"
 type JsonRecord = Record<string, unknown>
 type AlertKind = "drift" | "policy"
 
+type EmbeddedGraph = {
+  backendId: string
+  backendName: string
+  url: string
+  generatedAt?: string
+  resourceCount?: number
+}
+
 type ResourceRow = {
   key: string
   scan: ResourceScan
+  source: "state" | "scan"
   repository: SelectedRepository | null
   resource: JsonRecord
   after: JsonRecord
@@ -113,6 +124,12 @@ function getResourceAfter(resource: JsonRecord): JsonRecord {
   return asRecord(asRecord(resource.change).after)
 }
 
+function getResourceValues(resource: JsonRecord): JsonRecord {
+  const after = getResourceAfter(resource)
+  if (Object.keys(after).length) return after
+  return asRecord(resource.values)
+}
+
 function getResourceAddress(resource: JsonRecord, after: JsonRecord): string {
   return (
     text(resource.address) ||
@@ -127,10 +144,11 @@ function getResourceAddress(resource: JsonRecord, after: JsonRecord): string {
 
 function getResourceName(resource: JsonRecord, after: JsonRecord): string {
   return (
-    text(resource.name) ||
     text(asRecord(after.tags).Name) ||
     text(after.bucket) ||
+    text(after.name) ||
     text(after.id) ||
+    text(resource.name) ||
     getResourceAddress(resource, after)
   )
 }
@@ -205,11 +223,35 @@ function repositoryForScan(scan: ResourceScan, backends: StateBackend[]): Select
   return scan.repository ?? backends.find(backend => backend.backendId === scan.backendId)?.repository ?? null
 }
 
-function buildResourceRows(scans: ResourceScan[], backends: StateBackend[]): ResourceRow[] {
-  return getLatestScansByBackend(scans).flatMap(scan =>
-    scan.currentResources.map((item, index) => {
+function stateResourceKey(resource: JsonRecord): string {
+  return text(resource.address) || `${text(resource.type)}.${text(resource.name)}`
+}
+
+function scanForStateResource(resource: StateBackendResource, scan: ResourceScan | undefined): ResourceScan {
+  return scan ?? {
+    scanId: `state-${resource.backendId}`,
+    backendId: resource.backendId,
+    backendName: resource.backendName,
+    stateBucket: resource.stateBucket,
+    stateKey: resource.stateKey,
+    stateRegion: resource.stateRegion,
+    service: resource.service,
+    status: "SUCCEEDED",
+    startedAt: resource.updatedAt || "",
+    updatedAt: resource.updatedAt || "",
+    driftAlerts: [],
+    policyAlerts: [],
+    currentResources: [],
+    repository: resource.repository,
+  }
+}
+
+function buildScanRows(scans: ResourceScan[], backends: StateBackend[], skippedBackends: Set<string>): ResourceRow[] {
+  return getLatestScansByBackend(scans).flatMap(scan => {
+    if (skippedBackends.has(scan.backendId)) return []
+    return scan.currentResources.map((item, index) => {
       const resource = asRecord(item)
-      const after = getResourceAfter(resource)
+      const after = getResourceValues(resource)
       const driftAlerts = scan.driftAlerts.filter(alert => alertMatchesResource(alert, resource, after))
       const policyAlerts = scan.policyAlerts.filter(alert => alertMatchesResource(alert, resource, after))
       const resourceType = text(resource.type, "unknown")
@@ -218,6 +260,7 @@ function buildResourceRows(scans: ResourceScan[], backends: StateBackend[]): Res
       return {
         key: `${scan.scanId}-${address}-${index}`,
         scan,
+        source: "scan" as const,
         repository: repositoryForScan(scan, backends),
         resource,
         after,
@@ -231,7 +274,41 @@ function buildResourceRows(scans: ResourceScan[], backends: StateBackend[]): Res
         lastUpdated: scan.updatedAt || scan.startedAt,
       }
     })
-  )
+  })
+}
+
+function buildResourceRows(scans: ResourceScan[], backends: StateBackend[], stateResources: StateBackendResource[]): ResourceRow[] {
+  const latestScans = getLatestScansByBackend(scans)
+  const latestScanByBackend = new Map(latestScans.map(scan => [scan.backendId, scan]))
+  const stateBackends = new Set(stateResources.map(resource => resource.backendId))
+  const stateRows = stateResources.map((item, index) => {
+    const resource = asRecord(item)
+    const after = getResourceValues(resource)
+    const backend = backends.find(current => current.backendId === item.backendId)
+    const scan = scanForStateResource(item, latestScanByBackend.get(item.backendId))
+    const driftAlerts = scan.driftAlerts.filter(alert => alertMatchesResource(alert, resource, after))
+    const policyAlerts = scan.policyAlerts.filter(alert => alertMatchesResource(alert, resource, after))
+    const resourceType = text(resource.type, "unknown")
+    const displayName = getResourceName(resource, after)
+    const address = getResourceAddress(resource, after)
+    return {
+      key: `state-${item.backendId}-${stateResourceKey(resource)}-${index}`,
+      scan,
+      source: "state" as const,
+      repository: item.repository ?? backend?.repository ?? null,
+      resource,
+      after,
+      displayName,
+      subtitle: address === displayName ? text(after.arn) : address,
+      resourceType,
+      status: driftAlerts.length ? "drifted" as const : policyAlerts.length ? "has alert" as const : "active" as const,
+      driftAlerts,
+      policyAlerts,
+      consoleUrl: buildAwsConsoleUrl(scan, resource, after),
+      lastUpdated: item.updatedAt || scan.updatedAt || scan.startedAt,
+    }
+  })
+  return [...stateRows, ...buildScanRows(scans, backends, stateBackends)]
 }
 
 function statusClass(status: string): string {
@@ -298,8 +375,11 @@ function buildFixPrompt(params: {
     `State backend: ${scanStateLabel(params.scan)}`,
     `Backend: ${params.scan.backendName || params.scan.backendId}`,
     `Scan ID: ${params.scan.scanId}`,
+    `State bucket: ${params.scan.stateBucket || "-"}`,
+    `State key: ${params.scan.stateKey || "-"}`,
+    `State region: ${params.scan.stateRegion || "-"}`,
     "",
-    "Use the repository files to make the minimum Terraform changes needed, then call the create_pull_request tool with a concise generated title and a markdown body summarizing what changed.",
+    "Use the Git repository and Terraform state backend context to make the minimum Terraform changes needed, then call the create_pull_request tool with a concise generated title and a markdown body summarizing what changed.",
     "",
     "Issue details:",
     "```json",
@@ -333,6 +413,89 @@ function MetricCard({
       </div>
       <p className="mt-3 text-2xl font-semibold text-slate-950">{value}</p>
     </div>
+  )
+}
+
+function CloudriftAnalyticsChart({
+  rows,
+  scans,
+  backends,
+}: {
+  rows: ResourceRow[]
+  scans: ResourceScan[]
+  backends: StateBackend[]
+}) {
+  const statusItems = [
+    { label: "Active", value: rows.filter(row => row.status === "active").length, className: "bg-emerald-500" },
+    { label: "Drifted", value: rows.filter(row => row.status === "drifted").length, className: "bg-red-500" },
+    { label: "Policy", value: rows.filter(row => row.status === "has alert").length, className: "bg-amber-500" },
+  ]
+  const typeCounts = rows.reduce<Record<string, number>>((acc, row) => {
+    const key = row.resourceType || "unknown"
+    acc[key] = (acc[key] ?? 0) + 1
+    return acc
+  }, {})
+  const topTypes = Object.entries(typeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+  const scanHealth = [
+    { label: "Succeeded", value: scans.filter(scan => scan.status === "SUCCEEDED").length, className: "bg-emerald-500" },
+    { label: "Running", value: scans.filter(scan => ["RUNNING", "IN_PROGRESS"].includes(scan.status)).length, className: "bg-sky-500" },
+    { label: "Failed", value: scans.filter(scan => scan.status === "FAILED").length, className: "bg-red-500" },
+  ]
+  const maxStatus = Math.max(1, ...statusItems.map(item => item.value))
+  const maxTypes = Math.max(1, ...topTypes.map(([, value]) => value))
+  const maxScanHealth = Math.max(1, ...scanHealth.map(item => item.value))
+
+  return (
+    <section className="grid gap-3 rounded-md border bg-white p-4 lg:grid-cols-[1.1fr_1fr_1fr]">
+      <div>
+        <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
+          <BarChart3 className="h-4 w-4" />
+          Cloudrift Analysis
+        </div>
+        <div className="space-y-2">
+          {statusItems.map(item => (
+            <div key={item.label} className="grid grid-cols-[72px_1fr_36px] items-center gap-2 text-xs">
+              <span className="text-slate-600">{item.label}</span>
+              <div className="h-2 rounded bg-slate-100">
+                <div className={`h-2 rounded ${item.className}`} style={{ width: `${(item.value / maxStatus) * 100}%` }} />
+              </div>
+              <span className="text-right font-medium text-slate-900">{item.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="mb-3 text-sm font-semibold text-slate-900">Top Resource Types</div>
+        <div className="space-y-2">
+          {(topTypes.length ? topTypes : [["none", 0] as [string, number]]).map(([label, value]) => (
+            <div key={label} className="grid grid-cols-[minmax(82px,1fr)_1fr_30px] items-center gap-2 text-xs">
+              <span className="truncate text-slate-600" title={label}>{label}</span>
+              <div className="h-2 rounded bg-slate-100">
+                <div className="h-2 rounded bg-slate-700" style={{ width: `${(value / maxTypes) * 100}%` }} />
+              </div>
+              <span className="text-right font-medium text-slate-900">{value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="mb-3 text-sm font-semibold text-slate-900">Scan Health</div>
+        <div className="space-y-2">
+          {scanHealth.map(item => (
+            <div key={item.label} className="grid grid-cols-[72px_1fr_36px] items-center gap-2 text-xs">
+              <span className="text-slate-600">{item.label}</span>
+              <div className="h-2 rounded bg-slate-100">
+                <div className={`h-2 rounded ${item.className}`} style={{ width: `${(item.value / maxScanHealth) * 100}%` }} />
+              </div>
+              <span className="text-right font-medium text-slate-900">{item.value}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-slate-500">{backends.length} state backends connected</p>
+      </div>
+    </section>
   )
 }
 
@@ -475,11 +638,13 @@ function StateHistoryTable({ backends, scans }: { backends: StateBackend[]; scan
 function ResourceGraphViewer({
   backends,
   openingBackendId,
-  onOpenGraph,
+  embeddedGraph,
+  onLoadGraph,
 }: {
   backends: StateBackend[]
   openingBackendId: string | null
-  onOpenGraph: (backend: StateBackend) => void
+  embeddedGraph: EmbeddedGraph | null
+  onLoadGraph: (backend: StateBackend) => void
 }) {
   if (!backends.length) {
     return <EmptyState label="No imported S3 state backends found. Add a state backend first." />
@@ -510,7 +675,12 @@ function ResourceGraphViewer({
               const canOpen = Boolean(backend.graphKey)
               const isOpening = openingBackendId === backend.backendId
               return (
-                <tr key={backend.backendId} className="align-top hover:bg-slate-50">
+                <tr
+                  key={backend.backendId}
+                  className={`align-top hover:bg-slate-50 ${
+                    embeddedGraph?.backendId === backend.backendId ? "bg-slate-50" : ""
+                  }`}
+                >
                   <td className="px-4 py-4">
                     <p className="font-semibold text-slate-900">{backend.name}</p>
                     <p className="text-xs text-slate-500">{backend.service || "s3"}</p>
@@ -529,12 +699,12 @@ function ResourceGraphViewer({
                       <Button
                         type="button"
                         size="sm"
-                        onClick={() => onOpenGraph(backend)}
+                        onClick={() => onLoadGraph(backend)}
                         disabled={!canOpen || isOpening}
                         className="gap-2"
                       >
-                        <ExternalLink className="h-4 w-4" />
-                        {isOpening ? "Opening" : "Open graph"}
+                        {isOpening ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Network className="h-4 w-4" />}
+                        {isOpening ? "Loading" : embeddedGraph?.backendId === backend.backendId ? "Refresh graph" : "View graph"}
                       </Button>
                     </div>
                   </td>
@@ -543,6 +713,32 @@ function ResourceGraphViewer({
             })}
           </tbody>
         </table>
+      </div>
+      <div className="border-t bg-slate-50 p-4">
+        {embeddedGraph ? (
+          <div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-950">{embeddedGraph.backendName}</p>
+                <p className="text-xs text-slate-500">
+                  {embeddedGraph.generatedAt ? `Generated ${formatDate(embeddedGraph.generatedAt)}` : "Generated graph"}
+                  {typeof embeddedGraph.resourceCount === "number" ? ` · ${embeddedGraph.resourceCount} resources` : ""}
+                </p>
+              </div>
+            </div>
+            <iframe
+              title={`Resource graph for ${embeddedGraph.backendName}`}
+              src={embeddedGraph.url}
+              className="h-[720px] w-full rounded-md border bg-white"
+              sandbox="allow-scripts allow-same-origin allow-downloads"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+        ) : (
+          <div className="flex h-64 items-center justify-center rounded-md border border-dashed bg-white text-sm text-slate-500">
+            Select a ready backend to view its resource graph here.
+          </div>
+        )}
       </div>
     </section>
   )
@@ -1064,6 +1260,7 @@ export default function ResourceCatalogPage() {
   const { repositories, isLoading: isLoadingRepositories, error: repositoriesError } = useInstalledRepositories(auth.user?.access_token)
   const [activeTab, setActiveTab] = useState<CatalogTab>("resources")
   const [backends, setBackends] = useState<StateBackend[]>([])
+  const [stateResources, setStateResources] = useState<StateBackendResource[]>([])
   const [guards, setGuards] = useState<DriftGuard[]>([])
   const [scans, setScans] = useState<ResourceScan[]>([])
   const [credentials, setCredentials] = useState<AwsCredentialMetadata[]>([])
@@ -1073,6 +1270,7 @@ export default function ResourceCatalogPage() {
   const [isSavingBackend, setIsSavingBackend] = useState(false)
   const [isRunningAutoScan, setIsRunningAutoScan] = useState(false)
   const [openingGraphBackendId, setOpeningGraphBackendId] = useState<string | null>(null)
+  const [embeddedGraph, setEmbeddedGraph] = useState<EmbeddedGraph | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -1088,7 +1286,15 @@ export default function ResourceCatalogPage() {
         listDriftGuards(idToken),
         listAwsCredentials(idToken).catch(() => ({ credentials: [], activeCredentialId: "" })),
       ])
+      const loadedStateResources = (
+        await Promise.all(
+          loadedBackends.map(backend =>
+            listStateBackendResources(backend.backendId, idToken).catch(() => [] as StateBackendResource[])
+          )
+        )
+      ).flat()
       setBackends(loadedBackends)
+      setStateResources(loadedStateResources)
       setScans(loadedScans)
       setGuards(loadedGuards)
       setCredentials(loadedCredentials.credentials)
@@ -1105,7 +1311,7 @@ export default function ResourceCatalogPage() {
   }, [refresh])
 
   const latestScans = useMemo(() => getLatestScansByBackend(scans), [scans])
-  const resourceRows = useMemo(() => buildResourceRows(scans, backends), [backends, scans])
+  const resourceRows = useMemo(() => buildResourceRows(scans, backends, stateResources), [backends, scans, stateResources])
   const driftCount = latestScans.reduce((sum, scan) => sum + scan.driftAlerts.length, 0)
   const policyCount = latestScans.reduce((sum, scan) => sum + scan.policyAlerts.length, 0)
 
@@ -1129,7 +1335,14 @@ export default function ResourceCatalogPage() {
       setMessage(null)
       try {
         const backend = await createStateBackend(payload, idToken)
+        const backendResources = await listStateBackendResources(backend.backendId, idToken).catch(
+          () => [] as StateBackendResource[]
+        )
         setBackends(current => [backend, ...current])
+        setStateResources(current => [
+          ...backendResources,
+          ...current.filter(resource => resource.backendId !== backend.backendId),
+        ])
         setSelectedAutoScanBackendId(backend.backendId)
         setIsAddBackendOpen(false)
         setActiveTab("visualize")
@@ -1204,20 +1417,26 @@ export default function ResourceCatalogPage() {
     }
   }, [auth.user?.id_token, auth.user?.profile, backends, guards, selectedAutoScanBackendId])
 
-  const handleOpenGraph = useCallback(
+  const handleLoadGraph = useCallback(
     async (backend: StateBackend) => {
       const idToken = auth.user?.id_token
       if (!idToken) {
-        setError("Sign in before opening a resource graph")
+        setError("Sign in before loading a resource graph")
         return
       }
       setOpeningGraphBackendId(backend.backendId)
       setError(null)
       try {
         const graph = await getStateBackendGraphUrl(backend.backendId, idToken)
-        window.open(graph.url, "_blank", "noopener,noreferrer")
+        setEmbeddedGraph({
+          backendId: backend.backendId,
+          backendName: backend.name,
+          url: graph.url,
+          generatedAt: graph.graphGeneratedAt ?? backend.graphGeneratedAt,
+          resourceCount: graph.graphResourceCount ?? backend.graphResourceCount,
+        })
       } catch (graphError) {
-        setError(graphError instanceof Error ? graphError.message : "Failed to open resource graph")
+        setError(graphError instanceof Error ? graphError.message : "Failed to load resource graph")
       } finally {
         setOpeningGraphBackendId(null)
       }
@@ -1329,6 +1548,8 @@ export default function ResourceCatalogPage() {
           <MetricCard label="Scans" value={scans.length} icon={<Clock3 className="h-4 w-4" />} />
         </div>
 
+        <CloudriftAnalyticsChart rows={resourceRows} scans={scans} backends={backends} />
+
         <nav className="flex flex-wrap gap-2 border-b border-slate-300">
           {tabs.map(tab => {
             const Icon = tab.icon
@@ -1356,7 +1577,8 @@ export default function ResourceCatalogPage() {
           <ResourceGraphViewer
             backends={backends}
             openingBackendId={openingGraphBackendId}
-            onOpenGraph={backend => void handleOpenGraph(backend)}
+            embeddedGraph={embeddedGraph}
+            onLoadGraph={backend => void handleLoadGraph(backend)}
           />
         )}
         {activeTab === "state" && <StateHistoryTable backends={backends} scans={scans} />}

@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
@@ -455,6 +458,132 @@ def get_file_diff(repository: dict, session_id: str, file_path: str) -> dict:
         "status": status,
         "originalContent": original,
         "currentContent": current,
+    }
+
+
+def _safe_repo_dir_path(path_value: str) -> str:
+    directory = str(path_value or ".").strip().replace("\\", "/") or "."
+    if directory.startswith("/") or ".." in directory.split("/"):
+        raise ValueError("terraformPath is invalid")
+    return "." if directory in {"", "."} else directory.rstrip("/")
+
+
+def _terraform_backend_args(state_backend: dict | None) -> list[str]:
+    if not isinstance(state_backend, dict):
+        return []
+    args = []
+    for backend_key, tf_key in (("bucket", "bucket"), ("key", "key"), ("region", "region")):
+        value = str(state_backend.get(backend_key) or "").strip()
+        if value:
+            args.append(f"-backend-config={tf_key}={value}")
+    if args:
+        args.insert(0, "-reconfigure")
+    return args
+
+
+def _run_process(command: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        command,
+        cwd=str(cwd),
+        env={**os.environ, "TF_INPUT": "0", "TOFU_INPUT": "0"},
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        output = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"{' '.join(command)} failed with {completed.returncode}: {output[-4000:]}")
+    return completed
+
+
+def _parse_rover_graph_js(content: str) -> dict:
+    match = re.search(r"^\s*const\s+graph\s*=\s*(\{.*\})\s*$", content, re.DOTALL)
+    if not match:
+        raise RuntimeError("Rover graph asset did not contain graph JSON")
+    graph = json.loads(match.group(1))
+    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list) or not isinstance(graph.get("edges"), list):
+        raise RuntimeError("Rover graph JSON has an unexpected shape")
+    return graph
+
+
+def _plan_change_summary(plan: dict) -> dict:
+    counts = {"create": 0, "update": 0, "delete": 0, "replace": 0, "no-op": 0}
+    for change in plan.get("resource_changes") or []:
+        actions = ((change.get("change") or {}).get("actions") or [])
+        if actions == ["no-op"]:
+            counts["no-op"] += 1
+        elif actions == ["create"]:
+            counts["create"] += 1
+        elif actions == ["update"]:
+            counts["update"] += 1
+        elif actions == ["delete"]:
+            counts["delete"] += 1
+        elif "delete" in actions and "create" in actions:
+            counts["replace"] += 1
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def generate_terraform_plan_graph(
+    repository: dict,
+    session_id: str,
+    terraform_path: str = ".",
+    state_backend: dict | None = None,
+) -> dict:
+    repo_path = setup_repository_workspace(repository, session_id)
+    safe_path = _safe_repo_dir_path(terraform_path)
+    workdir = (repo_path / safe_path).resolve()
+    try:
+        workdir.relative_to(repo_path.resolve())
+    except ValueError as exc:
+        raise ValueError("terraformPath escapes repository workspace") from exc
+    if not workdir.exists() or not workdir.is_dir():
+        raise FileNotFoundError(f"terraformPath does not exist: {safe_path}")
+
+    terraform = shutil.which("tofu") or shutil.which("terraform")
+    if not terraform:
+        raise RuntimeError("OpenTofu or Terraform is not installed in the agent runtime")
+    rover = shutil.which("rover")
+    if not rover:
+        raise RuntimeError("Rover is not installed in the agent runtime")
+
+    with tempfile.TemporaryDirectory(prefix="agentcore-rover-") as tmp:
+        tmp_path = Path(tmp)
+        plan_out = tmp_path / "plan.out"
+        plan_json = tmp_path / "plan.json"
+        rover_zip_base = tmp_path / "rover"
+        rover_zip = tmp_path / "rover.zip"
+
+        _run_process([terraform, "init", "-input=false", *_terraform_backend_args(state_backend)], workdir, timeout=300)
+        _run_process([terraform, "plan", "-input=false", "-no-color", "-out", str(plan_out)], workdir, timeout=420)
+        plan = json.loads(_run_process([terraform, "show", "-json", str(plan_out)], workdir, timeout=180).stdout)
+        plan_json.write_text(json.dumps(plan), encoding="utf-8")
+        _run_process(
+            [
+                rover,
+                "-standalone",
+                "true",
+                "-planJSONPath",
+                str(plan_json),
+                "-zipFileName",
+                str(rover_zip_base),
+                "-tfPath",
+                terraform,
+            ],
+            workdir,
+            timeout=240,
+        )
+        if not rover_zip.exists():
+            raise RuntimeError("Rover did not create the expected standalone graph bundle")
+        with zipfile.ZipFile(rover_zip) as archive:
+            graph = _parse_rover_graph_js(archive.read("graph.js").decode("utf-8"))
+
+    return {
+        "terraformPath": safe_path,
+        "tool": "rover",
+        "summary": _plan_change_summary(plan),
+        "graph": graph,
     }
 
 

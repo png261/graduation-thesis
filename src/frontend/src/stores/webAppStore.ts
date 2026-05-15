@@ -73,12 +73,13 @@ function createEmptyChatSession(): ChatSession {
     startDate: now,
     endDate: now,
     repository: null,
+    stateBackend: null,
     pullRequest: null,
   }
 }
 
 function isEmptyNewChatSession(session: ChatSession): boolean {
-  return !session.repository && !session.pullRequest && (session.history?.length ?? 0) === 0
+  return !session.repository && !session.stateBackend && !session.pullRequest && (session.history?.length ?? 0) === 0
 }
 
 function mergeSavedSessions(localSessions: ChatSession[], savedSessions: ChatSession[]): ChatSession[] {
@@ -175,9 +176,15 @@ export const useWebAppStore = create<WebAppStore>()(
         }
 
         const response = await listChatSessions(idToken)
-        const sessions = response.sessions.length > 0 ? response.sessions : [createEmptyChatSession()]
-        const activeSessionId =
-          sessions.find(session => session.id === response.activeSessionId)?.id ?? sessions[0]?.id ?? ""
+        const savedSessions = response.sessions.length > 0 ? response.sessions : [createEmptyChatSession()]
+        const latestState = get()
+        const localSessions = latestState.sessions.filter(session => !isEmptyNewChatSession(session))
+        const sessions = mergeSavedSessions(localSessions, savedSessions)
+        const activeSessionId = resolveActiveSessionId(
+          sessions,
+          latestState.activeSessionId,
+          response.activeSessionId
+        )
         set({ sessions, activeSessionId, chatSessionsLoadedFor: idToken })
         return { sessions, activeSessionId }
       },
@@ -187,8 +194,17 @@ export const useWebAppStore = create<WebAppStore>()(
           sessions: state.sessions,
           activeSessionId: state.activeSessionId,
         }
+        const serializedPayload = JSON.stringify(payload)
         const response = await saveChatSessions(payload, idToken)
         const latestState = get()
+        const latestPayload = {
+          sessions: latestState.sessions,
+          activeSessionId: latestState.activeSessionId,
+        }
+        if (JSON.stringify(latestPayload) !== serializedPayload) {
+          set({ chatSessionsLoadedFor: idToken })
+          return latestPayload
+        }
         const sessions = mergeSavedSessions(latestState.sessions, response.sessions)
         const activeSessionId = resolveActiveSessionId(
           sessions,
