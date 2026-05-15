@@ -21,11 +21,8 @@ vi.mock("@/stores/webAppStore", async () => {
     setActiveSessionId: (activeSessionId: string) => set({ activeSessionId }),
     requestNewChat: () =>
       set(state => {
-        const existingEmptySession = state.sessions.find(
-          (session: any) => !session.repository && !session.pullRequest && (session.history?.length ?? 0) === 0
-        )
         const now = new Date().toISOString()
-        const nextSession = existingEmptySession ?? {
+        const nextSession = {
           id: crypto.randomUUID(),
           name: "New chat",
           history: [],
@@ -37,7 +34,7 @@ vi.mock("@/stores/webAppStore", async () => {
         return {
           sessions: [
             nextSession,
-            ...state.sessions.filter((session: any) => session.id !== nextSession.id),
+            ...state.sessions,
           ],
           activeSessionId: nextSession.id,
           newChatRequestId: Date.now(),
@@ -120,6 +117,7 @@ vi.mock("@/lib/agentcore-client", () => ({
   AgentCoreClient: vi.fn().mockImplementation(function AgentCoreClient() {
     return {
       githubAction: vi.fn(async () => ({ repositories: [] })),
+      cancelSession: vi.fn(async () => undefined),
       invoke: vi.fn(),
     }
   }),
@@ -137,6 +135,20 @@ vi.mock("@/components/ui/cursor-driven-particle-typography", () => ({
   CursorDrivenParticleTypography: ({ text }: { text: string }) => <div>{text}</div>,
 }))
 
+const answeredHistory = [
+  {
+    role: "user" as const,
+    content: "Run terraform plan",
+    timestamp: "2026-05-11T04:00:00.000Z",
+  },
+  {
+    role: "assistant" as const,
+    content: "Plan complete.",
+    status: "complete" as const,
+    timestamp: "2026-05-11T04:01:00.000Z",
+  },
+]
+
 describe("New Chat from sidebar", () => {
   beforeEach(() => {
     reconcileRunningSessions([])
@@ -150,7 +162,7 @@ describe("New Chat from sidebar", () => {
         {
           id: "repo-session",
           name: "Repository chat",
-          history: [],
+          history: answeredHistory,
           startDate: "2026-05-11T04:00:00.000Z",
           endDate: "2026-05-11T04:00:00.000Z",
           repository: {
@@ -193,8 +205,7 @@ describe("New Chat from sidebar", () => {
     })
     expect(screen.getByRole("form", { name: "chat input" })).toBeInTheDocument()
     expect(screen.getAllByText("InfraQ").length).toBeGreaterThan(0)
-    expect(screen.getByText("New chat")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /^new chat$/i })).toBeDisabled()
+    expect(screen.getByRole("button", { name: /^new chat$/i })).toBeEnabled()
     expect(useWebAppStore.getState().sessions.filter(session => !session.repository && session.history.length === 0)).toHaveLength(1)
   })
 
@@ -212,6 +223,29 @@ describe("New Chat from sidebar", () => {
     expect(screen.getByText("Responding...")).toBeInTheDocument()
 
     unregisterRunningSession("repo-session")
+  })
+
+  it("orders the menu like ChatGPT with recents after settings", () => {
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    const sidebar = screen.getByRole("complementary")
+    const newChat = screen.getByRole("button", { name: /^new chat$/i })
+    const pullRequests = screen.getByRole("link", { name: "Pull Requests" })
+    const resourceCatalog = screen.getByRole("link", { name: "Resource Catalog" })
+    const settings = screen.getByRole("link", { name: "Settings" })
+    const recents = screen.getByText("Recents")
+    const chat = screen.getByRole("button", { name: "Open chat png261/hcp-terraform" })
+
+    expect(sidebar).toHaveTextContent(/New Chat[\s\S]*Pull Requests[\s\S]*Resource Catalog[\s\S]*Settings[\s\S]*Recents/i)
+    expect(newChat.compareDocumentPosition(pullRequests) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(pullRequests.compareDocumentPosition(resourceCatalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(resourceCatalog.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(settings.compareDocumentPosition(recents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(recents.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it("does not mark a stale reloaded pending chat as responding without a live run", () => {
@@ -256,7 +290,92 @@ describe("New Chat from sidebar", () => {
     expect(screen.queryByText("Responding...")).not.toBeInTheDocument()
   })
 
-  it("does not create a second empty new chat", async () => {
+  it("adds chats to recents only after the first agent response", () => {
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "agent-response",
+          name: "Answered chat",
+          history: [
+            {
+              role: "user",
+              content: "Run terraform plan",
+              timestamp: "2026-05-11T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "The plan is ready.",
+              status: "complete",
+              timestamp: "2026-05-11T04:01:00.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:00:00.000Z",
+          endDate: "2026-05-11T04:01:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "user-only",
+          name: "User only chat",
+          history: [
+            {
+              role: "user",
+              content: "Run terraform plan",
+              timestamp: "2026-05-11T04:02:00.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:02:00.000Z",
+          endDate: "2026-05-11T04:02:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "empty-draft",
+          name: "Empty draft",
+          history: [],
+          startDate: "2026-05-11T04:03:00.000Z",
+          endDate: "2026-05-11T04:03:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "placeholder",
+          name: "Placeholder chat",
+          history: [
+            {
+              role: "user",
+              content: "Run terraform plan",
+              timestamp: "2026-05-11T04:04:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Thinking...",
+              status: "pending",
+              timestamp: "2026-05-11T04:04:01.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:04:00.000Z",
+          endDate: "2026-05-11T04:04:01.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "agent-response",
+    })
+
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    expect(screen.getByRole("button", { name: "Open chat Answered chat" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Open chat User only chat" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Open chat Empty draft" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Open chat Placeholder chat" })).not.toBeInTheDocument()
+  })
+
+  it("keeps new chat active and creates another empty draft without adding drafts to recents", async () => {
     useWebAppStore.setState({
       sessions: [
         {
@@ -283,13 +402,15 @@ describe("New Chat from sidebar", () => {
     )
 
     const newChatButton = screen.getByRole("button", { name: /^new chat$/i })
-    expect(newChatButton).toBeDisabled()
+    expect(newChatButton).toBeEnabled()
+    expect(screen.queryByRole("button", { name: "Open chat New chat" })).not.toBeInTheDocument()
 
     fireEvent.click(newChatButton)
 
     await waitFor(() => {
-      expect(useWebAppStore.getState().sessions.filter(session => !session.repository && session.history.length === 0)).toHaveLength(1)
+      expect(useWebAppStore.getState().sessions.filter(session => !session.repository && session.history.length === 0)).toHaveLength(2)
     })
+    expect(screen.queryByRole("button", { name: "Open chat New chat" })).not.toBeInTheDocument()
   })
 
   it("deletes a chat from the sidebar without recreating it", async () => {
@@ -298,7 +419,7 @@ describe("New Chat from sidebar", () => {
         {
           id: "active-session",
           name: "Active chat",
-          history: [],
+          history: answeredHistory,
           startDate: "2026-05-11T06:00:00.000Z",
           endDate: "2026-05-11T06:00:00.000Z",
           repository: {
@@ -311,7 +432,7 @@ describe("New Chat from sidebar", () => {
         {
           id: "old-session",
           name: "Old chat",
-          history: [],
+          history: answeredHistory,
           startDate: "2026-05-11T05:00:00.000Z",
           endDate: "2026-05-11T05:00:00.000Z",
           repository: null,
@@ -347,7 +468,7 @@ describe("New Chat from sidebar", () => {
         {
           id: "active-session",
           name: "Active chat",
-          history: [],
+          history: answeredHistory,
           startDate: "2026-05-11T06:00:00.000Z",
           endDate: "2026-05-11T06:00:00.000Z",
           repository: null,
@@ -356,7 +477,7 @@ describe("New Chat from sidebar", () => {
         {
           id: "next-session",
           name: "Next chat",
-          history: [],
+          history: answeredHistory,
           startDate: "2026-05-11T05:00:00.000Z",
           endDate: "2026-05-11T05:00:00.000Z",
           repository: null,

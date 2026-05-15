@@ -27,16 +27,6 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
       return
     }
 
-    if (isChatAgentPayload(json.chatAgent)) {
-      callback({ type: "agent", agent: json.chatAgent })
-      return
-    }
-
-    if (isChatAgentPayload(json.agent)) {
-      callback({ type: "agent", agent: json.agent })
-      return
-    }
-
     if (typeof json.sessionTitle === "string") {
       callback({ type: "session_title", title: json.sessionTitle })
       return
@@ -129,6 +119,11 @@ export const parseStrandsChunk: ChunkParser = (line, callback) => {
     }
 
     // Lifecycle events
+    if (typeof json.lifecycle === "string") {
+      callback({ type: "lifecycle", event: json.lifecycle })
+      return
+    }
+
     if (json.init_event_loop || json.start_event_loop || json.start) {
       const event = json.init_event_loop ? "init" : json.start_event_loop ? "start_loop" : "start"
       callback({ type: "lifecycle", event })
@@ -158,22 +153,4 @@ function isUserHandoffPayload(value: unknown): value is {
       item.options.every(option => typeof option === "string")
     )
   })
-}
-
-function isChatAgentPayload(value: unknown): value is {
-  id: "agent1"
-  mention: "@orchestrator"
-  name: string
-  avatar: string
-  className: string
-} {
-  if (!value || typeof value !== "object") return false
-  const agent = value as Record<string, unknown>
-  return (
-    agent.id === "agent1" &&
-    agent.mention === "@orchestrator" &&
-    typeof agent.name === "string" &&
-    typeof agent.avatar === "string" &&
-    typeof agent.className === "string"
-  )
 }

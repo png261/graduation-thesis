@@ -9,6 +9,7 @@ Also provides OpenAI credential retrieval from AgentCore Identity.
 import logging
 import os
 import json
+import time
 
 import boto3
 import jwt
@@ -16,6 +17,9 @@ from bedrock_agentcore.identity.auth import requires_access_token, requires_api_
 from bedrock_agentcore.runtime import RequestContext
 
 logger = logging.getLogger(__name__)
+
+_OPENAI_PROVIDER_CACHE: dict[str, tuple[float, str]] = {}
+_DEFAULT_OPENAI_CREDENTIAL_CACHE_TTL_SECONDS = 300
 
 
 def extract_user_id_from_context(context: RequestContext) -> str:
@@ -147,6 +151,9 @@ def _normalize_api_key(value: str | None) -> str:
 def _get_api_key_from_provider(provider_name: str) -> str:
     if not provider_name:
         return ""
+    cached_value = _get_cached_openai_provider_key(provider_name)
+    if cached_value:
+        return cached_value
     try:
         control = boto3.client(
             "bedrock-agentcore-control",
@@ -161,10 +168,40 @@ def _get_api_key_from_provider(provider_name: str) -> str:
             region_name=os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
         )
         secret_value = secrets.get_secret_value(SecretId=secret_arn).get("SecretString", "")
-        return _normalize_api_key(secret_value)
+        api_key = _normalize_api_key(secret_value)
+        if api_key:
+            _OPENAI_PROVIDER_CACHE[provider_name] = (time.monotonic(), api_key)
+        return api_key
     except Exception:
         logger.exception("Failed to resolve OpenAI API key from provider %s", provider_name)
         return ""
+
+
+def _get_cached_openai_provider_key(provider_name: str) -> str:
+    cached = _OPENAI_PROVIDER_CACHE.get(provider_name)
+    if cached is None:
+        return ""
+    cached_at, api_key = cached
+    if time.monotonic() - cached_at <= _openai_credential_cache_ttl_seconds():
+        return api_key
+    _OPENAI_PROVIDER_CACHE.pop(provider_name, None)
+    return ""
+
+
+def _openai_credential_cache_ttl_seconds() -> int:
+    raw_value = os.environ.get(
+        "OPENAI_CREDENTIAL_CACHE_TTL_SECONDS",
+        str(_DEFAULT_OPENAI_CREDENTIAL_CACHE_TTL_SECONDS),
+    )
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        logger.warning(
+            "Invalid OPENAI_CREDENTIAL_CACHE_TTL_SECONDS=%r; using %s",
+            raw_value,
+            _DEFAULT_OPENAI_CREDENTIAL_CACHE_TTL_SECONDS,
+        )
+        return _DEFAULT_OPENAI_CREDENTIAL_CACHE_TTL_SECONDS
 
 
 @requires_api_key(

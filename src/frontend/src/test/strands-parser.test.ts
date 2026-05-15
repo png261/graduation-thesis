@@ -75,4 +75,16 @@ describe("parseStrandsChunk", () => {
       )
     ).toThrow("Error code: 402 - INSUFFICIENT_BALANCE")
   })
+
+  it("emits checkpoint lifecycle events", () => {
+    const events: StreamEvent[] = []
+    parseStrandsChunk(
+      `data: ${JSON.stringify({
+        lifecycle: "checkpoint_saved",
+      })}`,
+      event => events.push(event)
+    )
+
+    expect(events).toEqual([{ type: "lifecycle", event: "checkpoint_saved" }])
+  })
 })

@@ -28,15 +28,15 @@ import {
 } from "@/components/ui/alert-dialog"
 import type { ChatSession } from "@/components/chat/types"
 import { useRunningSessions } from "@/components/chat/running-sessions"
-import { isEmptyNewChatSession } from "@/components/chat/session-utils"
+import { hasFirstAgentResponse } from "@/components/chat/session-utils"
 import { useAuth } from "@/hooks/useAuth"
 import { cn } from "@/lib/utils"
 import { useWebAppStore } from "@/stores/webAppStore"
 
 const navItems = [
-  { to: "/settings", label: "Settings", icon: Settings },
   { to: "/pull-requests", label: "Pull Requests", icon: GitPullRequest },
   { to: "/resource-catalog", label: "Resource Catalog", icon: Database },
+  { to: "/settings", label: "Settings", icon: Settings },
 ]
 
 type AppSidebarProps = {
@@ -64,6 +64,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
   const sessions = useMemo(
     () =>
       [...storedSessions]
+        .filter(hasFirstAgentResponse)
         .sort((a, b) => {
           const bTime = Date.parse(b.endDate || b.startDate || "")
           const aTime = Date.parse(a.endDate || a.startDate || "")
@@ -81,7 +82,6 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
   const accountLabel = String(
     profile?.email || profile?.preferred_username || profile?.name || profile?.sub || "Signed in"
   )
-  const hasEmptyNewChat = sessions.some(isEmptyNewChatSession)
 
   function isCurrent(to: string): boolean {
     const [pathname, search = ""] = to.split("?")
@@ -100,7 +100,6 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
   }
 
   function startNewChat() {
-    if (hasEmptyNewChat) return
     navigate("/")
     requestNewChat()
   }
@@ -141,6 +140,21 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
         </Button>
       </div>
       <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <Button
+          aria-label="New Chat"
+          className={cn(
+            "mb-1 h-9 border-slate-300 bg-white text-slate-950 hover:bg-slate-100",
+            collapsed ? "w-full justify-center px-0" : "justify-start gap-2"
+          )}
+          onClick={startNewChat}
+          title={collapsed ? "New Chat" : undefined}
+          type="button"
+          variant="outline"
+        >
+          <Plus className="h-4 w-4" />
+          {!collapsed && "New Chat"}
+        </Button>
+
         {navItems.map(item => {
           const Icon = item.icon
           return (
@@ -161,22 +175,12 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
           )
         })}
 
-        <div className="mt-2 flex min-h-0 flex-col gap-2 border-t border-slate-200 pt-3">
-          <Button
-            aria-label="New Chat"
-            className={cn(
-              "h-9 border-slate-300 bg-white text-slate-950 hover:bg-slate-100",
-              collapsed ? "w-full justify-center px-0" : "justify-start gap-2"
-            )}
-            disabled={hasEmptyNewChat}
-            onClick={startNewChat}
-            title={collapsed ? "New Chat" : undefined}
-            type="button"
-            variant="outline"
-          >
-            <Plus className="h-4 w-4" />
-            {!collapsed && "New Chat"}
-          </Button>
+        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2 border-t border-slate-200 pt-3">
+          {!collapsed && (
+            <div className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Recents
+            </div>
+          )}
           <div className="min-h-0 flex-1 overflow-y-auto pb-28 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {sessions.length > 0 ? (
               <div className="flex flex-col gap-1">

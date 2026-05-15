@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import type { ToolCallStatus, ToolProgressEntry } from "@/components/chat/types"
+import type { ChatAgent, ToolCallStatus, ToolProgressEntry } from "@/components/chat/types"
 
 export interface ToolRenderProps {
   name: string
@@ -7,6 +7,7 @@ export interface ToolRenderProps {
   status: ToolCallStatus
   progress?: ToolProgressEntry[]
   result?: string
+  agent?: ChatAgent
 }
 
 export type ToolRenderFn = (props: ToolRenderProps) => ReactNode

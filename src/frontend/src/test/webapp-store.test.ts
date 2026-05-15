@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatSession } from "@/components/chat/types"
 
 const resources = vi.hoisted(() => ({
+  listAwsCredentials: vi.fn(),
   listChatSessions: vi.fn(),
+  listDriftGuards: vi.fn(),
+  listResourceScans: vi.fn(),
+  listStateBackendResources: vi.fn(),
+  listStateBackends: vi.fn(),
   saveChatSessions: vi.fn(),
 }))
 
@@ -28,8 +33,13 @@ vi.mock("@/services/resourcesService", () => ({
   getUserConfig: vi.fn(),
   GitHubPullRequestStatus: {},
   deleteChatSession: vi.fn(),
+  listAwsCredentials: resources.listAwsCredentials,
   listChatSessions: resources.listChatSessions,
+  listDriftGuards: resources.listDriftGuards,
   listGitHubPullRequests: vi.fn(),
+  listResourceScans: resources.listResourceScans,
+  listStateBackendResources: resources.listStateBackendResources,
+  listStateBackends: resources.listStateBackends,
   saveChatSessions: resources.saveChatSessions,
   saveUserConfig: vi.fn(),
 }))
@@ -85,6 +95,11 @@ function sessionWithStateBackend(): ChatSession {
 describe("web app store chat persistence", () => {
   beforeEach(() => {
     resources.listChatSessions.mockReset()
+    resources.listAwsCredentials.mockReset()
+    resources.listDriftGuards.mockReset()
+    resources.listResourceScans.mockReset()
+    resources.listStateBackendResources.mockReset()
+    resources.listStateBackends.mockReset()
     resources.saveChatSessions.mockReset()
     storage.localStorage.clear()
     useWebAppStore.setState({
@@ -93,6 +108,16 @@ describe("web app store chat persistence", () => {
       chatSessionsLoadedFor: "",
       repositoryChatRequest: null,
       newChatRequestId: 0,
+      resourceCatalog: {
+        backends: [],
+        stateResources: [],
+        scans: [],
+        guards: [],
+        credentials: [],
+      },
+      resourceCatalogLoadedFor: "",
+      resourceCatalogFetchedAt: 0,
+      isResourceCatalogLoading: false,
     })
   })
 
@@ -185,5 +210,38 @@ describe("web app store chat persistence", () => {
     const state = useWebAppStore.getState()
     expect(state.activeSessionId).toBe("session-state-backend")
     expect(state.sessions[0].stateBackend?.backendId).toBe("backend-1")
+  })
+
+  it("caches the resource catalog until a forced reload", async () => {
+    const backend = {
+      backendId: "backend-1",
+      name: "Dev state",
+      bucket: "terraform-state-demo",
+      key: "env/dev.tfstate",
+      region: "us-east-1",
+      createdAt: "2026-05-15T04:00:00.000Z",
+      updatedAt: "2026-05-15T04:00:00.000Z",
+    }
+    resources.listStateBackends.mockResolvedValue([backend])
+    resources.listStateBackendResources.mockResolvedValue([
+      {
+        backendId: "backend-1",
+        address: "aws_s3_bucket.logs",
+        type: "aws_s3_bucket",
+      },
+    ])
+    resources.listResourceScans.mockResolvedValue([])
+    resources.listDriftGuards.mockResolvedValue([])
+    resources.listAwsCredentials.mockResolvedValue({ credentials: [], activeCredentialId: "" })
+
+    const first = await useWebAppStore.getState().loadResourceCatalog("id-token")
+    const second = await useWebAppStore.getState().loadResourceCatalog("id-token")
+    const third = await useWebAppStore.getState().loadResourceCatalog("id-token", { force: true })
+
+    expect(first.backends).toHaveLength(1)
+    expect(second.stateResources).toHaveLength(1)
+    expect(third.backends).toHaveLength(1)
+    expect(resources.listStateBackends).toHaveBeenCalledTimes(2)
+    expect(useWebAppStore.getState().resourceCatalogLoadedFor).toBe("id-token")
   })
 })

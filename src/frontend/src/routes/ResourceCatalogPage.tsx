@@ -11,6 +11,7 @@ import {
   Clock3,
   Database,
   FileClock,
+  GitPullRequest,
   History,
   Play,
   Network,
@@ -34,6 +35,7 @@ import { useAuth } from "@/hooks/useAuth"
 import { useInstalledRepositories } from "@/hooks/useInstalledRepositories"
 import type { SelectedRepository } from "@/lib/agentcore-client/types"
 import { useWebAppStore } from "@/stores/webAppStore"
+import type { ChatSession, PullRequestInfo } from "@/components/chat/types"
 import {
   AwsCredentialMetadata,
   DriftGuard,
@@ -42,12 +44,8 @@ import {
   StateBackendResource,
   S3BucketInfo,
   createStateBackend,
-  listAwsCredentials,
-  listDriftGuards,
   getStateBackendGraphUrl,
-  listResourceScans,
   listS3Buckets,
-  listStateBackends,
   listStateBackendResources,
   runDriftGuard,
   saveDriftGuard,
@@ -57,6 +55,10 @@ type CatalogTab = "resources" | "visualize" | "state" | "autoscan" | "drift" | "
 type ScanService = "s3" | "ec2" | "iam"
 type JsonRecord = Record<string, unknown>
 type AlertKind = "drift" | "policy"
+type PullRequestAction = {
+  number?: number
+  url: string
+}
 
 type EmbeddedGraph = {
   backendId: string
@@ -342,6 +344,95 @@ function alertSeverity(item: unknown, kind: AlertKind): string {
   return text(asRecord(item).severity, kind === "drift" ? "warning" : "info")
 }
 
+function normalizedSearchText(value: unknown): string {
+  return text(value).trim().toLowerCase()
+}
+
+function sessionSearchText(session: ChatSession): string {
+  return [
+    session.name,
+    session.history?.map(message => [
+      message.content,
+      message.segments?.map(segment => segment.type === "text" ? segment.content : segment.toolCall.input).join("\n"),
+    ].join("\n")).join("\n"),
+  ].join("\n").toLowerCase()
+}
+
+function pullRequestAction(pullRequest: PullRequestInfo | null | undefined): PullRequestAction | null {
+  if (!pullRequest?.url) return null
+  return { number: pullRequest.number, url: pullRequest.url }
+}
+
+function alertTokens(item: unknown, kind: AlertKind): string[] {
+  const alert = asRecord(item)
+  return uniqueTexts([
+    getAlertTitle(item, kind),
+    getAlertResource(item),
+    alert.resource_address,
+    alert.resource_id,
+    alert.resource_name,
+    alert.resource_type,
+    alert.policy_id,
+    alert.policy_name,
+    alert.message,
+  ]).map(normalizedSearchText)
+}
+
+function alertFixTokens(item: unknown, kind: AlertKind): string[] {
+  const alert = asRecord(item)
+  const values =
+    kind === "policy"
+      ? [alert.policy_id, alert.policy_name, alert.message, getAlertTitle(item, kind)]
+      : [alert.message, alert.resource_id]
+  return uniqueTexts(values).map(normalizedSearchText)
+}
+
+function resourceTokens(row: ResourceRow): string[] {
+  return uniqueTexts([
+    row.displayName,
+    row.subtitle,
+    row.resourceType,
+    row.resource.address,
+    row.resource.name,
+    row.after.id,
+    row.after.name,
+    row.after.bucket,
+    row.after.arn,
+    asRecord(row.after.tags).Name,
+    ...row.driftAlerts.flatMap(item => alertTokens(item, "drift")),
+    ...row.policyAlerts.flatMap(item => alertTokens(item, "policy")),
+  ]).map(normalizedSearchText)
+}
+
+function findIssuePullRequest(params: {
+  sessions: ChatSession[]
+  repository?: SelectedRepository | null
+  scan: ResourceScan
+  tokens: string[]
+}): PullRequestAction | null {
+  if (!params.repository?.fullName) return null
+  const tokens = params.tokens.filter(token => token.length >= 4)
+  if (!tokens.length) return null
+  const scanMarkers = uniqueTexts([
+    params.scan.scanId,
+    params.scan.backendId,
+    params.scan.backendName,
+    params.scan.stateBucket,
+    params.scan.stateKey,
+  ]).map(normalizedSearchText).filter(Boolean)
+
+  for (const session of params.sessions) {
+    if (session.repository?.fullName !== params.repository.fullName) continue
+    const action = pullRequestAction(session.pullRequest)
+    if (!action) continue
+    const haystack = sessionSearchText(session)
+    const hasScanContext = scanMarkers.some(marker => haystack.includes(marker))
+    const hasIssueContext = tokens.some(token => haystack.includes(token))
+    if (hasScanContext && hasIssueContext) return action
+  }
+  return null
+}
+
 function EmptyState({ label }: { label: string }) {
   return <div className="p-8 text-center text-sm text-slate-500">{label}</div>
 }
@@ -369,7 +460,7 @@ function buildFixPrompt(params: {
         ? "Terraform drift"
         : "resource drift or policy"
   return [
-    `@orchestrator Fix the ${issueLabel} issue found by Cloudrift in this Terraform repository.`,
+    `Fix the ${issueLabel} issue found by Cloudrift in this Terraform repository.`,
     "",
     `Repository: ${params.repository.fullName}`,
     `State backend: ${scanStateLabel(params.scan)}`,
@@ -502,9 +593,11 @@ function CloudriftAnalyticsChart({
 function ResourcesTable({
   rows,
   onFixResource,
+  getPullRequest,
 }: {
   rows: ResourceRow[]
   onFixResource: (row: ResourceRow) => void
+  getPullRequest: (row: ResourceRow) => PullRequestAction | null
 }) {
   const [query, setQuery] = useState("")
   const filteredRows = rows.filter(row => {
@@ -541,49 +634,60 @@ function ResourcesTable({
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredRows.map(row => (
-              <tr key={row.key} className="align-top hover:bg-slate-50">
-                <td className="px-4 py-4"><StatusBadge>{row.status}</StatusBadge></td>
-                <td className="px-4 py-4">
-                  <p className="font-mono text-sm font-semibold text-slate-900">{row.displayName}</p>
-                  <p className="mt-1 break-all text-xs text-slate-500">{row.subtitle || row.resourceType}</p>
-                </td>
-                <td className="px-4 py-4">
-                  <span className="inline-flex max-w-xs rounded-md border bg-white px-2 py-1 text-xs font-medium text-slate-700">
-                    {row.scan.backendName || row.scan.backendId}
-                  </span>
-                  <p className="mt-1 break-all text-xs text-slate-500">s3://{row.scan.stateBucket}/{row.scan.stateKey}</p>
-                </td>
-                <td className="px-4 py-4">
-                  <p className="font-medium text-slate-800">AWS</p>
-                  <p className="text-xs uppercase text-slate-500">{row.scan.service || row.resourceType}</p>
-                </td>
-                <td className="px-4 py-4">
-                  {row.consoleUrl ? (
-                    <a href={row.consoleUrl} target="_blank" rel="noreferrer" className="font-medium text-slate-900 underline underline-offset-4">
-                      Open console
-                    </a>
-                  ) : (
-                    <span className="text-slate-500">Unavailable</span>
-                  )}
-                </td>
-                <td className="px-4 py-4 text-slate-600">{formatDate(row.lastUpdated)}</td>
-                <td className="px-4 py-4 text-right">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={row.status === "active" || !row.repository}
-                    onClick={() => onFixResource(row)}
-                    className="gap-2"
-                    title={!row.repository ? "Connect this state backend to a GitHub repository first" : undefined}
-                  >
-                    <Wrench className="h-4 w-4" />
-                    Fix error
-                  </Button>
-                </td>
-              </tr>
-            ))}
+            {filteredRows.map(row => {
+              const pullRequest = getPullRequest(row)
+              const hasIssue = row.driftAlerts.length > 0 || row.policyAlerts.length > 0
+              return (
+                <tr key={row.key} className="align-top hover:bg-slate-50">
+                  <td className="px-4 py-4"><StatusBadge>{row.status}</StatusBadge></td>
+                  <td className="px-4 py-4">
+                    <p className="font-mono text-sm font-semibold text-slate-900">{row.displayName}</p>
+                    <p className="mt-1 break-all text-xs text-slate-500">{row.subtitle || row.resourceType}</p>
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className="inline-flex max-w-xs rounded-md border bg-white px-2 py-1 text-xs font-medium text-slate-700">
+                      {row.scan.backendName || row.scan.backendId}
+                    </span>
+                    <p className="mt-1 break-all text-xs text-slate-500">s3://{row.scan.stateBucket}/{row.scan.stateKey}</p>
+                  </td>
+                  <td className="px-4 py-4">
+                    <p className="font-medium text-slate-800">AWS</p>
+                    <p className="text-xs uppercase text-slate-500">{row.scan.service || row.resourceType}</p>
+                  </td>
+                  <td className="px-4 py-4">
+                    {row.consoleUrl ? (
+                      <a href={row.consoleUrl} target="_blank" rel="noreferrer" className="font-medium text-slate-900 underline underline-offset-4">
+                        Open console
+                      </a>
+                    ) : (
+                      <span className="text-slate-500">Unavailable</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-4 text-slate-600">{formatDate(row.lastUpdated)}</td>
+                  <td className="px-4 py-4 text-right">
+                    {pullRequest ? (
+                      <Button asChild type="button" size="sm" variant="outline" className="gap-2">
+                        <a href={pullRequest.url} target="_blank" rel="noreferrer">
+                          <GitPullRequest className="h-4 w-4" />
+                          View pull request
+                        </a>
+                      </Button>
+                    ) : hasIssue && row.repository ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onFixResource(row)}
+                        className="gap-2"
+                      >
+                        <Wrench className="h-4 w-4" />
+                        Fix error
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -749,11 +853,13 @@ function AlertsPanel({
   backends,
   kind,
   onFixAlerts,
+  getPullRequest,
 }: {
   scans: ResourceScan[]
   backends: StateBackend[]
   kind: AlertKind
   onFixAlerts: (scan: ResourceScan, items: unknown[], kind: AlertKind) => void
+  getPullRequest: (scan: ResourceScan, item: unknown, kind: AlertKind) => PullRequestAction | null
 }) {
   const [query, setQuery] = useState("")
   const label = kind === "drift" ? "drift alerts" : "policy alerts"
@@ -782,6 +888,9 @@ function AlertsPanel({
             return haystack.includes(query.trim().toLowerCase())
           })
           if (!filteredItems.length) return null
+          const groupPullRequest = filteredItems
+            .map(item => getPullRequest(group.scan, item, kind))
+            .find((item): item is PullRequestAction => Boolean(item))
           return (
             <details key={group.scan.scanId} open className="group">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3 border-b bg-slate-50 px-4 py-3">
@@ -795,20 +904,27 @@ function AlertsPanel({
                   </span>
                   <p className="mt-1 break-all text-xs text-slate-500">s3://{group.scan.stateBucket}/{group.scan.stateKey}</p>
                 </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="gap-2"
-                  disabled={!repositoryForScan(group.scan, backends)}
-                  onClick={event => {
-                    event.preventDefault()
-                    onFixAlerts(group.scan, filteredItems, kind)
-                  }}
-                  title={!repositoryForScan(group.scan, backends) ? "Connect this state backend to a GitHub repository first" : undefined}
-                >
-                  <Wrench className="h-4 w-4" />
-                  Fix All
-                </Button>
+                {groupPullRequest ? (
+                  <Button asChild type="button" size="sm" variant="outline" className="gap-2">
+                    <a href={groupPullRequest.url} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}>
+                      <GitPullRequest className="h-4 w-4" />
+                      View pull request
+                    </a>
+                  </Button>
+                ) : repositoryForScan(group.scan, backends) ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="gap-2"
+                    onClick={event => {
+                      event.preventDefault()
+                      onFixAlerts(group.scan, filteredItems, kind)
+                    }}
+                  >
+                    <Wrench className="h-4 w-4" />
+                    Fix All
+                  </Button>
+                ) : null}
                 <span className="text-sm text-slate-500 group-open:hidden">Expand</span>
                 <span className="hidden text-sm text-slate-500 group-open:inline">Collapse</span>
               </summary>
@@ -825,32 +941,43 @@ function AlertsPanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {filteredItems.map((item, index) => (
-                      <tr key={`${group.scan.scanId}-${kind}-${index}`} className="align-top hover:bg-slate-50">
-                        <td className="px-4 py-4"><StatusBadge>active</StatusBadge></td>
-                        <td className="px-4 py-4">
-                          <p className="font-mono text-sm font-semibold text-slate-900">{getAlertTitle(item, kind)}</p>
-                          <p className="mt-1 break-all text-xs text-slate-500">{getAlertResource(item)}</p>
-                        </td>
-                        <td className="px-4 py-4 text-slate-600">{alertSeverity(item, kind)}</td>
-                        <td className="px-4 py-4 text-slate-600">{formatDate(group.scan.updatedAt || group.scan.startedAt)}</td>
-                        <td className="px-4 py-4 text-slate-600">{formatDate(group.scan.startedAt)}</td>
-                        <td className="px-4 py-4 text-right">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            disabled={!repositoryForScan(group.scan, backends)}
-                            onClick={() => onFixAlerts(group.scan, [item], kind)}
-                            className="gap-2"
-                            title={!repositoryForScan(group.scan, backends) ? "Connect this state backend to a GitHub repository first" : undefined}
-                          >
-                            <Wrench className="h-4 w-4" />
-                            Fix error
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredItems.map((item, index) => {
+                      const pullRequest = getPullRequest(group.scan, item, kind)
+                      const canFix = Boolean(repositoryForScan(group.scan, backends))
+                      return (
+                        <tr key={`${group.scan.scanId}-${kind}-${index}`} className="align-top hover:bg-slate-50">
+                          <td className="px-4 py-4"><StatusBadge>active</StatusBadge></td>
+                          <td className="px-4 py-4">
+                            <p className="font-mono text-sm font-semibold text-slate-900">{getAlertTitle(item, kind)}</p>
+                            <p className="mt-1 break-all text-xs text-slate-500">{getAlertResource(item)}</p>
+                          </td>
+                          <td className="px-4 py-4 text-slate-600">{alertSeverity(item, kind)}</td>
+                          <td className="px-4 py-4 text-slate-600">{formatDate(group.scan.updatedAt || group.scan.startedAt)}</td>
+                          <td className="px-4 py-4 text-slate-600">{formatDate(group.scan.startedAt)}</td>
+                          <td className="px-4 py-4 text-right">
+                            {pullRequest ? (
+                              <Button asChild type="button" size="sm" variant="outline" className="gap-2">
+                                <a href={pullRequest.url} target="_blank" rel="noreferrer">
+                                  <GitPullRequest className="h-4 w-4" />
+                                  View pull request
+                                </a>
+                              </Button>
+                            ) : canFix ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => onFixAlerts(group.scan, [item], kind)}
+                                className="gap-2"
+                              >
+                                <Wrench className="h-4 w-4" />
+                                Fix error
+                              </Button>
+                            ) : null}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1257,57 +1384,37 @@ export default function ResourceCatalogPage() {
   const auth = useAuth()
   const navigate = useNavigate()
   const requestRepositoryChat = useWebAppStore(state => state.requestRepositoryChat)
+  const sessions = useWebAppStore(state => state.sessions)
+  const catalog = useWebAppStore(state => state.resourceCatalog)
+  const isCatalogLoading = useWebAppStore(state => state.isResourceCatalogLoading)
+  const loadResourceCatalog = useWebAppStore(state => state.loadResourceCatalog)
+  const setResourceCatalog = useWebAppStore(state => state.setResourceCatalog)
   const { repositories, isLoading: isLoadingRepositories, error: repositoriesError } = useInstalledRepositories(auth.user?.access_token)
   const [activeTab, setActiveTab] = useState<CatalogTab>("resources")
-  const [backends, setBackends] = useState<StateBackend[]>([])
-  const [stateResources, setStateResources] = useState<StateBackendResource[]>([])
-  const [guards, setGuards] = useState<DriftGuard[]>([])
-  const [scans, setScans] = useState<ResourceScan[]>([])
-  const [credentials, setCredentials] = useState<AwsCredentialMetadata[]>([])
   const [selectedAutoScanBackendId, setSelectedAutoScanBackendId] = useState("")
   const [isAddBackendOpen, setIsAddBackendOpen] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
   const [isSavingBackend, setIsSavingBackend] = useState(false)
   const [isRunningAutoScan, setIsRunningAutoScan] = useState(false)
   const [openingGraphBackendId, setOpeningGraphBackendId] = useState<string | null>(null)
   const [embeddedGraph, setEmbeddedGraph] = useState<EmbeddedGraph | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { backends, stateResources, guards, scans, credentials } = catalog
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { force?: boolean } = {}) => {
     const idToken = auth.user?.id_token
     if (!idToken) return
-    setIsLoading(true)
     setError(null)
     try {
-      const [loadedBackends, loadedScans, loadedGuards, loadedCredentials] = await Promise.all([
-        listStateBackends(idToken),
-        listResourceScans(idToken),
-        listDriftGuards(idToken),
-        listAwsCredentials(idToken).catch(() => ({ credentials: [], activeCredentialId: "" })),
-      ])
-      const loadedStateResources = (
-        await Promise.all(
-          loadedBackends.map(backend =>
-            listStateBackendResources(backend.backendId, idToken).catch(() => [] as StateBackendResource[])
-          )
-        )
-      ).flat()
-      setBackends(loadedBackends)
-      setStateResources(loadedStateResources)
-      setScans(loadedScans)
-      setGuards(loadedGuards)
-      setCredentials(loadedCredentials.credentials)
-      setSelectedAutoScanBackendId(current => current || loadedBackends[0]?.backendId || "")
+      const loadedCatalog = await loadResourceCatalog(idToken, options)
+      setSelectedAutoScanBackendId(current => current || loadedCatalog.backends[0]?.backendId || "")
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load resource catalog")
-    } finally {
-      setIsLoading(false)
     }
-  }, [auth.user?.id_token])
+  }, [auth.user?.id_token, loadResourceCatalog])
 
   useEffect(() => {
-    refresh()
+    void refresh()
   }, [refresh])
 
   const latestScans = useMemo(() => getLatestScansByBackend(scans), [scans])
@@ -1338,11 +1445,14 @@ export default function ResourceCatalogPage() {
         const backendResources = await listStateBackendResources(backend.backendId, idToken).catch(
           () => [] as StateBackendResource[]
         )
-        setBackends(current => [backend, ...current])
-        setStateResources(current => [
-          ...backendResources,
-          ...current.filter(resource => resource.backendId !== backend.backendId),
-        ])
+        setResourceCatalog(current => ({
+          ...current,
+          backends: [backend, ...current.backends.filter(item => item.backendId !== backend.backendId)],
+          stateResources: [
+            ...backendResources,
+            ...current.stateResources.filter(resource => resource.backendId !== backend.backendId),
+          ],
+        }), idToken)
         setSelectedAutoScanBackendId(backend.backendId)
         setIsAddBackendOpen(false)
         setActiveTab("visualize")
@@ -1353,7 +1463,7 @@ export default function ResourceCatalogPage() {
         setIsSavingBackend(false)
       }
     },
-    [auth.user?.id_token]
+    [auth.user?.id_token, setResourceCatalog]
   )
 
   const handleListBuckets = useCallback(
@@ -1397,17 +1507,21 @@ export default function ResourceCatalogPage() {
         },
         idToken
       )
-      setGuards(current => [savedGuard, ...current.filter(item => item.guardId !== savedGuard.guardId)])
+      setResourceCatalog(current => ({
+        ...current,
+        guards: [savedGuard, ...current.guards.filter(item => item.guardId !== savedGuard.guardId)],
+      }), idToken)
       const result = await runDriftGuard(savedGuard.guardId, idToken)
       if (result.scan) {
-        setScans(current => [result.scan!, ...current])
-        setGuards(current =>
-          current.map(guard =>
+        setResourceCatalog(current => ({
+          ...current,
+          scans: [result.scan!, ...current.scans],
+          guards: current.guards.map(guard =>
             guard.guardId === savedGuard.guardId
               ? { ...guard, lastScanId: result.scan!.scanId, lastRunAt: result.scan!.startedAt }
               : guard
-          )
-        )
+          ),
+        }), idToken)
       }
       setMessage(result.skipped ? `Autoscan skipped: ${result.reason}` : "Autoscan started")
     } catch (runError) {
@@ -1415,7 +1529,7 @@ export default function ResourceCatalogPage() {
     } finally {
       setIsRunningAutoScan(false)
     }
-  }, [auth.user?.id_token, auth.user?.profile, backends, guards, selectedAutoScanBackendId])
+  }, [auth.user?.id_token, auth.user?.profile, backends, guards, selectedAutoScanBackendId, setResourceCatalog])
 
   const handleLoadGraph = useCallback(
     async (backend: StateBackend) => {
@@ -1498,6 +1612,28 @@ export default function ResourceCatalogPage() {
     [backends, openFixChat]
   )
 
+  const getResourcePullRequest = useCallback(
+    (row: ResourceRow) =>
+      findIssuePullRequest({
+        sessions,
+        repository: row.repository,
+        scan: row.scan,
+        tokens: resourceTokens(row),
+      }),
+    [sessions]
+  )
+
+  const getAlertPullRequest = useCallback(
+    (scan: ResourceScan, item: unknown, kind: AlertKind) =>
+      findIssuePullRequest({
+        sessions,
+        repository: repositoryForScan(scan, backends),
+        scan,
+        tokens: alertFixTokens(item, kind),
+      }),
+    [backends, sessions]
+  )
+
   return (
     <main className="min-h-screen bg-slate-100">
       <header className="border-b bg-white">
@@ -1514,8 +1650,8 @@ export default function ResourceCatalogPage() {
               <Plus className="h-4 w-4" />
               Add State Backend
             </Button>
-            <Button type="button" onClick={() => void refresh()} disabled={isLoading} className="gap-2">
-              <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
+            <Button type="button" onClick={() => void refresh({ force: true })} disabled={isCatalogLoading} className="gap-2">
+              <RefreshCw className={`h-4 w-4 ${isCatalogLoading ? "animate-spin" : ""}`} />
               Reload
             </Button>
           </div>
@@ -1572,7 +1708,9 @@ export default function ResourceCatalogPage() {
           })}
         </nav>
 
-        {activeTab === "resources" && <ResourcesTable rows={resourceRows} onFixResource={handleFixResource} />}
+        {activeTab === "resources" && (
+          <ResourcesTable rows={resourceRows} onFixResource={handleFixResource} getPullRequest={getResourcePullRequest} />
+        )}
         {activeTab === "visualize" && (
           <ResourceGraphViewer
             backends={backends}
@@ -1593,11 +1731,27 @@ export default function ResourceCatalogPage() {
             onRun={() => void handleRunAutoScan()}
           />
         )}
-        {activeTab === "drift" && <AlertsPanel scans={scans} backends={backends} kind="drift" onFixAlerts={handleFixAlerts} />}
-        {activeTab === "policy" && <AlertsPanel scans={scans} backends={backends} kind="policy" onFixAlerts={handleFixAlerts} />}
+        {activeTab === "drift" && (
+          <AlertsPanel
+            scans={scans}
+            backends={backends}
+            kind="drift"
+            onFixAlerts={handleFixAlerts}
+            getPullRequest={getAlertPullRequest}
+          />
+        )}
+        {activeTab === "policy" && (
+          <AlertsPanel
+            scans={scans}
+            backends={backends}
+            kind="policy"
+            onFixAlerts={handleFixAlerts}
+            getPullRequest={getAlertPullRequest}
+          />
+        )}
         {activeTab === "scans" && <ScanHistoryTable scans={scans} />}
 
-        {!isLoading && scans.length === 0 && (
+          {!isCatalogLoading && scans.length === 0 && (
           <div className="rounded-md border bg-white p-5 text-sm text-slate-600">
             <div className="flex items-center gap-2 font-medium text-slate-900">
               <CheckCircle2 className="h-4 w-4" />

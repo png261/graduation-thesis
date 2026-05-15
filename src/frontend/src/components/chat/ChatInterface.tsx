@@ -1,10 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { ChatInput } from "./ChatInput"
-import { ChatMessages } from "./ChatMessages"
-import type { ChatAttachment, ChatSession, Message, MessageSegment, PullRequestInfo, ToolCall, UserHandoff } from "./types"
-import { CHAT_AGENTS, findMentionedAgent } from "./agents"
+import { ChatMessages, type UserMessageEditState } from "./ChatMessages"
+import type { ChatAttachment, ChatSession, CheckpointState, Message, MessageSegment, PullRequestInfo, ToolCall, UserHandoff } from "./types"
+import { ORCHESTRATOR_AGENT } from "./agents"
 
 import { AgentCoreClient } from "@/lib/agentcore-client"
 import { useAuth } from "react-oidc-context"
@@ -25,7 +25,7 @@ import {
   useRunningSessions,
 } from "./running-sessions"
 import { hasPendingAssistantResponse } from "./session-status"
-import { ArrowDown, ChevronLeft, ChevronRight } from "lucide-react"
+import { ArrowDown, ChevronLeft, ChevronRight, FileText, GitPullRequest, ShieldCheck } from "lucide-react"
 
 function createChatSession(
   repository: SelectedRepository | null = null,
@@ -46,6 +46,24 @@ function createChatSession(
 
 const NO_REPOSITORY_VALUE = "__no_repository__"
 const NO_STATE_BACKEND_VALUE = "__no_state_backend__"
+const CODEBASE_MUTATING_TOOL_NAMES = new Set(["file_write", "create_pull_request"])
+const EMPTY_STATE_SUGGESTIONS = [
+  {
+    label: "Review infrastructure",
+    prompt: "Review my infrastructure for security, cost, and reliability risks.",
+    icon: ShieldCheck,
+  },
+  {
+    label: "Write Terraform",
+    prompt: "Help me write or update Terraform for this infrastructure.",
+    icon: FileText,
+  },
+  {
+    label: "Prepare a PR",
+    prompt: "Create a pull request plan for the next infrastructure change.",
+    icon: GitPullRequest,
+  },
+]
 
 type PendingRepositoryAutoSend = {
   id: number
@@ -73,8 +91,32 @@ function stopStalePendingMessages(messages: Message[]): Message[] {
     ...last,
     content: last.content === "Thinking..." ? "Stopped." : last.content,
     status: "stopped",
+    segments: stopPendingToolSegments(last.segments),
   }
   return nextMessages
+}
+
+function stopPendingToolSegments(segments: MessageSegment[] | undefined): MessageSegment[] | undefined {
+  if (!segments) return undefined
+  return segments.map(segment => {
+    if (
+      segment.type !== "tool" ||
+      (segment.toolCall.status !== "streaming" && segment.toolCall.status !== "executing")
+    ) {
+      return segment
+    }
+    return {
+      ...segment,
+      toolCall: {
+        ...segment.toolCall,
+        status: "stopped",
+        progress: [
+          ...(segment.toolCall.progress ?? []),
+          { phase: "stopped", message: `${segment.toolCall.name} was stopped` },
+        ],
+      },
+    }
+  })
 }
 
 function normalizeStalePendingSessions(sessions: ChatSession[]): ChatSession[] {
@@ -88,6 +130,45 @@ function normalizeStalePendingSessions(sessions: ChatSession[]): ChatSession[] {
       endDate: last.timestamp ?? session.endDate,
     }
   })
+}
+
+function textMentionsChangedFiles(text: string | undefined): boolean {
+  if (!text) return false
+  return /"changed_files"\s*:\s*\[\s*["{]/i.test(text) || /"changedFiles"\s*:\s*\[\s*["{]/i.test(text)
+}
+
+function toolCallChangedFilesystem(toolCall: ToolCall): boolean {
+  const toolName = toolCall.name.toLowerCase()
+  if (CODEBASE_MUTATING_TOOL_NAMES.has(toolName)) return true
+  if (textMentionsChangedFiles(toolCall.result)) return true
+  return (toolCall.progress ?? []).some(item => {
+    const phase = typeof item === "string" ? "" : item.phase
+    const message = typeof item === "string" ? item : item.message
+    const text = `${phase} ${message}`.toLowerCase()
+    return text.includes("file_write") || textMentionsChangedFiles(text)
+  })
+}
+
+function messageChangedFilesystem(message: Message): boolean {
+  if (textMentionsChangedFiles(message.content)) return true
+  return (message.segments ?? []).some(segment => (
+    segment.type === "tool" && toolCallChangedFilesystem(segment.toolCall)
+  ))
+}
+
+function pullRequestChangedFilesystem(pullRequest: PullRequestInfo | null): boolean {
+  if (!pullRequest) return false
+  return Boolean(
+    pullRequest.created ||
+    pullRequest.updated ||
+    pullRequest.committed ||
+    (pullRequest.changedFiles?.length ?? 0) > 0
+  )
+}
+
+function hasFilesystemChangesAfter(messages: Message[], messageIndex: number, pullRequest: PullRequestInfo | null): boolean {
+  if (pullRequestChangedFilesystem(pullRequest)) return true
+  return messages.slice(messageIndex + 1).some(messageChangedFilesystem)
 }
 
 function didSessionsChange(prev: ChatSession[], next: ChatSession[]) {
@@ -151,7 +232,6 @@ export default function ChatInterface() {
   const storedSessionsFromStore = useWebAppStore(state => state.sessions)
   const storedActiveSessionIdFromStore = useWebAppStore(state => state.activeSessionId)
   const repositoryChatRequest = useWebAppStore(state => state.repositoryChatRequest)
-  const selectedAgent = CHAT_AGENTS[0]
   const activeSessionRunning = Boolean(runningSessions[sessionId])
 
   const [showScrollToLatest, setShowScrollToLatest] = useState(false)
@@ -159,6 +239,7 @@ export default function ChatInterface() {
   // Refs for manually returning to the latest response without forcing auto-scroll.
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const hasRenderedInitialMessagesRef = useRef(false)
   const shouldFollowLatestRef = useRef(true)
   const activeSessionIdRef = useRef(sessionId)
   const hasRequestedChatSessionsRef = useRef(false)
@@ -171,8 +252,8 @@ export default function ChatInterface() {
   )
 
   // Register default tool renderer (wildcard "*")
-  useDefaultTool(({ name, args, status, progress, result }) => (
-    <ToolCallDisplay name={name} args={args} status={status} progress={progress} result={result} />
+  useDefaultTool(({ name, args, status, progress, result, agent }) => (
+    <ToolCallDisplay name={name} args={args} status={status} progress={progress} result={result} agent={agent} />
   ))
 
   useEffect(() => {
@@ -231,12 +312,46 @@ export default function ChatInterface() {
           ...last,
           content: last.content === "Thinking..." ? "Stopped." : last.content,
           status: "stopped",
+          segments: stopPendingToolSegments(last.segments),
         }
       }
       return updated
     })
     unregisterRunningSession(targetSessionId)
   }, [updateSessionMessages])
+
+  const getUserMessageEditState = useCallback((messageIndex: number): UserMessageEditState => {
+    const message = messages[messageIndex]
+    if (!message || message.role !== "user") {
+      return { canEdit: false }
+    }
+    if (activeSessionRunning || hasRunningSessionController(sessionId)) {
+      return { canEdit: false, reason: "Wait for the current response to finish before editing." }
+    }
+    if (hasFilesystemChangesAfter(messages, messageIndex, pullRequest)) {
+      return {
+        canEdit: false,
+        reason: "This prompt cannot be edited because later steps changed repository files.",
+      }
+    }
+    return { canEdit: true }
+  }, [activeSessionRunning, messages, pullRequest, sessionId])
+
+  const editUserMessage = useCallback((messageIndex: number) => {
+    const editState = getUserMessageEditState(messageIndex)
+    if (!editState.canEdit) return
+    const message = messages[messageIndex]
+    if (!message || message.role !== "user") return
+
+    const nextMessages = messages.slice(0, messageIndex)
+    setInput(message.content)
+    setAttachments(message.attachments ?? [])
+    setPendingUserHandoff(null)
+    setError(null)
+    shouldFollowLatestRef.current = true
+    setShowScrollToLatest(false)
+    updateSessionMessages(sessionId, () => nextMessages)
+  }, [getUserMessageEditState, messages, sessionId, updateSessionMessages])
 
   // Load agent configuration and create client on mount
   useEffect(() => {
@@ -280,25 +395,45 @@ export default function ChatInterface() {
     setShowScrollToLatest(messages.length > 0 && !isNearBottom)
   }, [messages.length])
 
-  const scrollToLatestResponse = useCallback(() => {
-    shouldFollowLatestRef.current = true
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-    setShowScrollToLatest(false)
+  const scrollMessagesToEnd = useCallback((behavior: ScrollBehavior) => {
+    const container = messagesContainerRef.current
+    if (container) {
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({ top: container.scrollHeight, behavior })
+      } else {
+        try {
+          container.scrollTop = container.scrollHeight
+        } catch {
+          // Some test DOMs expose scrollTop as read-only after property stubbing.
+        }
+      }
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior, block: "end" })
   }, [])
 
-  useEffect(() => {
+  const scrollToLatestResponse = useCallback(() => {
+    shouldFollowLatestRef.current = true
+    scrollMessagesToEnd("smooth")
+    setShowScrollToLatest(false)
+  }, [scrollMessagesToEnd])
+
+  useLayoutEffect(() => {
+    if (!hasRenderedInitialMessagesRef.current) {
+      hasRenderedInitialMessagesRef.current = true
+      return
+    }
     if (messages.length === 0) {
       shouldFollowLatestRef.current = true
       setShowScrollToLatest(false)
       return
     }
     if (shouldFollowLatestRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+      scrollMessagesToEnd("smooth")
       setShowScrollToLatest(false)
       return
     }
     updateScrollToLatestVisibility()
-  }, [messages, updateScrollToLatestVisibility])
+  }, [messages, scrollMessagesToEnd, updateScrollToLatestVisibility])
 
   useEffect(() => {
     if (!sessions.some(session => session.id === sessionId) && sessions[0]) {
@@ -446,6 +581,7 @@ export default function ChatInterface() {
   useEffect(() => {
     const idToken = auth.user?.id_token
     if (!idToken || !isSessionStoreReady) return
+    if (activeSessionRunning || hasRunningSessionController(sessionId)) return
     const persistedSessions = sessions
     const payload = { sessions: persistedSessions, activeSessionId: sessionId }
     const serialized = JSON.stringify(payload)
@@ -460,9 +596,10 @@ export default function ChatInterface() {
         })
     }, 900)
     return () => window.clearTimeout(timeout)
-  }, [auth.user?.id_token, isSessionStoreReady, persistChatSessions, sessionId, sessions])
+  }, [activeSessionRunning, auth.user?.id_token, isSessionStoreReady, persistChatSessions, sessionId, sessions])
 
   useEffect(() => {
+    if (activeSessionRunning || hasRunningSessionController(sessionId)) return
     const lastMessageTimestamp = messages[messages.length - 1]?.timestamp
     setSessions(prev =>
       prev.map(session =>
@@ -477,9 +614,9 @@ export default function ChatInterface() {
               endDate: lastMessageTimestamp ?? session.endDate,
             }
           : session
-      )
+        )
     )
-  }, [messages, pendingUserHandoff, pullRequest, repository, sessionId, stateBackend])
+  }, [activeSessionRunning, messages, pendingUserHandoff, pullRequest, repository, sessionId, stateBackend])
 
   useEffect(() => {
     const idToken = auth.user?.id_token
@@ -552,8 +689,7 @@ export default function ChatInterface() {
 
     // Clear any previous errors
     setError(null)
-    const mentionedAgent = findMentionedAgent(userMessage)
-    const activeAgent = mentionedAgent ?? selectedAgent
+    const activeAgent = ORCHESTRATOR_AGENT
     const selectedRepository =
       repository ??
       installedRepositories.find(item => item.fullName === selectedInstalledRepository) ??
@@ -616,12 +752,29 @@ export default function ChatInterface() {
     setShowScrollToLatest(false)
     updateSessionMessages(targetSessionId, prev => [...prev, newUserMessage, assistantResponse])
     window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+      scrollMessagesToEnd("smooth")
     })
     if (isActiveSession(targetSessionId)) {
       setInput("")
       setAttachments([])
       setPendingUserHandoff(null)
+    }
+
+    let pendingStreamFrame: number | null = null
+    let pendingSessionSyncTimer: number | null = null
+    let hasPendingStreamUpdate = false
+    let forceMessageUpdate = () => {}
+
+    const cancelPendingStreamUpdate = () => {
+      if (pendingStreamFrame !== null) {
+        window.cancelAnimationFrame(pendingStreamFrame)
+        pendingStreamFrame = null
+      }
+      if (pendingSessionSyncTimer !== null) {
+        window.clearTimeout(pendingSessionSyncTimer)
+        pendingSessionSyncTimer = null
+      }
+      hasPendingStreamUpdate = false
     }
 
     try {
@@ -634,41 +787,106 @@ export default function ChatInterface() {
 
       const segments: MessageSegment[] = []
       const toolCallMap = new Map<string, ToolCall>()
+      let checkpoint: CheckpointState = {}
+      let latestAssistantStreamMessage = assistantResponse
 
-      const updateMessage = () => {
-        // Build content from text segments for backward compat
+      const buildAssistantStreamMessage = (): Message => {
         const content = segments
           .filter((s): s is Extract<MessageSegment, { type: "text" }> => s.type === "text")
           .map(s => s.content)
           .join("")
 
-        updateSessionMessages(targetSessionId, prev => {
-          const updated = [...prev]
-          updated[updated.length - 1] = {
-            ...updated[updated.length - 1],
-            content: content || "Thinking...",
-            status: "pending",
-            segments: [...segments],
-          }
-          return updated
-        })
+        return {
+          role: "assistant",
+          content: content || "Thinking...",
+          timestamp: assistantResponse.timestamp,
+          status: "pending",
+          agent: activeAgent,
+          segments: [...segments],
+          checkpoint: Object.keys(checkpoint).length > 0 ? { ...checkpoint } : undefined,
+        }
+      }
+
+      const syncAssistantMessageToSessions = (message: Message) => {
+        setSessions(prev =>
+          prev.map(session =>
+            session.id === targetSessionId
+              ? applyMessageUpdaterToSession(session, messages => {
+                  const updated = [...messages]
+                  updated[updated.length - 1] = message
+                  return updated
+                })
+              : session
+          )
+        )
+        const storedState = useWebAppStore.getState()
+        if (storedState.sessions.some(session => session.id === targetSessionId)) {
+          setStoredSessions(
+            storedState.sessions.map(session =>
+              session.id === targetSessionId
+                ? applyMessageUpdaterToSession(session, messages => {
+                    const updated = [...messages]
+                    updated[updated.length - 1] = message
+                    return updated
+                  })
+                : session
+            )
+          )
+        }
+      }
+
+      const scheduleSessionSync = (message: Message) => {
+        latestAssistantStreamMessage = message
+        if (pendingSessionSyncTimer !== null) return
+        pendingSessionSyncTimer = window.setTimeout(() => {
+          pendingSessionSyncTimer = null
+          syncAssistantMessageToSessions(latestAssistantStreamMessage)
+        }, 120)
+      }
+
+      const forceSessionSync = (message: Message) => {
+        latestAssistantStreamMessage = message
+        if (pendingSessionSyncTimer !== null) {
+          window.clearTimeout(pendingSessionSyncTimer)
+          pendingSessionSyncTimer = null
+        }
+        syncAssistantMessageToSessions(latestAssistantStreamMessage)
+      }
+
+      const flushMessageUpdate = () => {
+        pendingStreamFrame = null
+        if (!hasPendingStreamUpdate) return
+        hasPendingStreamUpdate = false
+        const nextAssistantMessage = buildAssistantStreamMessage()
+        if (isActiveSession(targetSessionId)) {
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = nextAssistantMessage
+            return updated
+          })
+        }
+        scheduleSessionSync(nextAssistantMessage)
+      }
+
+      const scheduleMessageUpdate = () => {
+        hasPendingStreamUpdate = true
+        if (pendingStreamFrame !== null) return
+        pendingStreamFrame = window.requestAnimationFrame(flushMessageUpdate)
+      }
+
+      forceMessageUpdate = () => {
+        if (pendingStreamFrame !== null) {
+          window.cancelAnimationFrame(pendingStreamFrame)
+          pendingStreamFrame = null
+        }
+        flushMessageUpdate()
+        forceSessionSync(buildAssistantStreamMessage())
       }
 
       // User identity is extracted server-side from the validated JWT token,
       // not passed as a parameter — prevents impersonation via prompt injection.
       await client.invoke(trimmedMessage || "Please review the attached file(s).", targetSessionId, accessToken, event => {
         switch (event.type) {
-          case "agent": {
-            updateSessionMessages(targetSessionId, prev => {
-              const updated = [...prev]
-              const last = updated[updated.length - 1]
-              if (last?.role === "assistant") {
-                updated[updated.length - 1] = { ...last, agent: event.agent }
-              }
-              return updated
-            })
-            break
-          }
           case "text": {
             // If text arrives after a tool segment, mark all pending tools as complete
             const prev = segments[segments.length - 1]
@@ -686,12 +904,12 @@ export default function ChatInterface() {
             } else {
               segments.push({ type: "text", content: event.content })
             }
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "tool_use_start": {
             ensureToolCallSegment(segments, toolCallMap, event)
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "tool_use_delta": {
@@ -699,7 +917,7 @@ export default function ChatInterface() {
             if (tc) {
               tc.input += event.input
             }
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "tool_use_input_snapshot": {
@@ -707,7 +925,7 @@ export default function ChatInterface() {
             if (tc) {
               tc.input = event.input
             }
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "tool_progress": {
@@ -722,7 +940,7 @@ export default function ChatInterface() {
                 tc.progress = [...progress.slice(-49), { phase: event.phase, message: event.message }]
               }
             }
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "tool_result": {
@@ -731,7 +949,7 @@ export default function ChatInterface() {
               tc.result = event.result
               tc.status = "complete"
             }
-            updateMessage()
+            scheduleMessageUpdate()
             break
           }
           case "message": {
@@ -739,11 +957,25 @@ export default function ChatInterface() {
               for (const tc of toolCallMap.values()) {
                 if (tc.status === "streaming") tc.status = "executing"
               }
-              updateMessage()
+              scheduleMessageUpdate()
+            }
+            break
+          }
+          case "lifecycle": {
+            if (event.event === "checkpoint_restored") {
+              checkpoint = { ...checkpoint, restored: true, error: false }
+              scheduleMessageUpdate()
+            } else if (event.event === "checkpoint_saved") {
+              checkpoint = { ...checkpoint, saved: true, error: false }
+              scheduleMessageUpdate()
+            } else if (event.event === "checkpoint_error") {
+              checkpoint = { ...checkpoint, error: true }
+              scheduleMessageUpdate()
             }
             break
           }
           case "pull_request": {
+            forceMessageUpdate()
             const nextPullRequest = event.pullRequest as PullRequestInfo
             updateSessionState(targetSessionId, session => ({ ...session, pullRequest: nextPullRequest }))
             break
@@ -766,6 +998,7 @@ export default function ChatInterface() {
             break
           }
           case "user_handoff": {
+            forceMessageUpdate()
             updateSessionState(targetSessionId, session => ({
               ...session,
               pendingUserHandoff: event.handoff as UserHandoff,
@@ -773,7 +1006,8 @@ export default function ChatInterface() {
             break
           }
         }
-      }, selectedRepository, activeAgent, messageAttachments, selectedStateBackend, abortController.signal)
+      }, selectedRepository, messageAttachments, selectedStateBackend, abortController.signal)
+      forceMessageUpdate()
       updateSessionMessages(targetSessionId, prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]
@@ -792,9 +1026,11 @@ export default function ChatInterface() {
       })
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError" && abortController.signal.aborted) {
+        cancelPendingStreamUpdate()
         stopPendingSession(targetSessionId)
         return
       }
+      forceMessageUpdate()
       const errorMessage = errorMessageFromUnknown(err)
       if (isActiveSession(targetSessionId)) setError(`Failed to get response: ${errorMessage}`)
       console.error("Error invoking AgentCore:", err)
@@ -810,15 +1046,22 @@ export default function ChatInterface() {
         return updated
       })
     } finally {
+      cancelPendingStreamUpdate()
       unregisterRunningSession(targetSessionId)
     }
   }
 
   const stopMessage = useCallback(() => {
+    const accessToken = auth.user?.access_token
+    if (client && accessToken) {
+      void client.cancelSession(sessionId, accessToken).catch(err => {
+        console.warn("Failed to cancel AgentCore session:", err)
+      })
+    }
     if (!abortRunningSession(sessionId)) {
       stopPendingSession(sessionId)
     }
-  }, [sessionId, stopPendingSession])
+  }, [auth.user?.access_token, client, sessionId, stopPendingSession])
 
   useEffect(() => {
     if (!client || !pendingRepositoryAutoSendRef.current) return
@@ -984,6 +1227,32 @@ export default function ChatInterface() {
     window.addEventListener("pointermove", move)
     window.addEventListener("pointerup", up)
   }, [])
+  const renderChatInput = (className = "bg-transparent p-0") => (
+    <ChatInput
+      input={input}
+      setInput={setInput}
+      attachments={attachments}
+      onAttachmentsChange={setAttachments}
+      handleSubmit={handleSubmit}
+      isLoading={activeSessionRunning}
+      onStop={stopMessage}
+      className={className}
+      compactControls={isFilesystemOpen}
+      repositories={installedRepositories}
+      selectedRepositoryFullName={selectedRepositoryFullName}
+      onRepositoryChange={value => void setupRepositoryWorkspaceForSelection(value)}
+      repositoryLocked={isRepositoryLocked}
+      isLoadingRepositories={isLoadingInstalledRepositories || isSettingUpSession}
+      repositoryError={setupError}
+      stateBackends={stateBackends}
+      selectedStateBackendId={selectedStateBackendValue}
+      onStateBackendChange={value => void selectStateBackend(value)}
+      isLoadingStateBackends={isLoadingStateBackends}
+      stateBackendError={stateBackendError}
+      userHandoff={pendingUserHandoff}
+      onUserHandoffSubmit={handleUserHandoffSubmit}
+    />
+  )
 
   return (
     <div
@@ -1013,26 +1282,35 @@ export default function ChatInterface() {
       {/* Conditional layout based on whether there are messages */}
       {isInitialState ? (
         // Initial state
-        <>
-          {/* Empty space above */}
-          <div className="grow" />
-
-          {/* Centered welcome message */}
-          <div className="mx-auto mb-24 flex w-full max-w-5xl flex-col items-center gap-3 px-4 text-center">
-            <div className="relative h-44 w-full max-w-5xl text-slate-950 sm:h-52">
+        <div className="flex min-h-0 grow items-center justify-center px-4 pb-10 pt-4">
+          <div className="mx-auto flex w-full max-w-6xl flex-col items-center gap-5 text-center">
+            <div className="relative h-56 w-full max-w-6xl text-slate-950 sm:h-64 lg:h-72">
               <CursorDrivenParticleTypography
                 text="InfraQ"
                 className="relative h-full min-h-0 text-slate-950"
-                fontSize={132}
-                particleSize={1.8}
-                particleDensity={4}
+                fontSize={170}
+                particleSize={2.2}
+                particleDensity={3}
               />
             </div>
+            <div className="w-full max-w-5xl">
+              {renderChatInput()}
+            </div>
+            <div className="flex w-full max-w-5xl flex-wrap justify-center gap-3">
+              {EMPTY_STATE_SUGGESTIONS.map(({ label, prompt, icon: Icon }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setInput(prompt)}
+                  className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
+                >
+                  <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{label}</span>
+                </button>
+              ))}
+            </div>
           </div>
-
-          {/* Empty space below */}
-          <div className="grow" />
-        </>
+        </div>
       ) : (
         // Chat in progress - normal layout
         <>
@@ -1044,21 +1322,28 @@ export default function ChatInterface() {
                 messagesContainerRef={messagesContainerRef}
                 messagesEndRef={messagesEndRef}
                 onScroll={updateScrollToLatestVisibility}
+                getUserMessageEditState={getUserMessageEditState}
+                onEditUserMessage={editUserMessage}
               />
             </div>
           </div>
         </>
+      )}
+      {!isInitialState && (
+        <div className="mx-auto w-full max-w-5xl flex-none px-4 pb-4 pt-2">
+          {renderChatInput()}
+        </div>
       )}
       </section>
       {showScrollToLatest && (
         <button
           type="button"
           onClick={scrollToLatestResponse}
-          className="absolute bottom-32 left-1/2 z-50 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-lg transition-colors hover:bg-slate-50"
+          className="absolute bottom-32 left-1/2 z-50 inline-flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-lg transition-colors hover:bg-slate-50"
           aria-label="Scroll to latest response"
+          title="Scroll to latest response"
         >
           <ArrowDown className="h-4 w-4" />
-          <span>Latest response</span>
         </button>
       )}
       {repository && (
@@ -1079,32 +1364,6 @@ export default function ChatInterface() {
         onPointerDown={handleFilesystemResize}
         role="separator"
       />
-      <div className="absolute bottom-4 left-1/2 z-40 w-full max-w-5xl -translate-x-1/2 px-4">
-        <ChatInput
-          input={input}
-          setInput={setInput}
-          attachments={attachments}
-          onAttachmentsChange={setAttachments}
-          handleSubmit={handleSubmit}
-          isLoading={activeSessionRunning}
-          onStop={stopMessage}
-          className="bg-transparent p-0"
-          agents={CHAT_AGENTS}
-          repositories={installedRepositories}
-          selectedRepositoryFullName={selectedRepositoryFullName}
-          onRepositoryChange={value => void setupRepositoryWorkspaceForSelection(value)}
-          repositoryLocked={isRepositoryLocked}
-          isLoadingRepositories={isLoadingInstalledRepositories || isSettingUpSession}
-          repositoryError={setupError}
-          stateBackends={stateBackends}
-          selectedStateBackendId={selectedStateBackendValue}
-          onStateBackendChange={value => void selectStateBackend(value)}
-          isLoadingStateBackends={isLoadingStateBackends}
-          stateBackendError={stateBackendError}
-          userHandoff={pendingUserHandoff}
-          onUserHandoffSubmit={handleUserHandoffSubmit}
-        />
-      </div>
       <div className="hidden min-h-0 min-w-0 overflow-hidden border-l border-slate-200 bg-white lg:block">
         {repository && isFilesystemOpen && (
           <FileSystemPanel

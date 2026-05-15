@@ -5,7 +5,6 @@ export type MessageRole = "user" | "assistant"
 
 export interface ChatAgent {
   id: "agent1"
-  mention: "@orchestrator"
   name: string
   avatar: string
   className: string
@@ -30,7 +29,7 @@ export interface UserHandoff {
   questions: UserHandoffQuestion[]
 }
 
-export type ToolCallStatus = "streaming" | "executing" | "complete"
+export type ToolCallStatus = "streaming" | "executing" | "complete" | "stopped"
 
 export type ToolProgressEntry =
   | string
@@ -52,6 +51,12 @@ export type MessageSegment =
   | { type: "text"; content: string }
   | { type: "tool"; toolCall: ToolCall }
 
+export interface CheckpointState {
+  restored?: boolean
+  saved?: boolean
+  error?: boolean
+}
+
 export interface Message {
   role: MessageRole
   content: string
@@ -60,6 +65,7 @@ export interface Message {
   agent?: ChatAgent
   attachments?: ChatAttachment[]
   segments?: MessageSegment[]
+  checkpoint?: CheckpointState
 }
 
 export type PullRequestInfo = {

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Wrench, Loader2, CheckCircle2, ChevronRight, ChevronDown, ExternalLink } from "lucide-react"
+import { Wrench, Loader2, CheckCircle2, ChevronRight, ChevronDown, ExternalLink, CircleStop } from "lucide-react"
 import type { ToolRenderProps } from "@/hooks/useToolRenderer"
 import type { ToolProgressEntry } from "./types"
 
@@ -26,7 +26,7 @@ export function parseDiagramResult(name: string, result?: string) {
   }
 }
 
-export function ToolCallDisplay({ name, args, status, progress, result }: ToolRenderProps) {
+export function ToolCallDisplay({ name, args, status, progress, result, agent }: ToolRenderProps) {
   const [expanded, setExpanded] = useState(false)
   const diagram = parseDiagramResult(name, result)
   const activity = normalizeProgress(progress)
@@ -43,6 +43,14 @@ export function ToolCallDisplay({ name, args, status, progress, result }: ToolRe
           <ChevronRight size={12} className="text-gray-400" />
         )}
         <Wrench size={12} className="text-gray-400" />
+        {agent && (
+          <span className="ml-0.5 inline-flex min-w-0 items-center gap-1.5">
+            <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold ${agent.className}`}>
+              {agent.avatar}
+            </span>
+            <span className="max-w-[160px] truncate text-xs font-medium text-slate-600">{agent.name}</span>
+          </span>
+        )}
         <span className="text-gray-600">{name}</span>
         {status === "streaming" && (
           <Loader2 size={12} className="animate-spin text-blue-500 ml-auto" />
@@ -51,9 +59,10 @@ export function ToolCallDisplay({ name, args, status, progress, result }: ToolRe
           <Loader2 size={12} className="animate-spin text-amber-500 ml-auto" />
         )}
         {status === "complete" && <CheckCircle2 size={12} className="text-green-500 ml-auto" />}
+        {status === "stopped" && <CircleStop size={12} className="text-slate-400 ml-auto" />}
       </button>
 
-      {activity.length > 0 && status !== "complete" && (
+      {activity.length > 0 && status !== "complete" && status !== "stopped" && (
         <div className="ml-6 mt-1 space-y-1 border-l-2 border-sky-100 pl-3 text-xs text-slate-500">
           {activity.slice(-3).map((item, index) => (
             <div key={`${index}-${item.phase}-${item.message}`} className="flex items-start gap-1.5">

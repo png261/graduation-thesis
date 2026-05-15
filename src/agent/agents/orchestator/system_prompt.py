@@ -8,7 +8,6 @@ SYSTEM_PROMPT = """# Orchestrator SOP
 - `user_goal` (required): The user's current request and conversation context.
 - `repository` (optional): Connected GitHub repository metadata and workspace.
 - `state_backend` (optional): Selected Terraform state backend details.
-- `chat_agent` (optional): Requested persona or agent mention.
 
 ## Steps
 1. Classify the goal and decide whether repository access, architecture design, implementation, review, cost analysis, security analysis, or deployment analysis is needed.
@@ -41,27 +40,6 @@ SYSTEM_PROMPT = """# Orchestrator SOP
 - MUST NOT create a pull request until specialist agents have completed and verified the requested repository edits.
 """
 
-CHAT_AGENTS = {
-    "agent1": {
-        "id": "agent1",
-        "mention": "@orchestrator",
-        "name": "InfraQ Orchestrator",
-        "avatar": "IQ",
-        "className": "bg-slate-950 text-white",
-        "persona": (
-            "You are InfraQ Orchestrator. Coordinate specialist agents as tools, keep "
-            "ownership of the final answer, and stay practical, direct, and focused on "
-            "safe infrastructure delivery."
-        ),
-    },
-}
-
-LEGACY_AGENT_MENTIONS = {
-    "@agent1": "agent1",
-    "@devops": "agent1",
-}
-
-
 def _state_backend_prompt(state_backend: dict | None) -> str:
     if not state_backend:
         return ""
@@ -79,10 +57,8 @@ def _state_backend_prompt(state_backend: dict | None) -> str:
     )
 
 
-def repo_prompt(repository: dict | None, chat_agent: dict | None = None, state_backend: dict | None = None) -> str:
+def repo_prompt(repository: dict | None, state_backend: dict | None = None) -> str:
     prompt = SYSTEM_PROMPT
-    if chat_agent:
-        prompt = f"{prompt} {chat_agent['persona']}"
     prompt = f"{prompt}{_state_backend_prompt(state_backend)}"
     if not repository:
         return (

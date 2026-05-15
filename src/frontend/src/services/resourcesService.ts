@@ -26,7 +26,7 @@ async function loadResourcesApiBaseUrl(): Promise<string> {
 
 async function request<T>(path: string, idToken: string, init?: RequestInit): Promise<T> {
   const baseUrl = await loadResourcesApiBaseUrl()
-  const response = await fetch(`${baseUrl}${path.replace(/^\//, "")}`, {
+  const response = await fetch(new URL(path.replace(/^\//, ""), baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).toString(), {
     ...init,
     headers: {
       "Content-Type": "application/json",

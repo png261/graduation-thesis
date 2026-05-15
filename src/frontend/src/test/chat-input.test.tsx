@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { ChatInput, NO_REPOSITORY_VALUE } from "@/components/chat/ChatInput"
-import { CHAT_AGENTS } from "@/components/chat/agents"
 
 const repositories = [
   {
@@ -19,33 +18,24 @@ const repositories = [
 ]
 
 describe("ChatInput", () => {
-  it("starts agent selection with @ and inserts an agent mention", () => {
-    const setInput = vi.fn()
-    const { rerender } = render(
+  it("renders an OpenAI-style rounded composer with icon controls", () => {
+    render(
       <ChatInput
-        input=""
-        setInput={setInput}
+        input="Run terraform plan"
+        setInput={vi.fn()}
         handleSubmit={vi.fn()}
         isLoading={false}
-        agents={CHAT_AGENTS}
+        repositories={repositories}
+        selectedRepositoryFullName={NO_REPOSITORY_VALUE}
+        onRepositoryChange={vi.fn()}
       />
     )
 
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "@" } })
-    expect(setInput).toHaveBeenCalledWith("@")
-
-    rerender(
-      <ChatInput
-        input="@"
-        setInput={setInput}
-        handleSubmit={vi.fn()}
-        isLoading={false}
-        agents={CHAT_AGENTS}
-      />
-    )
-
-    fireEvent.mouseDown(screen.getByRole("button", { name: /InfraQ Orchestrator/i }))
-    expect(setInput).toHaveBeenLastCalledWith("@orchestrator ")
+    expect(screen.getByRole("form", { name: "chat input" })).toHaveClass("rounded-[28px]")
+    expect(screen.getByRole("textbox")).toHaveClass("border-0", "bg-transparent")
+    expect(screen.getByRole("button", { name: "Attach file" })).toHaveClass("rounded-full")
+    expect(screen.getByRole("button", { name: "Send message" })).toHaveClass("h-9", "w-9", "rounded-full")
+    expect(screen.queryByText(/^Send$/)).not.toBeInTheDocument()
   })
 
   it("renders a GitHub repository selector and reports changes", () => {
@@ -56,7 +46,6 @@ describe("ChatInput", () => {
         setInput={vi.fn()}
         handleSubmit={vi.fn()}
         isLoading={false}
-        agents={CHAT_AGENTS}
         repositories={repositories}
         selectedRepositoryFullName={NO_REPOSITORY_VALUE}
         onRepositoryChange={onRepositoryChange}
@@ -76,7 +65,6 @@ describe("ChatInput", () => {
         setInput={vi.fn()}
         handleSubmit={vi.fn()}
         isLoading={false}
-        agents={CHAT_AGENTS}
         repositories={repositories}
         selectedRepositoryFullName="png261/hcp-terraform"
         onRepositoryChange={vi.fn()}
@@ -85,21 +73,58 @@ describe("ChatInput", () => {
     )
 
     expect(screen.getByRole("combobox", { name: "GitHub repository" })).toBeDisabled()
-    expect(screen.getByText("Repository locked")).toBeInTheDocument()
+    expect(screen.queryByText("Repository locked")).not.toBeInTheDocument()
+  })
+
+  it("compacts repository and state selectors for the filesystem layout", () => {
+    render(
+      <ChatInput
+        input=""
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+        repositories={repositories}
+        selectedRepositoryFullName="png261/hcp-terraform"
+        onRepositoryChange={vi.fn()}
+        stateBackends={[
+          {
+            backendId: "backend-prod",
+            name: "prod-state",
+            bucket: "tf-prod-state",
+            key: "env/prod/terraform.tfstate",
+            region: "us-east-1",
+            service: "s3",
+            repository: repositories[0],
+            createdAt: "2026-05-11T04:00:00.000Z",
+            updatedAt: "2026-05-11T04:00:00.000Z",
+          },
+        ]}
+        selectedStateBackendId="backend-prod"
+        onStateBackendChange={vi.fn()}
+        compactControls
+      />
+    )
+
+    const repositoryTrigger = screen.getByRole("combobox", { name: "GitHub repository" })
+    const stateTrigger = screen.getByRole("combobox", { name: "Terraform state backend" })
+    expect(repositoryTrigger).toHaveClass("w-9", "px-0")
+    expect(stateTrigger).toHaveClass("w-9", "px-0")
+    expect(repositoryTrigger).not.toHaveTextContent("png261/hcp-terraform")
+    expect(stateTrigger).not.toHaveTextContent("prod-state")
   })
 
   it("uses destructive red styling for the stop button while loading", () => {
-    render(
+    const { container } = render(
       <ChatInput
         input="Run terraform plan"
         setInput={vi.fn()}
         handleSubmit={vi.fn()}
         isLoading
         onStop={vi.fn()}
-        agents={CHAT_AGENTS}
       />
     )
 
     expect(screen.getByRole("button", { name: /stop/i })).toHaveClass("bg-red-600")
+    expect(container.querySelector("[style*='--border-width']")).not.toBeNull()
   })
 })

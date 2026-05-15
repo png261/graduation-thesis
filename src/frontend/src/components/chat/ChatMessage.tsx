@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { Check, Copy } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Check, Copy, Pencil } from "lucide-react"
 import { Message } from "./types"
 import { getToolRenderer } from "@/hooks/useToolRenderer"
 import { MarkdownRenderer } from "./MarkdownRenderer"
@@ -9,10 +9,137 @@ import { ShinyText } from "@/components/ui/shiny-text"
 
 interface ChatMessageProps {
   message: Message
+  canEdit?: boolean
+  editDisabledReason?: string
+  onEdit?: () => void
+}
+
+export const THINKING_WORDS = [
+  "beaming",
+  "booping",
+  "bouncing",
+  "brewing",
+  "bubbling",
+  "chasing",
+  "churning",
+  "coalescing",
+  "conjuring",
+  "cooking",
+  "crafting",
+  "crunching",
+  "cuddling",
+  "dancing",
+  "dazzling",
+  "discovering",
+  "doodling",
+  "dreaming",
+  "drifting",
+  "enchanting",
+  "exploring",
+  "finding",
+  "floating",
+  "fluttering",
+  "foraging",
+  "forging",
+  "frolicking",
+  "gathering",
+  "giggling",
+  "gliding",
+  "greeting",
+  "growing",
+  "hatching",
+  "herding",
+  "honking",
+  "hopping",
+  "hugging",
+  "humming",
+  "imagining",
+  "inventing",
+  "jingling",
+  "juggling",
+  "jumping",
+  "kindling",
+  "knitting",
+  "launching",
+  "leaping",
+  "mapping",
+  "marinating",
+  "meandering",
+  "mixing",
+  "moseying",
+  "munching",
+  "napping",
+  "nibbling",
+  "noodling",
+  "orbiting",
+  "painting",
+  "percolating",
+  "petting",
+  "plotting",
+  "pondering",
+  "popping",
+  "prancing",
+  "purring",
+  "puzzling",
+  "questing",
+  "riding",
+  "roaming",
+  "rolling",
+  "sauteeing",
+  "scribbling",
+  "seeking",
+  "shimmying",
+  "singing",
+  "skipping",
+  "sleeping",
+  "snacking",
+  "sniffing",
+  "snuggling",
+  "soaring",
+  "sparking",
+  "spinning",
+  "splashing",
+  "sprouting",
+  "squishing",
+  "stargazing",
+  "stirring",
+  "strolling",
+  "swimming",
+  "swinging",
+  "tickling",
+  "tinkering",
+  "toasting",
+  "tumbling",
+  "twirling",
+  "waddling",
+  "wandering",
+  "watching",
+  "weaving",
+  "whistling",
+  "wibbling",
+  "wiggling",
+  "wishing",
+  "wobbling",
+  "wondering",
+  "yawning",
+  "zooming",
+] as const
+
+const THINKING_WORD_INTERVAL_MS = 1400
+
+function randomThinkingWord(current?: string) {
+  let next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]
+  while (next === current) {
+    next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]
+  }
+  return next
 }
 
 export function ChatMessage({
   message,
+  canEdit = false,
+  editDisabledReason,
+  onEdit,
 }: ChatMessageProps) {
   const [copied, setCopied] = useState(false)
 
@@ -50,6 +177,7 @@ export function ChatMessage({
               status: seg.toolCall.status,
               progress: seg.toolCall.progress,
               result: seg.toolCall.result,
+              agent: message.agent,
             })}
           </div>
         )
@@ -65,17 +193,19 @@ export function ChatMessage({
   return (
     <div className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
       {message.role === "assistant" && message.agent && (
-        <div className="mb-1 flex items-center gap-2 px-1">
-          <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${message.agent.className}`}>
-            {message.agent.avatar}
+        <div className="mb-1 flex flex-wrap items-center gap-2 px-1">
+          <span className="inline-flex items-center gap-2">
+            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${message.agent.className}`}>
+              {message.agent.avatar}
+            </span>
+            <span className="text-xs font-medium text-slate-600">{message.agent.name}</span>
           </span>
-          <span className="text-xs font-medium text-slate-600">{message.agent.name}</span>
         </div>
       )}
       <div
         className={`max-w-[80%] break-words ${
           message.role === "user"
-            ? "rounded-lg rounded-br-none bg-slate-950 p-3 text-white whitespace-pre-wrap"
+            ? "rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-6 text-slate-950 whitespace-pre-wrap"
             : "text-slate-950"
         }`}
       >
@@ -89,7 +219,7 @@ export function ChatMessage({
                 {message.attachments.map(attachment => (
                   <div
                     key={attachment.id}
-                    className="max-w-[220px] overflow-hidden rounded-md border border-white/20 bg-white/10 text-xs"
+                    className="max-w-[220px] overflow-hidden rounded-2xl border border-slate-200 bg-white text-xs text-slate-700"
                   >
                     {attachment.type.startsWith("image/") ? (
                       <img
@@ -123,12 +253,33 @@ export function ChatMessage({
             </button>
           </div>
         )}
+        {message.role === "user" && onEdit && (
+          <button
+            type="button"
+            onClick={onEdit}
+            disabled={!canEdit}
+            className="ml-2 rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+            aria-label="Edit message"
+            title={!canEdit && editDisabledReason ? editDisabledReason : "Edit message"}
+          >
+            <Pencil size={14} />
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
 function ThinkingIndicator() {
+  const [word, setWord] = useState(() => randomThinkingWord())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setWord(current => randomThinkingWord(current))
+    }, THINKING_WORD_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [])
+
   return (
     <span
       className="inline-flex items-baseline px-1 text-sm font-medium text-slate-500"
@@ -136,7 +287,7 @@ function ThinkingIndicator() {
       aria-live="polite"
       aria-label="thinking"
     >
-      <ShinyText text="thinking" shineColor="#dd1616" speed={3.2} />
+      <ShinyText text={word} shineColor="#dd1616" speed={3.2} />
       <span className="relative ml-0.5 inline-block w-4 overflow-hidden align-baseline">
         <span className="animate-[thinking-dots_1.2s_steps(3,end)_infinite]">...</span>
       </span>

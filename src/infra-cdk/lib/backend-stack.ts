@@ -1800,14 +1800,10 @@ PY`,
       const relativePath = path.join(prefix, entry.name) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
       if (entry.isDirectory()) {
-        const isSkillReferencesDir = entry.name === "references" && relativePath.includes("skills/terrashark")
-        if (entry.name !== "__pycache__" && !isSkillReferencesDir) {
+        if (entry.name !== "__pycache__") {
           this.readDirRecursive(fullPath, relativePath, output)
         }
       } else if (entry.isFile()) {
-        if (entry.name === "LICENSE" && relativePath.includes("skills/terrashark")) {
-          continue
-        }
         const content = fs.readFileSync(fullPath)
         output[relativePath] = content.toString("base64")
       }

@@ -24,14 +24,6 @@ export type SelectedStateBackend = {
   repository?: SelectedRepository | null
 }
 
-export type ChatAgentPayload = {
-  id: "agent1"
-  mention: "@orchestrator"
-  name: string
-  avatar: string
-  className: string
-}
-
 export type ChatAttachmentPayload = {
   id: string
   name: string
@@ -62,7 +54,6 @@ export type StreamEvent =
   | { type: "lifecycle"; event: string }
   | { type: "pull_request"; pullRequest: unknown }
   | { type: "session_title"; title: string }
-  | { type: "agent"; agent: ChatAgentPayload }
   | { type: "user_handoff"; handoff: UserHandoffPayload }
 
 /** Callback invoked with each stream event */

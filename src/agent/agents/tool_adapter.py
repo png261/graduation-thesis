@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 from strands import Agent, ToolContext, tool
 
+from agents.cancellation import registered_agent
 from agents.runtime import AgentRuntimeTools
 
 
@@ -35,6 +36,7 @@ def create_agent_text_tool(
     @tool(name=name, description=description, context=True)
     async def specialist_agent(input: str, tool_context: ToolContext):
         agent = create_agent(model, runtime_tools, trace_attributes)
+        session_id = str(trace_attributes.get("session.id") or "")
         specialist_input = _with_original_user_prompt(
             original_user_prompt=tool_context.agent.state.get("original_user_prompt"),
             original_context=tool_context.agent.state.get("original_user_context"),
@@ -47,31 +49,32 @@ def create_agent_text_tool(
         last_text_progress_length = 0
         yielded_thinking = False
         stream_kwargs = {"structured_output_model": output_model} if output_model is not None else {}
-        async for event in agent.stream_async(specialist_input, **stream_kwargs):
-            event_dict = dict(event)
-            if "result" in event_dict:
-                result = event_dict["result"]
-                continue
+        with registered_agent(session_id, agent):
+            async for event in agent.stream_async(specialist_input, **stream_kwargs):
+                event_dict = dict(event)
+                if "result" in event_dict:
+                    result = event_dict["result"]
+                    continue
 
-            if isinstance(event_dict.get("data"), str):
-                text_buffer += event_dict["data"]
-                if len(text_buffer) - last_text_progress_length >= 160:
-                    last_text_progress_length = len(text_buffer)
-                    preview = _tail_preview(text_buffer)
-                    yield _progress("text", preview)
-                continue
+                if isinstance(event_dict.get("data"), str):
+                    text_buffer += event_dict["data"]
+                    if len(text_buffer) - last_text_progress_length >= 160:
+                        last_text_progress_length = len(text_buffer)
+                        preview = _tail_preview(text_buffer)
+                        yield _progress("text", preview)
+                    continue
 
-            tool_use = event_dict.get("current_tool_use")
-            if isinstance(tool_use, dict):
-                tool_name = str(tool_use.get("name") or "tool")
-                yield _progress("tool", f"{name} is using {tool_name}")
-                continue
+                tool_use = event_dict.get("current_tool_use")
+                if isinstance(tool_use, dict):
+                    tool_name = str(tool_use.get("name") or "tool")
+                    yield _progress("tool", f"{name} is using {tool_name}")
+                    continue
 
-            if (
-                event_dict.get("init_event_loop") or event_dict.get("start_event_loop")
-            ) and not yielded_thinking:
-                yielded_thinking = True
-                yield _progress("thinking", f"{name} is thinking")
+                if (
+                    event_dict.get("init_event_loop") or event_dict.get("start_event_loop")
+                ) and not yielded_thinking:
+                    yielded_thinking = True
+                    yield _progress("thinking", f"{name} is thinking")
 
         pending_handoff = agent.state.get("pending_user_handoff")
         if pending_handoff:

@@ -875,7 +875,7 @@ export function FileSystemPanel({
   }, [])
 
   return (
-    <aside className="flex h-full min-w-0 flex-col border-l border-slate-200 bg-white pb-36">
+    <aside className="flex h-full min-w-0 flex-col border-l border-slate-200 bg-white">
       {error && (
         <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-700">
           {error}

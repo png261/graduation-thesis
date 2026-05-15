@@ -1,13 +1,23 @@
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
-import type { ChatAgent, ChatSession } from "@/components/chat/types"
+import type { ChatSession } from "@/components/chat/types"
 import type { SelectedRepository } from "@/lib/agentcore-client/types"
 import {
+  AwsCredentialMetadata,
+  DriftGuard,
   getUserConfig,
   GitHubPullRequestStatus,
+  ResourceScan,
+  StateBackend,
+  StateBackendResource,
   deleteChatSession,
   listChatSessions,
+  listAwsCredentials,
+  listDriftGuards,
   listGitHubPullRequests,
+  listResourceScans,
+  listStateBackendResources,
+  listStateBackends,
   saveChatSessions,
   saveUserConfig,
 } from "@/services/resourcesService"
@@ -17,6 +27,14 @@ type PullRequestState = "open" | "closed" | "merged" | "all"
 type PullRequestCacheEntry = {
   items: GitHubPullRequestStatus[]
   fetchedAt: number
+}
+
+type ResourceCatalogData = {
+  backends: StateBackend[]
+  stateResources: StateBackendResource[]
+  scans: ResourceScan[]
+  guards: DriftGuard[]
+  credentials: AwsCredentialMetadata[]
 }
 
 type ChatSessionsPayload = {
@@ -35,15 +53,17 @@ type WebAppStore = {
   activeSessionId: string
   newChatRequestId: number
   repositoryChatRequest: RepositoryChatRequest | null
-  selectedAgentId: ChatAgent["id"]
   chatSessionsLoadedFor: string
   selectedRepository: SelectedRepository | null
   userConfigLoadedFor: string
   pullRequestsByKey: Record<string, PullRequestCacheEntry>
+  resourceCatalog: ResourceCatalogData
+  resourceCatalogLoadedFor: string
+  resourceCatalogFetchedAt: number
+  isResourceCatalogLoading: boolean
   setSessions: (sessions: ChatSession[]) => void
   setActiveSessionId: (activeSessionId: string) => void
   requestNewChat: () => void
-  setSelectedAgentId: (selectedAgentId: ChatAgent["id"]) => void
   requestRepositoryChat: (repository: SelectedRepository, prompt: string) => void
   upsertSession: (session: ChatSession) => void
   deleteSession: (sessionId: string) => void
@@ -60,9 +80,22 @@ type WebAppStore = {
     idToken: string,
     options?: { force?: boolean }
   ) => Promise<GitHubPullRequestStatus[]>
+  setResourceCatalog: (
+    updater: ResourceCatalogData | ((current: ResourceCatalogData) => ResourceCatalogData),
+    idToken?: string
+  ) => void
+  loadResourceCatalog: (idToken: string, options?: { force?: boolean }) => Promise<ResourceCatalogData>
 }
 
 const cacheKey = (repository: string, state: PullRequestState) => `${repository}::${state}`
+
+const emptyResourceCatalog = (): ResourceCatalogData => ({
+  backends: [],
+  stateResources: [],
+  scans: [],
+  guards: [],
+  credentials: [],
+})
 
 function createEmptyChatSession(): ChatSession {
   const now = new Date().toISOString()
@@ -110,22 +143,23 @@ export const useWebAppStore = create<WebAppStore>()(
       activeSessionId: "",
       newChatRequestId: 0,
       repositoryChatRequest: null,
-      selectedAgentId: "agent1",
       chatSessionsLoadedFor: "",
       selectedRepository: null,
       userConfigLoadedFor: "",
       pullRequestsByKey: {},
+      resourceCatalog: emptyResourceCatalog(),
+      resourceCatalogLoadedFor: "",
+      resourceCatalogFetchedAt: 0,
+      isResourceCatalogLoading: false,
       setSessions: sessions => set({ sessions }),
       setActiveSessionId: activeSessionId => set({ activeSessionId }),
-      setSelectedAgentId: selectedAgentId => set({ selectedAgentId }),
       requestNewChat: () =>
         set(state => {
-          const existingEmptySession = state.sessions.find(isEmptyNewChatSession)
-          const nextSession = existingEmptySession ?? createEmptyChatSession()
+          const nextSession = createEmptyChatSession()
           return {
             sessions: [
               nextSession,
-              ...state.sessions.filter(session => session.id !== nextSession.id),
+              ...state.sessions,
             ],
             activeSessionId: nextSession.id,
             newChatRequestId: Date.now(),
@@ -250,6 +284,52 @@ export const useWebAppStore = create<WebAppStore>()(
         }))
         return items
       },
+      setResourceCatalog: (updater, idToken) =>
+        set(state => ({
+          resourceCatalog: typeof updater === "function" ? updater(state.resourceCatalog) : updater,
+          resourceCatalogLoadedFor: idToken ?? state.resourceCatalogLoadedFor,
+          resourceCatalogFetchedAt: Date.now(),
+        })),
+      loadResourceCatalog: async (idToken, options = {}) => {
+        const state = get()
+        if (!options.force && state.resourceCatalogLoadedFor === idToken) {
+          return state.resourceCatalog
+        }
+
+        set({ isResourceCatalogLoading: true })
+        try {
+          const [backends, scans, guards, credentialsResponse] = await Promise.all([
+            listStateBackends(idToken),
+            listResourceScans(idToken),
+            listDriftGuards(idToken),
+            listAwsCredentials(idToken).catch(() => ({ credentials: [], activeCredentialId: "" })),
+          ])
+          const stateResources = (
+            await Promise.all(
+              backends.map(backend =>
+                listStateBackendResources(backend.backendId, idToken).catch(() => [] as StateBackendResource[])
+              )
+            )
+          ).flat()
+          const resourceCatalog = {
+            backends,
+            stateResources,
+            scans,
+            guards,
+            credentials: credentialsResponse.credentials,
+          }
+          set({
+            resourceCatalog,
+            resourceCatalogLoadedFor: idToken,
+            resourceCatalogFetchedAt: Date.now(),
+            isResourceCatalogLoading: false,
+          })
+          return resourceCatalog
+        } catch (error) {
+          set({ isResourceCatalogLoading: false })
+          throw error
+        }
+      },
     }),
     {
       name: "agentcore:web-app-store",
@@ -257,7 +337,6 @@ export const useWebAppStore = create<WebAppStore>()(
       partialize: state => ({
         sessions: state.sessions,
         activeSessionId: state.activeSessionId,
-        selectedAgentId: state.selectedAgentId,
         selectedRepository: state.selectedRepository,
         pullRequestsByKey: state.pullRequestsByKey,
       }),

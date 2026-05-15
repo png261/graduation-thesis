@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { ToolCallDisplay, parseDiagramResult } from "@/components/chat/ToolCallDisplay"
 
@@ -16,10 +16,18 @@ describe("ToolCallDisplay", () => {
           { phase: "completed", message: "architect_agent completed" },
         ]}
         result="Minimal architecture output"
+        agent={{
+          id: "agent1",
+          name: "InfraQ Orchestrator",
+          avatar: "IQ",
+          className: "bg-slate-950 text-white",
+        }}
       />
     )
 
     expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
+    expect(screen.getByText("IQ")).toBeInTheDocument()
+    expect(screen.getByText("InfraQ Orchestrator")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: /architect_agent/i }))
 
@@ -57,6 +65,23 @@ describe("ToolCallDisplay", () => {
       "href",
       "https://example.com/diagram.svg?signature=test"
     )
+  })
+
+  it("does not keep progress spinners visible for stopped tools", () => {
+    const { container } = render(
+      <ToolCallDisplay
+        name="engineer_agent"
+        args='{"input":"Fix the app"}'
+        status="stopped"
+        progress={[
+          { phase: "started", message: "engineer_agent started" },
+          { phase: "thinking", message: "engineer_agent is thinking" },
+        ]}
+      />
+    )
+
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument()
+    expect(screen.queryByText("engineer_agent started")).not.toBeInTheDocument()
   })
 
   it("does not accept legacy embedded data URLs as diagram display input", () => {

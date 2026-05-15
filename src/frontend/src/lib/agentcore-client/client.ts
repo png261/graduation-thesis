@@ -1,4 +1,4 @@
-import type { AgentCoreConfig, ChatAgentPayload, ChatAttachmentPayload, ChunkParser, SelectedRepository, SelectedStateBackend, StreamCallback } from "./types"
+import type { AgentCoreConfig, ChatAttachmentPayload, ChunkParser, SelectedRepository, SelectedStateBackend, StreamCallback } from "./types"
 import { parseStrandsChunk } from "./parsers/strands"
 import { readSSEStream } from "./utils/sse"
 
@@ -23,7 +23,6 @@ export class AgentCoreClient {
     accessToken: string,
     onEvent: StreamCallback,
     repository?: SelectedRepository | null,
-    agent?: ChatAgentPayload | null,
     attachments?: ChatAttachmentPayload[],
     stateBackend?: SelectedStateBackend | null,
     signal?: AbortSignal
@@ -41,7 +40,6 @@ export class AgentCoreClient {
       prompt: query,
       runtimeSessionId: sessionId,
       repository,
-      agent,
       attachments,
       stateBackend,
     }
@@ -67,6 +65,36 @@ export class AgentCoreClient {
     }
 
     await readSSEStream(response, this.parser, onEvent)
+  }
+
+  async cancelSession(sessionId: string, accessToken: string): Promise<void> {
+    if (!accessToken) throw new Error("No valid access token found.")
+    if (!this.runtimeArn) throw new Error("Agent Runtime ARN not configured.")
+
+    const endpoint = `https://bedrock-agentcore.${this.region}.amazonaws.com`
+    const escapedArn = encodeURIComponent(this.runtimeArn)
+    const url = `${endpoint}/runtimes/${escapedArn}/invocations?qualifier=DEFAULT`
+    const traceId = `1-${Math.floor(Date.now() / 1000).toString(16)}-${crypto.randomUUID()}`
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Amzn-Trace-Id": traceId,
+        "Content-Type": "application/json",
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": sessionId,
+      },
+      body: JSON.stringify({
+        prompt: "cancelSession",
+        runtimeSessionId: sessionId,
+        controlAction: "cancelSession",
+      }),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
+    }
   }
 
   async githubAction(

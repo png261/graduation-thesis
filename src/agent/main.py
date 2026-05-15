@@ -22,11 +22,17 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
 )
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from strands import Agent, ToolContext, tool
+
+try:
+    from strands import Snapshot
+except ImportError:
+    Snapshot = None
 from strands.models import OpenAIModel
 from openai import AsyncOpenAI
 from strands_tools import file_read, file_write
 from strands_tools.swarm import swarm as strands_swarm
 from agents.artifacts import session_artifact_dir
+from agents.cancellation import cancel_session_agents, registered_agent
 from agents.iac_tools import (
     checkov_scan,
     infracost_breakdown,
@@ -36,7 +42,6 @@ from agents.iac_tools import (
     tflint_scan,
 )
 from agents.orchestator.agent import create_agent as create_orchestrator_agent
-from agents.orchestator.system_prompt import CHAT_AGENTS, LEGACY_AGENT_MENTIONS
 from agents.orchestator.tools.gateway import create_gateway_mcp_client
 from agents.orchestator.tools.opentofu_mcp import create_opentofu_mcp_client
 from agents.orchestator.tools.safe_diagram import diagram as safe_diagram
@@ -59,28 +64,6 @@ logger = logging.getLogger(__name__)
 
 app = BedrockAgentCoreApp()
 MAX_FILE_PREVIEW_BYTES = int(os.environ.get("MAX_FILE_PREVIEW_BYTES", str(1024 * 1024)))
-
-
-def _public_agent(agent: dict) -> dict:
-    return {key: agent[key] for key in ["id", "mention", "name", "avatar", "className"]}
-
-
-def _select_chat_agent(payload_agent: dict | None, prompt: str) -> dict:
-    if isinstance(payload_agent, dict):
-        agent_id = str(payload_agent.get("id") or "").strip()
-        if agent_id in CHAT_AGENTS:
-            return CHAT_AGENTS[agent_id]
-
-    for agent in CHAT_AGENTS.values():
-        if re.search(rf"(^|\s){re.escape(agent['mention'])}(?=\s|$)", prompt or ""):
-            return agent
-
-    for mention, agent_id in LEGACY_AGENT_MENTIONS.items():
-        if re.search(rf"(^|\s){re.escape(mention)}(?=\s|$)", prompt or ""):
-            return CHAT_AGENTS[agent_id]
-
-    return CHAT_AGENTS["agent1"]
-
 
 def _session_title_from_agent_response(response_text: str) -> str:
     text = re.sub(r"`([^`]+)`", r"\1", response_text or "")
@@ -463,6 +446,85 @@ def _json_safe_context(value):
     return value
 
 
+def _snapshot_checkpoints_enabled() -> bool:
+    return os.environ.get("AGENT_SNAPSHOT_CHECKPOINTS", "true").lower() != "false"
+
+
+def _snapshot_checkpoint_path(session_id: str) -> Path | None:
+    if not _snapshot_checkpoints_enabled():
+        return None
+    try:
+        checkpoint_dir = session_artifact_dir(session_id, "checkpoints", shared_files_base_path())
+        if checkpoint_dir is None:
+            return None
+        return Path(checkpoint_dir) / "latest.json"
+    except Exception:
+        logger.exception("Failed to resolve snapshot checkpoint path for session %s", session_id)
+        return None
+
+
+def _snapshot_to_dict(snapshot) -> dict | None:
+    if isinstance(snapshot, dict):
+        return snapshot
+    to_dict = getattr(snapshot, "to_dict", None)
+    if callable(to_dict):
+        data = to_dict()
+        return data if isinstance(data, dict) else None
+    return None
+
+
+def _load_agent_checkpoint(agent: Agent, session_id: str) -> bool:
+    path = _snapshot_checkpoint_path(session_id)
+    if path is None or not path.exists():
+        return False
+    load_snapshot = getattr(agent, "load_snapshot", None)
+    if not callable(load_snapshot):
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        snapshot = Snapshot.from_dict(data) if Snapshot is not None and hasattr(Snapshot, "from_dict") else data
+        load_snapshot(snapshot)
+        return True
+    except Exception:
+        logger.exception("Failed to load snapshot checkpoint from %s", path)
+        return False
+
+
+def _save_agent_checkpoint(
+    agent: Agent,
+    session_id: str,
+    *,
+    user_id: str,
+    label: str,
+) -> str | None:
+    path = _snapshot_checkpoint_path(session_id)
+    take_snapshot = getattr(agent, "take_snapshot", None)
+    if path is None or not callable(take_snapshot):
+        return None
+    try:
+        snapshot = take_snapshot(
+            preset="session",
+            include=["system_prompt"],
+            app_data={
+                "checkpoint_label": label,
+                "session_id": session_id,
+                "user_id": user_id,
+                "saved_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+        )
+    except TypeError:
+        snapshot = take_snapshot(preset="session")
+    try:
+        data = _snapshot_to_dict(snapshot)
+        if data is None:
+            return None
+        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        return str(path)
+    except Exception:
+        logger.exception("Failed to save snapshot checkpoint to %s", path)
+        return None
+
+
 def _empty_agent_response_message(saved_attachments: list[dict]) -> str:
     if any(_attachment_image_format(item["type"], item["name"]) for item in saved_attachments):
         return (
@@ -660,6 +722,7 @@ def _create_session_manager(
         session_id=session_id,
         actor_id=user_id,
         retrieval_config=retrieval_config,
+        batch_size=_memory_batch_size(),
     )
     return AgentCoreMemorySessionManager(
         agentcore_memory_config=config,
@@ -667,14 +730,31 @@ def _create_session_manager(
     )
 
 
+def _memory_batch_size() -> int:
+    raw_value = os.environ.get("MEMORY_BATCH_SIZE", "10")
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        logger.warning("Invalid MEMORY_BATCH_SIZE=%r; using 10", raw_value)
+        return 10
+
+
+def _close_session_manager(session_manager: AgentCoreMemorySessionManager | None) -> None:
+    if session_manager is None:
+        return
+    close = getattr(session_manager, "close", None)
+    if callable(close):
+        close()
+
+
 def create_strands_agent(
     user_id: str,
     session_id: str,
     repository: dict | None = None,
-    chat_agent: dict | None = None,
     state_backend: dict | None = None,
     pull_request_results: list[dict] | None = None,
     handoff_results: list[dict] | None = None,
+    session_manager: AgentCoreMemorySessionManager | None = None,
 ) -> Agent:
     """Create a Strands agent with Gateway tools and memory."""
 
@@ -696,7 +776,7 @@ def create_strands_agent(
         params={"temperature": 0.1},
     )
 
-    session_manager = _create_session_manager(user_id, session_id)
+    session_manager = session_manager or _create_session_manager(user_id, session_id)
 
     create_pull_request_tool = None
     if repository is not None and pull_request_results is not None:
@@ -722,7 +802,6 @@ def create_strands_agent(
     return create_orchestrator_agent(
         model=openai_model,
         repository=repository,
-        chat_agent=chat_agent,
         state_backend=state_backend,
         runtime_tools=runtime_tools,
         session_manager=session_manager,
@@ -749,8 +828,14 @@ async def invocations(payload, context: RequestContext):
         }
         return
 
+    session_manager: AgentCoreMemorySessionManager | None = None
+    agent: Agent | None = None
     try:
         user_id = extract_user_id_from_context(context)
+        if payload.get("controlAction") == "cancelSession":
+            yield {"status": "ok", "cancelledAgents": cancel_session_agents(session_id)}
+            return
+
         github_action = payload.get("githubAction")
         if github_action == "listInstalledRepositories":
             yield {"status": "ok", **list_installed_repositories()}
@@ -903,33 +988,36 @@ async def invocations(payload, context: RequestContext):
             }
             return
 
-        chat_agent = _select_chat_agent(payload.get("agent"), user_query)
-        yield {"chatAgent": _public_agent(chat_agent)}
-
         pull_request_results: list[dict] = []
         handoff_results: list[dict] = []
+        session_manager = _create_session_manager(user_id, session_id)
         agent = create_strands_agent(
             user_id,
             session_id,
             repository,
-            chat_agent,
             state_backend,
             pull_request_results,
             handoff_results,
+            session_manager=session_manager,
         )
         saved_attachments = _save_prompt_attachments(payload.get("attachments"), session_id)
         agent_query = _prompt_with_attachment_content_blocks(user_query, saved_attachments)
+        restored_checkpoint = _load_agent_checkpoint(agent, session_id)
+        if restored_checkpoint:
+            yield {"lifecycle": "checkpoint_restored"}
         agent.state.set("original_user_prompt", user_query)
         agent.state.set("original_user_context", _json_safe_context(agent_query))
+        _save_agent_checkpoint(agent, session_id, user_id=user_id, label="before_invocation")
 
         assistant_chunks = []
-        async for event in agent.stream_async(agent_query):
-            event_dict = dict(event)
-            if isinstance(event_dict.get("data"), str):
-                assistant_chunks.append(event_dict["data"])
-            compact_event = _compact_stream_event(event_dict)
-            if compact_event is not None:
-                yield compact_event
+        with registered_agent(session_id, agent):
+            async for event in agent.stream_async(agent_query):
+                event_dict = dict(event)
+                if isinstance(event_dict.get("data"), str):
+                    assistant_chunks.append(event_dict["data"])
+                compact_event = _compact_stream_event(event_dict)
+                if compact_event is not None:
+                    yield compact_event
 
         if not "".join(assistant_chunks).strip() and not handoff_results:
             fallback_message = _empty_agent_response_message(saved_attachments)
@@ -946,9 +1034,17 @@ async def invocations(payload, context: RequestContext):
         if handoff_results:
             yield {"userHandoff": handoff_results[-1]}
 
+        checkpoint_path = _save_agent_checkpoint(agent, session_id, user_id=user_id, label="after_invocation")
+        if checkpoint_path:
+            yield {"lifecycle": "checkpoint_saved"}
+
     except Exception as e:
         logger.exception("Agent run failed")
+        if session_id and agent is not None:
+            _save_agent_checkpoint(agent, session_id, user_id=user_id if "user_id" in locals() else "", label="error")
         yield {"status": "error", "error": str(e)}
+    finally:
+        _close_session_manager(session_manager)
 
 
 if __name__ == "__main__":

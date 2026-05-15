@@ -10,6 +10,7 @@ from agents.orchestator.tool import SPECIALIST_TOOL_FACTORIES, create_tools as c
 from agents.reviewer.config import TOOL_NAMES as REVIEWER_TOOLS
 from agents.runtime import AgentRuntimeTools
 from agents.security_prover.config import TOOL_NAMES as SECURITY_TOOLS
+from agents.skills.terrashark_plugin import TERRASHARK_SKILL_DIR, create_terrashark_plugin
 
 
 class RuntimeToolAssignmentTests(unittest.TestCase):
@@ -87,6 +88,26 @@ class RuntimeToolAssignmentTests(unittest.TestCase):
         for tool_names in all_tool_sets:
             self.assertNotIn("shell", tool_names)
         self.assertNotIn("shell", AgentRuntimeTools.__dataclass_fields__)
+
+    def test_terrashark_is_a_skill_plugin_not_runtime_tool(self):
+        all_tool_sets = (
+            ORCHESTRATOR_TOOLS,
+            ARCHITECT_TOOLS,
+            ENGINEER_TOOLS,
+            REVIEWER_TOOLS,
+            COST_TOOLS,
+            SECURITY_TOOLS,
+            DEVOPS_TOOLS,
+        )
+        for tool_names in all_tool_sets:
+            self.assertNotIn("terrashark", tool_names)
+        self.assertNotIn("terrashark", AgentRuntimeTools.__dataclass_fields__)
+
+        plugin = create_terrashark_plugin()
+        available_skills = plugin.get_available_skills()
+        self.assertEqual([skill.name for skill in available_skills], ["terrashark"])
+        self.assertTrue((TERRASHARK_SKILL_DIR / "SKILL.md").is_file())
+        self.assertTrue((TERRASHARK_SKILL_DIR / "references" / "identity-churn.md").is_file())
 
 
 if __name__ == "__main__":

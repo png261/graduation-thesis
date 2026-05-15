@@ -12,6 +12,7 @@ from agents.engineer.output import EngineerOutput
 from agents.reviewer.output import ReviewerOutput
 from agents.security_prover.output import SecurityProverOutput
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT, SpecialistResponse
+from agents.cancellation import cancel_session_agents
 from agents.tool_adapter import create_agent_text_tool
 
 
@@ -33,6 +34,21 @@ class DummyAgent:
     async def stream_async(self, input_text, **kwargs):
         self.input_text = input_text
         self.stream_kwargs = kwargs
+        yield {"result": DummyResult(DummyOutput(status="complete", summary="done"))}
+
+
+class BlockingAgent:
+    def __init__(self, release):
+        self.release = release
+        self.cancelled = False
+        self.state = {}
+
+    def cancel(self):
+        self.cancelled = True
+
+    async def stream_async(self, input_text, **kwargs):
+        yield {"init_event_loop": True}
+        await self.release.wait()
         yield {"result": DummyResult(DummyOutput(status="complete", summary="done"))}
 
 
@@ -159,6 +175,49 @@ class SpecialistStructuredOutputTests(unittest.TestCase):
         self.assertTrue(invocation_state["stop_event_loop"])
         self.assertEqual(payload["status"], "needs_input")
         self.assertEqual(payload["handoff_questions"], ["Which region should I use?"])
+
+    def test_adapter_registers_specialist_agent_for_session_cancellation(self):
+        async def run_test():
+            release = asyncio.Event()
+            dummy_agent = BlockingAgent(release)
+            tool = create_agent_text_tool(
+                name="dummy_agent",
+                description="Dummy",
+                create_agent=lambda model, runtime_tools, trace_attributes: dummy_agent,
+                model=None,
+                runtime_tools=None,
+                trace_attributes={"session.id": "session-cancel"},
+                output_model=DummyOutput,
+            )
+            tool_context = SimpleNamespace(
+                agent=SimpleNamespace(
+                    state=SimpleNamespace(
+                        get=lambda key: "original" if key == "original_user_prompt" else None,
+                        set=lambda key, value: None,
+                    )
+                ),
+                invocation_state={},
+            )
+
+            gen = tool.__wrapped__("delegated", tool_context)
+            self.assertEqual(
+                await gen.__anext__(),
+                {"specialistToolProgress": {"phase": "started", "message": "dummy_agent started"}},
+            )
+            self.assertEqual(
+                await gen.__anext__(),
+                {"specialistToolProgress": {"phase": "thinking", "message": "dummy_agent is thinking"}},
+            )
+            self.assertEqual(cancel_session_agents("session-cancel"), 1)
+            self.assertTrue(dummy_agent.cancelled)
+            release.set()
+            chunks = []
+            async for chunk in gen:
+                chunks.append(chunk)
+            self.assertTrue(chunks)
+            self.assertEqual(cancel_session_agents("session-cancel"), 0)
+
+        asyncio.run(run_test())
 
     def test_all_specialist_output_models_share_common_contract(self):
         for model in (

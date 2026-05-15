@@ -5,6 +5,7 @@ import { AppSidebar } from "@/components/layout/AppSidebar"
 import ResourceCatalogPage from "@/routes/ResourceCatalogPage"
 import PullRequestsPage from "@/routes/PullRequestsPage"
 import AppRoutes from "@/routes"
+import { useWebAppStore } from "@/stores/webAppStore"
 
 const authState = vi.hoisted(() => ({
   isAuthenticated: true,
@@ -32,6 +33,8 @@ const storeActions = vi.hoisted(() => ({
   hydrateUserConfig: vi.fn(async () => undefined),
   persistSelectedRepository: vi.fn(async () => undefined),
   loadPullRequests: vi.fn(),
+  loadResourceCatalog: vi.fn(),
+  setResourceCatalog: vi.fn(),
 }))
 
 const resourceMocks = vi.hoisted(() => ({
@@ -68,49 +71,122 @@ vi.mock("@/components/chat/ChatInterface", () => ({
   default: () => <div data-testid="chat-interface">Chat Interface</div>,
 }))
 
-vi.mock("@/stores/webAppStore", () => {
-  const getState = () => ({
-      sessions: [
+vi.mock("@/stores/webAppStore", async () => {
+  const { create } = await vi.importActual<typeof import("zustand")>("zustand")
+  type MockCatalog = {
+    backends: Array<{ backendId: string }>
+    stateResources: unknown[]
+    scans: unknown[]
+    guards: unknown[]
+    credentials: unknown[]
+  }
+  type MockState = Record<string, unknown> & {
+    resourceCatalog: MockCatalog
+    resourceCatalogLoadedFor: string
+    resourceCatalogFetchedAt: number
+    isResourceCatalogLoading: boolean
+  }
+  const selectedRepository = {
+    owner: "png261",
+    name: "hcp-terraform",
+    fullName: "png261/hcp-terraform",
+    defaultBranch: "main",
+  }
+  const initialSessions = [
+    {
+      id: "session-1",
+      name: "Dev chat",
+      history: [],
+      startDate: "2026-05-15T01:00:00.000Z",
+      endDate: "2026-05-15T01:00:00.000Z",
+      repository: null,
+      pullRequest: null,
+    },
+    {
+      id: "session-pr-42",
+      name: "Fix drift",
+      history: [
         {
-          id: "session-1",
-          name: "Dev chat",
-          history: [],
-          startDate: "2026-05-15T01:00:00.000Z",
-          endDate: "2026-05-15T01:00:00.000Z",
-          repository: null,
-          pullRequest: null,
-        },
-        {
-          id: "session-pr-42",
-          name: "Fix drift",
-          history: [],
-          startDate: "2026-05-15T01:20:00.000Z",
-          endDate: "2026-05-15T01:25:00.000Z",
-          repository: {
-            owner: "png261",
-            name: "hcp-terraform",
-            fullName: "png261/hcp-terraform",
-            defaultBranch: "main",
-          },
-          pullRequest: {
-            number: 42,
-            url: "https://github.com/png261/hcp-terraform/pull/42",
-          },
+          role: "user",
+          content: "Fix policy compliance issue. Scan ID: scan-prod. State backend: s3://tf-prod-state/env/prod/terraform.tfstate. Resource: aws_s3_bucket.logs. Policy: S3 encryption required.",
+          timestamp: "2026-05-15T01:20:00.000Z",
         },
       ],
-      activeSessionId: "session-1",
-      selectedRepository: {
-        owner: "png261",
-        name: "hcp-terraform",
-        fullName: "png261/hcp-terraform",
-        defaultBranch: "main",
+      startDate: "2026-05-15T01:20:00.000Z",
+      endDate: "2026-05-15T01:25:00.000Z",
+      repository: selectedRepository,
+      pullRequest: {
+        number: 42,
+        url: "https://github.com/png261/hcp-terraform/pull/42",
       },
+    },
+  ]
+  const emptyCatalog = () => ({
+    backends: [],
+    stateResources: [],
+    scans: [],
+    guards: [],
+    credentials: [],
+  })
+  const useWebAppStore = create<MockState>((set, get) => ({
+      sessions: [
+        ...initialSessions,
+      ],
+      activeSessionId: "session-1",
+      selectedRepository,
       pullRequestsByKey: {},
-      ...storeActions,
-    })
-  const useWebAppStore = ((selector: (state: Record<string, unknown>) => unknown) =>
-    selector(getState())) as any
-  useWebAppStore.getState = getState
+      resourceCatalog: emptyCatalog(),
+      resourceCatalogLoadedFor: "",
+      resourceCatalogFetchedAt: 0,
+      isResourceCatalogLoading: false,
+      requestNewChat: storeActions.requestNewChat,
+      requestRepositoryChat: storeActions.requestRepositoryChat,
+      setActiveSessionId: storeActions.setActiveSessionId,
+      deleteChatSession: storeActions.deleteChatSession,
+      hydrateChatSessions: storeActions.hydrateChatSessions,
+      hydrateUserConfig: storeActions.hydrateUserConfig,
+      persistSelectedRepository: storeActions.persistSelectedRepository,
+      loadPullRequests: storeActions.loadPullRequests,
+      setResourceCatalog: (updater: MockCatalog | ((current: MockCatalog) => MockCatalog), idToken?: string) => {
+        storeActions.setResourceCatalog(updater, idToken)
+        set((state: MockState) => ({
+          resourceCatalog: typeof updater === "function" ? updater(state.resourceCatalog) : updater,
+          resourceCatalogLoadedFor: idToken ?? state.resourceCatalogLoadedFor,
+          resourceCatalogFetchedAt: Date.now(),
+        }))
+      },
+      loadResourceCatalog: async (idToken: string, options: { force?: boolean } = {}) => {
+        storeActions.loadResourceCatalog(idToken, options)
+        const state = get()
+        if (!options.force && state.resourceCatalogLoadedFor === idToken) {
+          return state.resourceCatalog
+        }
+        set({ isResourceCatalogLoading: true })
+        const [backends, scans, guards, credentialsResponse] = await Promise.all([
+          resourceMocks.listStateBackends(idToken),
+          resourceMocks.listResourceScans(idToken),
+          resourceMocks.listDriftGuards(idToken),
+          resourceMocks.listAwsCredentials(idToken),
+        ])
+        const stateResources = (
+          await Promise.all(backends.map((item: { backendId: string }) => resourceMocks.listStateBackendResources(item.backendId, idToken)))
+        ).flat()
+        const resourceCatalog = {
+          backends,
+          stateResources,
+          scans,
+          guards,
+          credentials: credentialsResponse.credentials,
+        }
+        set({
+          resourceCatalog,
+          resourceCatalogLoadedFor: idToken,
+          resourceCatalogFetchedAt: Date.now(),
+          isResourceCatalogLoading: false,
+        })
+        return resourceCatalog
+      },
+    }))
   return { useWebAppStore }
 })
 
@@ -202,6 +278,12 @@ const scan = {
       severity: "high",
       message: "Bucket tags drifted",
     },
+    {
+      resource_address: "aws_instance.app",
+      resource_name: "app-server",
+      severity: "medium",
+      message: "Instance shape drifted",
+    },
   ],
   policyAlerts: [
     {
@@ -270,6 +352,49 @@ function renderWithRouter(ui: React.ReactElement, initialEntries = ["/"]) {
 describe("authenticated app functional coverage", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          name: "Dev chat",
+          history: [],
+          startDate: "2026-05-15T01:00:00.000Z",
+          endDate: "2026-05-15T01:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "session-pr-42",
+          name: "Fix drift",
+          history: [
+            {
+              role: "user",
+              content: "Fix policy compliance issue. Scan ID: scan-prod. State backend: s3://tf-prod-state/env/prod/terraform.tfstate. Resource: aws_s3_bucket.logs. Policy: S3 encryption required.",
+              timestamp: "2026-05-15T01:20:00.000Z",
+            },
+          ],
+          startDate: "2026-05-15T01:20:00.000Z",
+          endDate: "2026-05-15T01:25:00.000Z",
+          repository,
+          pullRequest: {
+            number: 42,
+            url: "https://github.com/png261/hcp-terraform/pull/42",
+          },
+        },
+      ],
+      activeSessionId: "session-1",
+      selectedRepository: repository,
+      resourceCatalog: {
+        backends: [],
+        stateResources: [],
+        scans: [],
+        guards: [],
+        credentials: [],
+      },
+      resourceCatalogLoadedFor: "",
+      resourceCatalogFetchedAt: 0,
+      isResourceCatalogLoading: false,
+    })
     resourceMocks.listStateBackends.mockResolvedValue([backend])
     resourceMocks.listStateBackendResources.mockImplementation((backendId: string) =>
       Promise.resolve(backendId === "backend-prod" ? stateResources : [])
@@ -404,7 +529,7 @@ describe("authenticated app functional coverage", () => {
     expect(screen.getByText("aws_s3_bucket.logs")).toBeInTheDocument()
     expect(screen.getByText("app-server")).toBeInTheDocument()
     expect(resourceMocks.listStateBackendResources).toHaveBeenCalledWith("backend-prod", "dev-id-token")
-    expect(screen.getByText("drifted")).toBeInTheDocument()
+    expect(screen.getAllByText("drifted").length).toBeGreaterThan(0)
 
     fireEvent.change(screen.getByPlaceholderText("Search resources..."), {
       target: { value: "no-match" },
@@ -415,7 +540,15 @@ describe("authenticated app functional coverage", () => {
     })
     expect(screen.getByText("prod-logs")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: /Fix error/i }))
+    expect(screen.getByRole("link", { name: /View pull request/i })).toHaveAttribute(
+      "href",
+      "https://github.com/png261/hcp-terraform/pull/42"
+    )
+    expect(screen.queryByRole("button", { name: /Fix error/i })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText("Search resources..."), {
+      target: { value: "app-server" },
+    })
+    fireEvent.click(screen.getAllByRole("button", { name: /Fix error/i })[0])
     expect(storeActions.requestRepositoryChat).toHaveBeenCalledWith(
       repository,
       expect.stringContaining("State backend: s3://tf-prod-state/env/prod/terraform.tfstate")
@@ -447,8 +580,18 @@ describe("authenticated app functional coverage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Drift Alert" }))
     expect(screen.getByText("prod-logs")).toBeInTheDocument()
     expect(screen.getByText("aws_s3_bucket.logs")).toBeInTheDocument()
+    expect(screen.getByText("app-server")).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole("button", { name: /Fix error/i })[0])
+    expect(storeActions.requestRepositoryChat).toHaveBeenCalledWith(
+      repository,
+      expect.stringContaining("State backend: s3://tf-prod-state/env/prod/terraform.tfstate")
+    )
     fireEvent.click(screen.getByRole("button", { name: "Policy Alert" }))
     expect(screen.getByText("S3 encryption required")).toBeInTheDocument()
+    expect(screen.getAllByRole("link", { name: /View pull request/i })[0]).toHaveAttribute(
+      "href",
+      "https://github.com/png261/hcp-terraform/pull/42"
+    )
     fireEvent.click(screen.getByRole("button", { name: "Scan History" }))
     expect(screen.getByText("scan-prod")).toBeInTheDocument()
 
@@ -476,6 +619,23 @@ describe("authenticated app functional coverage", () => {
       "dev-id-token"
     ))
     expect(await screen.findByText("State backend added and resource graph generated")).toBeInTheDocument()
+  })
+
+  it("keeps resource catalog data in the Zustand cache until the user reloads", async () => {
+    const firstRender = renderWithRouter(<ResourceCatalogPage />, ["/resource-catalog"])
+
+    expect(await screen.findByText("prod-logs")).toBeInTheDocument()
+    await waitFor(() => expect(resourceMocks.listStateBackends).toHaveBeenCalledTimes(1))
+    firstRender.unmount()
+
+    renderWithRouter(<ResourceCatalogPage />, ["/resource-catalog"])
+
+    expect(await screen.findByText("prod-logs")).toBeInTheDocument()
+    expect(resourceMocks.listStateBackends).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole("button", { name: /Reload/i }))
+    await waitFor(() => expect(resourceMocks.listStateBackends).toHaveBeenCalledTimes(2))
+    expect(storeActions.loadResourceCatalog).toHaveBeenLastCalledWith("dev-id-token", { force: true })
   })
 
   it("covers pull request summaries, filtering, external links, and chat handoff", async () => {

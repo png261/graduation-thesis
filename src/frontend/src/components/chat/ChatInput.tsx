@@ -1,6 +1,6 @@
 "use client"
 
-import { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
+import { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { BorderBeam } from "@/components/ui/border-beam"
 import {
@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Database, FileText, Github, Paperclip, Send, Square, X } from "lucide-react"
-import type { ChatAgent, ChatAttachment, UserHandoff } from "./types"
+import type { ChatAttachment, UserHandoff } from "./types"
 import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 
 export const NO_REPOSITORY_VALUE = "__no_repository__"
@@ -29,7 +29,7 @@ interface ChatInputProps {
   onStop?: () => void
   disabled?: boolean
   className?: string
-  agents?: ChatAgent[]
+  compactControls?: boolean
   attachments?: ChatAttachment[]
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void
   repositories?: SelectedRepository[]
@@ -55,7 +55,7 @@ export function ChatInput({
   onStop,
   disabled = false,
   className = "",
-  agents = [],
+  compactControls = false,
   attachments = [],
   onAttachmentsChange,
   repositories = [],
@@ -74,18 +74,9 @@ export function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
-  const [mentionStart, setMentionStart] = useState<number | null>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [handoffAnswers, setHandoffAnswers] = useState<Record<string, string>>({})
   const [activeHandoffIndex, setActiveHandoffIndex] = useState(0)
-
-  const filteredAgents = useMemo(() => {
-    if (mentionQuery === null) return []
-    return agents.filter(agent =>
-      agent.mention.toLowerCase().includes(`@${mentionQuery.toLowerCase()}`)
-    )
-  }, [agents, mentionQuery])
 
   // Auto-resize the textarea based on content
   useEffect(() => {
@@ -96,41 +87,6 @@ export function ChatInput({
       textarea.style.height = scrollHeight + "px"
     }
   }, [input])
-
-  // Handle key presses for Ctrl+Enter to add new line and Enter to submit
-  const updateMentionState = (value: string, cursor: number | null) => {
-    if (cursor === null) {
-      setMentionQuery(null)
-      setMentionStart(null)
-      return
-    }
-    const beforeCursor = value.slice(0, cursor)
-    const match = beforeCursor.match(/(^|\s)@([a-zA-Z0-9_]*)$/)
-    if (!match) {
-      setMentionQuery(null)
-      setMentionStart(null)
-      return
-    }
-    setMentionQuery(match[2] ?? "")
-    setMentionStart(cursor - (match[2]?.length ?? 0) - 1)
-  }
-
-  const insertAgentMention = (agent: ChatAgent) => {
-    const textarea = textareaRef.current
-    if (mentionStart === null || !textarea) return
-    const cursor = textarea.selectionStart
-    const before = input.slice(0, mentionStart)
-    const after = input.slice(cursor)
-    const nextInput = `${before}${agent.mention} ${after.replace(/^\s*/, "")}`
-    const nextCursor = before.length + agent.mention.length + 1
-    setInput(nextInput)
-    setMentionQuery(null)
-    setMentionStart(null)
-    window.requestAnimationFrame(() => {
-      textarea.focus()
-      textarea.setSelectionRange(nextCursor, nextCursor)
-    })
-  }
 
   useEffect(() => {
     setHandoffAnswers({})
@@ -229,18 +185,6 @@ export function ChatInput({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (mentionQuery !== null && filteredAgents.length > 0) {
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault()
-        insertAgentMention(filteredAgents[0])
-        return
-      }
-      if (e.key === "Escape") {
-        setMentionQuery(null)
-        setMentionStart(null)
-        return
-      }
-    }
     if (e.key === "Enter") {
       if (e.ctrlKey) {
         // Add a new line when Ctrl+Enter is pressed
@@ -251,8 +195,6 @@ export function ChatInput({
         if (canSubmit) {
           e.preventDefault()
           handleSubmit(e as unknown as FormEvent)
-          setMentionQuery(null)
-          setMentionStart(null)
         }
       }
     }
@@ -260,36 +202,22 @@ export function ChatInput({
 
   return (
     <div className={`relative w-full bg-white p-4 ${className}`}>
-      {mentionQuery !== null && filteredAgents.length > 0 && (
-        <div className="absolute bottom-full left-3 z-50 mb-2 w-64 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
-          {filteredAgents.map(agent => (
-            <button
-              key={agent.id}
-              type="button"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50"
-              onMouseDown={event => {
-                event.preventDefault()
-                insertAgentMention(agent)
-              }}
-            >
-              <span className={`flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-semibold ${agent.className}`}>
-                {agent.avatar}
-              </span>
-              <span className="flex min-w-0 flex-col">
-                <span className="font-medium text-slate-950">{agent.name}</span>
-                <span className="text-xs text-slate-500">{agent.mention}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
       <form
         onSubmit={handleSubmit}
-        className="relative flex w-full flex-col gap-2 overflow-hidden rounded-lg border border-transparent bg-white p-3 shadow-sm"
+        aria-label="chat input"
+        className="relative flex w-full flex-col gap-3 overflow-hidden rounded-[28px] border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_35px_rgba(15,23,42,0.12)] focus-within:border-slate-300"
       >
-        <BorderBeam size={120} duration={8} borderWidth={1} colorFrom="#0f172a" colorTo="#38bdf8" />
+        {isLoading && (
+          <BorderBeam
+            size={120}
+            duration={8}
+            borderWidth={1}
+            colorFrom="#0f172a"
+            colorTo="#38bdf8"
+          />
+        )}
         {handoffQuestions.length > 0 && activeHandoffQuestion && (
-          <div className="relative z-10 rounded-md border border-sky-200 bg-sky-50 p-3">
+          <div className="relative z-10 rounded-2xl border border-sky-200 bg-sky-50 p-3">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-slate-950">Clarification needed</p>
@@ -305,7 +233,7 @@ export function ChatInput({
                     variant="outline"
                     disabled={activeHandoffIndex === 0 || isLoading || disabled}
                     onClick={previousHandoffQuestion}
-                    className="border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    className="rounded-full border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                   >
                     Back
                   </Button>
@@ -315,13 +243,13 @@ export function ChatInput({
                   size="sm"
                   disabled={(isLastHandoffQuestion ? !canSubmitHandoff : !canAdvanceHandoff) || isLoading || disabled}
                   onClick={isLastHandoffQuestion ? submitHandoffAnswers : advanceHandoffQuestion}
-                  className="border border-slate-950 bg-slate-950 text-white hover:bg-slate-800"
+                  className="rounded-full border border-slate-950 bg-slate-950 text-white hover:bg-slate-800"
                 >
                   {isLastHandoffQuestion ? "Send answers" : "Next question"}
                 </Button>
               </div>
             </div>
-            <div className="rounded-md border border-sky-100 bg-white p-3">
+            <div className="rounded-2xl border border-sky-100 bg-white p-3">
               <p className="text-sm font-medium text-slate-900">
                 {activeHandoffIndex + 1}. {activeHandoffQuestion.question}
               </p>
@@ -351,7 +279,7 @@ export function ChatInput({
                 onChange={event => setHandoffAnswer(activeHandoffQuestion.id, event.target.value)}
                 placeholder="Custom answer"
                 disabled={isLoading || disabled}
-                className="mt-2 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-slate-400"
+                className="mt-2 h-9 w-full rounded-full border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-slate-400"
               />
             </div>
           </div>
@@ -361,13 +289,13 @@ export function ChatInput({
             {attachments.map(attachment => (
               <div
                 key={attachment.id}
-                className="flex max-w-[220px] items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+                className="flex max-w-[220px] items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700"
               >
                 {attachment.type.startsWith("image/") ? (
                   <img
                     src={attachment.dataUrl}
                     alt=""
-                    className="h-8 w-8 rounded-sm object-cover"
+                    className="h-8 w-8 rounded-xl object-cover"
                   />
                 ) : (
                   <FileText className="h-4 w-4 shrink-0" />
@@ -391,20 +319,17 @@ export function ChatInput({
           value={input}
           onChange={e => {
             setInput(e.target.value)
-            updateMentionState(e.target.value, e.target.selectionStart)
           }}
-          onClick={e => updateMentionState(input, e.currentTarget.selectionStart)}
-          onKeyUp={e => updateMentionState(e.currentTarget.value, e.currentTarget.selectionStart)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder="Type your message... (Ctrl+Enter for new line)"
           disabled={isLoading || disabled}
-          className="min-h-[40px] max-h-[200px] flex-1 resize-none border-slate-200 bg-white py-2 text-slate-950 placeholder:text-slate-400 focus-visible:ring-slate-300"
+          className="min-h-[48px] max-h-[200px] flex-1 resize-none border-0 bg-transparent px-0 py-2 text-[15px] leading-6 text-slate-950 shadow-none outline-none placeholder:text-slate-400 focus-visible:ring-0 focus-visible:ring-offset-0"
           rows={1}
           autoFocus
         />
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-transparent pt-0">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <input
               ref={fileInputRef}
@@ -415,7 +340,7 @@ export function ChatInput({
             />
             <Button
               aria-label="Attach file"
-              className="h-9 border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              className="h-9 w-9 rounded-full border-slate-200 bg-white p-0 text-slate-700 shadow-none hover:bg-slate-50"
               disabled={isLoading || disabled || attachments.length >= MAX_ATTACHMENTS}
               onClick={() => fileInputRef.current?.click()}
               type="button"
@@ -430,13 +355,18 @@ export function ChatInput({
             >
               <SelectTrigger
                 aria-label="GitHub repository"
-                className="h-9 max-w-[280px] min-w-[220px] border-slate-200 bg-white text-slate-700"
+                className={`h-9 rounded-full border-slate-200 bg-white text-slate-700 shadow-none ${
+                  compactControls ? "w-9 justify-center px-0" : "max-w-[240px] min-w-[170px] px-3"
+                }`}
                 size="sm"
+                title={selectedRepositoryFullName && selectedRepositoryFullName !== NO_REPOSITORY_VALUE ? selectedRepositoryFullName : "No repository"}
               >
                 <Github className="h-4 w-4" />
-                <SelectValue
-                  placeholder={isLoadingRepositories ? "Loading repositories..." : "Select repository"}
-                />
+                {!compactControls && (
+                  <SelectValue
+                    placeholder={isLoadingRepositories ? "Loading repositories..." : "Select repository"}
+                  />
+                )}
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -449,9 +379,6 @@ export function ChatInput({
                 </SelectGroup>
               </SelectContent>
             </Select>
-            {repositoryLocked && (
-              <span className="text-xs font-medium text-slate-500">Repository locked</span>
-            )}
             <Select
               value={selectedStateBackendId || NO_STATE_BACKEND_VALUE}
               onValueChange={onStateBackendChange}
@@ -459,13 +386,18 @@ export function ChatInput({
             >
               <SelectTrigger
                 aria-label="Terraform state backend"
-                className="h-9 max-w-[280px] min-w-[220px] border-slate-200 bg-white text-slate-700"
+                className={`h-9 rounded-full border-slate-200 bg-white text-slate-700 shadow-none ${
+                  compactControls ? "w-9 justify-center px-0" : "max-w-[240px] min-w-[170px] px-3"
+                }`}
                 size="sm"
+                title={selectedStateBackendId && selectedStateBackendId !== NO_STATE_BACKEND_VALUE ? selectedStateBackendId : "No state backend"}
               >
                 <Database className="h-4 w-4" />
-                <SelectValue
-                  placeholder={isLoadingStateBackends ? "Loading states..." : "Select state"}
-                />
+                {!compactControls && (
+                  <SelectValue
+                    placeholder={isLoadingStateBackends ? "Loading states..." : "Select state"}
+                  />
+                )}
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -490,8 +422,10 @@ export function ChatInput({
           </div>
           <Button
             type={isLoading ? "button" : "submit"}
+            aria-label={isLoading ? "Stop response" : "Send message"}
+            title={isLoading ? "Stop response" : "Send message"}
             disabled={isLoading ? disabled : !canSubmit || disabled}
-            className={`h-10 border text-white ${
+            className={`h-9 w-9 rounded-full border p-0 text-white shadow-none ${
               isLoading
                 ? "border-red-600 bg-red-600 hover:bg-red-700"
                 : "border-slate-950 bg-slate-950 hover:bg-slate-800"
@@ -499,15 +433,9 @@ export function ChatInput({
             onClick={isLoading ? onStop : undefined}
           >
             {isLoading ? (
-              <>
-                <Square className="mr-2 h-4 w-4 fill-current" />
-                Stop
-              </>
+              <Square className="h-4 w-4 fill-current" />
             ) : (
-              <>
-                <Send className="h-4 w-4 mr-2" />
-                Send
-              </>
+              <Send className="h-4 w-4" />
             )}
           </Button>
         </div>
