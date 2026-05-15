@@ -91,6 +91,7 @@ export interface ChatSession {
   history: Message[]
   startDate: string
   endDate: string
+  pinned?: boolean
   repository?: SelectedRepository | null
   stateBackend?: SelectedStateBackend | null
   pullRequest?: PullRequestInfo | null

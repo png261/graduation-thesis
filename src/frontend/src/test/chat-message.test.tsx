@@ -53,11 +53,11 @@ describe("ChatMessage", () => {
     )
 
     expect(screen.getByRole("status", { name: "thinking" })).toBeInTheDocument()
-    expect(screen.getByText(THINKING_WORDS[0])).toBeInTheDocument()
+    expect(screen.getByText(THINKING_WORDS[0].toUpperCase())).toBeInTheDocument()
     act(() => {
       vi.advanceTimersByTime(1400)
     })
-    expect(screen.getByText(THINKING_WORDS[THINKING_WORDS.length - 1])).toBeInTheDocument()
+    expect(screen.getByText(THINKING_WORDS[THINKING_WORDS.length - 1].toUpperCase())).toBeInTheDocument()
     expect(screen.queryByText("MACOG Agent is working")).not.toBeInTheDocument()
     expect(screen.queryByText("Preparing a response")).not.toBeInTheDocument()
   })

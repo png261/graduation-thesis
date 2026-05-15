@@ -171,6 +171,13 @@ describe("New Chat from sidebar", () => {
             fullName: "png261/hcp-terraform",
             defaultBranch: "main",
           },
+          stateBackend: {
+            backendId: "backend-1",
+            name: "prod-state",
+            bucket: "terraform-state",
+            key: "prod/terraform.tfstate",
+            region: "ap-southeast-1",
+          },
         },
       ],
       activeSessionId: "repo-session",
@@ -238,9 +245,11 @@ describe("New Chat from sidebar", () => {
     const resourceCatalog = screen.getByRole("link", { name: "Resource Catalog" })
     const settings = screen.getByRole("link", { name: "Settings" })
     const recents = screen.getByText("Recents")
-    const chat = screen.getByRole("button", { name: "Open chat png261/hcp-terraform" })
+    const chat = screen.getByRole("button", { name: "Open chat Repository chat" })
 
     expect(sidebar).toHaveTextContent(/New Chat[\s\S]*Pull Requests[\s\S]*Resource Catalog[\s\S]*Settings[\s\S]*Recents/i)
+    expect(chat).toHaveTextContent("Repository chat")
+    expect(chat).toHaveTextContent("prod-state · png261/hcp-terraform")
     expect(newChat.compareDocumentPosition(pullRequests) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(pullRequests.compareDocumentPosition(resourceCatalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(resourceCatalog.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -452,7 +461,8 @@ describe("New Chat from sidebar", () => {
       </BrowserRouter>
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete Old chat" }))
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions for Old chat" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
 
     await waitFor(() => {
       expect(useWebAppStore.getState().sessions.map(session => session.id)).toEqual(["active-session"])
@@ -460,6 +470,63 @@ describe("New Chat from sidebar", () => {
     expect(screen.queryByText("Old chat")).not.toBeInTheDocument()
     expect(useWebAppStore.getState().activeSessionId).toBe("active-session")
     expect(useWebAppStore.getState().deleteChatSession).toHaveBeenCalledWith("old-session", "id-token")
+  })
+
+  it("shows a chat action menu for pinning and renaming recents", async () => {
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "newer-session",
+          name: "Newer chat",
+          history: answeredHistory,
+          startDate: "2026-05-11T07:00:00.000Z",
+          endDate: "2026-05-11T07:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "older-session",
+          name: "Older chat",
+          history: answeredHistory,
+          startDate: "2026-05-11T06:00:00.000Z",
+          endDate: "2026-05-11T06:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "newer-session",
+      chatSessionsLoadedFor: "id-token",
+    })
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Renamed older chat")
+
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    const newer = screen.getByRole("button", { name: "Open chat Newer chat" })
+    const older = screen.getByRole("button", { name: "Open chat Older chat" })
+    expect(newer.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions for Older chat" }))
+    fireEvent.click(screen.getByRole("button", { name: "Pin" }))
+
+    await waitFor(() => {
+      expect(useWebAppStore.getState().sessions.find(session => session.id === "older-session")?.pinned).toBe(true)
+    })
+    const pinnedOlder = screen.getByRole("button", { name: "Open chat Older chat" })
+    const unpinnedNewer = screen.getByRole("button", { name: "Open chat Newer chat" })
+    expect(pinnedOlder.compareDocumentPosition(unpinnedNewer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }))
+
+    await waitFor(() => {
+      expect(useWebAppStore.getState().sessions.find(session => session.id === "older-session")?.name).toBe("Renamed older chat")
+    })
+    expect(screen.getByRole("button", { name: "Open chat Renamed older chat" })).toBeInTheDocument()
+    expect(useWebAppStore.getState().persistChatSessions).toHaveBeenCalledWith("id-token")
+    promptSpy.mockRestore()
   })
 
   it("switches to the next chat when deleting the active chat", async () => {
@@ -497,7 +564,8 @@ describe("New Chat from sidebar", () => {
       </BrowserRouter>
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete Active chat" }))
+    fireEvent.click(screen.getByRole("button", { name: "Chat actions for Active chat" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
 
     await waitFor(() => {
       expect(useWebAppStore.getState().sessions.map(session => session.id)).toEqual(["next-session"])

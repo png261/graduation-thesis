@@ -12,6 +12,7 @@ export interface AmplifyStackProps extends cdk.NestedStackProps {
 export class AmplifyHostingStack extends cdk.NestedStack {
   public readonly amplifyApp: amplify.App
   public readonly amplifyUrl: string
+  public readonly defaultAmplifyUrl: string
   public readonly stagingBucket: s3.Bucket
 
   constructor(scope: Construct, id: string, props: AmplifyStackProps) {
@@ -96,12 +97,26 @@ export class AmplifyHostingStack extends cdk.NestedStack {
     })
 
     // Create main branch for the Amplify app
-    this.amplifyApp.addBranch("main", {
+    const mainBranch = this.amplifyApp.addBranch("main", {
       stage: "PRODUCTION",
       branchName: "main",
     })
 
     // The predictable domain format: https://main.{appId}.amplifyapp.com
-    this.amplifyUrl = `https://main.${this.amplifyApp.appId}.amplifyapp.com`
+    this.defaultAmplifyUrl = `https://main.${this.amplifyApp.appId}.amplifyapp.com`
+    this.amplifyUrl = props.config.domain
+      ? `https://${props.config.domain}`
+      : this.defaultAmplifyUrl
+
+    if (props.config.domain) {
+      this.amplifyApp.addDomain(props.config.domain, {
+        subDomains: [
+          {
+            branch: mainBranch,
+            prefix: "",
+          },
+        ],
+      })
+    }
   }
 }

@@ -124,12 +124,12 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <header className="flex items-center justify-between border-b bg-white px-6 py-4">
-        <h1 className="text-xl font-semibold text-slate-900">Settings</h1>
+    <main className="min-h-screen bg-white">
+      <header className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
+        <h1 className="text-xl font-semibold text-slate-950">Settings</h1>
       </header>
       <section className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-        <form className="rounded-lg border bg-white p-5" onSubmit={handleSaveCredential}>
+        <form className="rounded-lg border border-slate-200 bg-white p-5" onSubmit={handleSaveCredential}>
           <div className="flex items-center gap-3">
             <KeyRound className="h-5 w-5 text-slate-800" />
             <div>
@@ -140,11 +140,11 @@ export default function SettingsPage() {
             </div>
           </div>
           {credentials.length > 0 && (
-            <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
               <p className="font-medium">Saved credentials</p>
               <div className="mt-2 grid gap-2">
                 {credentials.map(item => (
-                  <div key={item.credentialId} className="rounded border border-emerald-200 bg-white/70 p-2">
+                  <div key={item.credentialId} className="rounded-md border border-emerald-200 bg-white p-2">
                     <p>
                       {item.name || item.accessKeyIdSuffix || "AWS credential"} {item.credentialId === activeCredentialId ? "(active)" : ""}
                     </p>
@@ -192,7 +192,7 @@ export default function SettingsPage() {
           </div>
         </form>
 
-        <div className="rounded-lg border bg-white p-5">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
           <div className="flex items-center gap-3">
             <Github className="h-5 w-5 text-slate-800" />
             <div>

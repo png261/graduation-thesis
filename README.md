@@ -91,6 +91,7 @@ cp .env.example .env
 
 Biến quan trọng:
 
+- `DOMAIN`
 - `OPENAI_API_KEY`
 - `GITHUB_APP_PRIVATE_KEY` (PEM, escape newline `\\n` nếu cần)
 - `GITHUB_APP_ID` và `GITHUB_APP_SLUG`

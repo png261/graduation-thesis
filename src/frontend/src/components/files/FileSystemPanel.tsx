@@ -504,7 +504,7 @@ function TerraformGraphPreview({ graph }: { graph: TerraformGraph | null }) {
 
   return (
     <div className="h-full overflow-auto bg-white">
-      <div className="sticky top-0 z-10 flex flex-wrap gap-2 border-b border-slate-200 bg-white/95 px-3 py-2 text-xs text-slate-600">
+      <div className="sticky top-0 z-10 flex flex-wrap gap-2 border-b border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
         {graphSummaryItems(graph.summary).map(([label, value]) => (
           <span key={label} className="rounded border border-slate-200 px-2 py-1">
             {label}: {value}
@@ -565,7 +565,7 @@ function FileTreeNode({ node, style, dragHandle }: NodeRendererProps<ArboristFil
       ref={dragHandle}
       className={cn(
         "flex min-w-0 cursor-pointer items-center gap-1 border-b border-transparent px-2 text-sm",
-        node.isSelected ? "bg-slate-100 text-slate-950" : "text-slate-700 hover:bg-slate-50"
+        node.isSelected ? "bg-slate-100 text-slate-950" : "text-slate-700 hover:bg-slate-50/80"
       )}
       style={style}
       title={item.path}
@@ -887,7 +887,7 @@ export function FileSystemPanel({
         style={{ gridTemplateColumns: `${treePanePercent}% 6px minmax(0, 1fr)` }}
       >
         <div className="flex min-h-0 min-w-0 flex-col border-r border-slate-200">
-          <div className="flex items-center gap-1 border-b border-slate-200 bg-slate-50 px-2 py-2">
+          <div className="flex items-center gap-1 border-b border-slate-200 bg-white px-2 py-2">
             <Button
               className="h-7 px-2 text-xs"
               onClick={() => setFileScope("changes")}
@@ -967,7 +967,7 @@ export function FileSystemPanel({
         />
 
         <div className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex min-h-10 items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="flex min-h-10 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-2">
                 <div className="truncate text-sm font-semibold text-slate-800">

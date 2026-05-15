@@ -9,7 +9,7 @@ const ResourceCatalogPage = lazy(() => import("./ResourceCatalogPage"))
 
 export default function AppRoutes() {
   return (
-    <Suspense fallback={<main className="min-h-screen bg-slate-50" />}>
+    <Suspense fallback={<main className="min-h-screen bg-white" />}>
       <Routes>
         <Route path="/" element={<ChatPage />} />
         <Route path="/settings" element={<SettingsPage />} />

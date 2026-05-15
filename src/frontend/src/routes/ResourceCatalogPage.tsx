@@ -323,7 +323,7 @@ function statusClass(status: string): string {
 
 function StatusBadge({ children }: { children: string }) {
   return (
-    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${statusClass(children)}`}>
+    <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusClass(children)}`}>
       {children}
     </span>
   )
@@ -497,7 +497,7 @@ function MetricCard({
   icon: ReactNode
 }) {
   return (
-    <div className="rounded-md border bg-white p-4">
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-slate-500">{label}</span>
         <span className="rounded-md bg-slate-100 p-2 text-slate-700">{icon}</span>
@@ -539,7 +539,7 @@ function CloudriftAnalyticsChart({
   const maxScanHealth = Math.max(1, ...scanHealth.map(item => item.value))
 
   return (
-    <section className="grid gap-3 rounded-md border bg-white p-4 lg:grid-cols-[1.1fr_1fr_1fr]">
+    <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 lg:grid-cols-[1.1fr_1fr_1fr]">
       <div>
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
           <BarChart3 className="h-4 w-4" />
@@ -616,13 +616,13 @@ function ResourcesTable({
   if (!rows.length) return <EmptyState label="No connected resources found. Run a Cloudrift scan first." />
 
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white">
       <div className="border-b p-4">
         <Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search resources..." className="max-w-md" />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1080px] text-left text-sm">
-          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+          <thead className="border-b border-slate-200 bg-white text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Resource</th>
@@ -638,14 +638,14 @@ function ResourcesTable({
               const pullRequest = getPullRequest(row)
               const hasIssue = row.driftAlerts.length > 0 || row.policyAlerts.length > 0
               return (
-                <tr key={row.key} className="align-top hover:bg-slate-50">
+                <tr key={row.key} className="align-top hover:bg-slate-50/80">
                   <td className="px-4 py-4"><StatusBadge>{row.status}</StatusBadge></td>
                   <td className="px-4 py-4">
                     <p className="font-mono text-sm font-semibold text-slate-900">{row.displayName}</p>
                     <p className="mt-1 break-all text-xs text-slate-500">{row.subtitle || row.resourceType}</p>
                   </td>
                   <td className="px-4 py-4">
-                    <span className="inline-flex max-w-xs rounded-md border bg-white px-2 py-1 text-xs font-medium text-slate-700">
+                    <span className="inline-flex max-w-xs rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
                       {row.scan.backendName || row.scan.backendId}
                     </span>
                     <p className="mt-1 break-all text-xs text-slate-500">s3://{row.scan.stateBucket}/{row.scan.stateKey}</p>
@@ -705,10 +705,10 @@ function StateHistoryTable({ backends, scans }: { backends: StateBackend[]; scan
   if (!rows.length) return <EmptyState label="No backend state history found. Run a scan to create state history." />
 
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-left text-sm">
-          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+          <thead className="border-b border-slate-200 bg-white text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">State Backend</th>
               <th className="px-4 py-3">State Location</th>
@@ -720,7 +720,7 @@ function StateHistoryTable({ backends, scans }: { backends: StateBackend[]; scan
           </thead>
           <tbody className="divide-y">
             {rows.map(({ scan, backend }) => (
-              <tr key={scan.scanId} className="align-top hover:bg-slate-50">
+              <tr key={scan.scanId} className="align-top hover:bg-slate-50/80">
                 <td className="px-4 py-4">
                   <p className="font-semibold text-slate-900">{backend?.name || scan.backendName || scan.backendId}</p>
                   <p className="text-xs text-slate-500">{scan.service || backend?.service || "s3"}</p>
@@ -755,7 +755,7 @@ function ResourceGraphViewer({
   }
 
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white">
       <div className="border-b p-4">
         <h2 className="text-sm font-semibold text-slate-950">Resource Graph Viewer</h2>
         <p className="mt-1 text-sm text-slate-500">
@@ -764,7 +764,7 @@ function ResourceGraphViewer({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1080px] text-left text-sm">
-          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+          <thead className="border-b border-slate-200 bg-white text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">State Backend</th>
               <th className="px-4 py-3">S3 State File</th>
@@ -781,8 +781,8 @@ function ResourceGraphViewer({
               return (
                 <tr
                   key={backend.backendId}
-                  className={`align-top hover:bg-slate-50 ${
-                    embeddedGraph?.backendId === backend.backendId ? "bg-slate-50" : ""
+                  className={`align-top hover:bg-slate-50/80 ${
+                    embeddedGraph?.backendId === backend.backendId ? "bg-slate-50/80" : ""
                   }`}
                 >
                   <td className="px-4 py-4">
@@ -818,7 +818,7 @@ function ResourceGraphViewer({
           </tbody>
         </table>
       </div>
-      <div className="border-t bg-slate-50 p-4">
+      <div className="border-t border-slate-200 bg-white p-4">
         {embeddedGraph ? (
           <div>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -870,7 +870,7 @@ function AlertsPanel({
   if (!groups.length) return <EmptyState label={`No ${label} found across backend states.`} />
 
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
         <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={`Search ${label}...`} className="max-w-md" />
       </div>
@@ -893,13 +893,13 @@ function AlertsPanel({
             .find((item): item is PullRequestAction => Boolean(item))
           return (
             <details key={group.scan.scanId} open className="group">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 border-b bg-slate-50 px-4 py-3">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3">
                 <div className="min-w-0">
                   <span className="font-semibold text-slate-900">{group.scan.backendName || group.scan.backendId}</span>
                   <span className="ml-2 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700">
                     {filteredItems.length} active
                   </span>
-                  <span className="ml-2 rounded-md border bg-white px-2 py-1 text-xs text-slate-600">
+                  <span className="ml-2 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">
                     {group.items.length} total
                   </span>
                   <p className="mt-1 break-all text-xs text-slate-500">s3://{group.scan.stateBucket}/{group.scan.stateKey}</p>
@@ -945,7 +945,7 @@ function AlertsPanel({
                       const pullRequest = getPullRequest(group.scan, item, kind)
                       const canFix = Boolean(repositoryForScan(group.scan, backends))
                       return (
-                        <tr key={`${group.scan.scanId}-${kind}-${index}`} className="align-top hover:bg-slate-50">
+                        <tr key={`${group.scan.scanId}-${kind}-${index}`} className="align-top hover:bg-slate-50/80">
                           <td className="px-4 py-4"><StatusBadge>active</StatusBadge></td>
                           <td className="px-4 py-4">
                             <p className="font-mono text-sm font-semibold text-slate-900">{getAlertTitle(item, kind)}</p>
@@ -993,10 +993,10 @@ function ScanHistoryTable({ scans }: { scans: ResourceScan[] }) {
   if (!scans.length) return <EmptyState label="No scan history found." />
 
   return (
-    <section className="rounded-md border bg-white">
+    <section className="rounded-lg border border-slate-200 bg-white">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-left text-sm">
-          <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+          <thead className="border-b border-slate-200 bg-white text-xs uppercase text-slate-500">
             <tr>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Backend</th>
@@ -1009,7 +1009,7 @@ function ScanHistoryTable({ scans }: { scans: ResourceScan[] }) {
           </thead>
           <tbody className="divide-y">
             {scans.map(scan => (
-              <tr key={scan.scanId} className="align-top hover:bg-slate-50">
+              <tr key={scan.scanId} className="align-top hover:bg-slate-50/80">
                 <td className="px-4 py-4"><StatusBadge>{scan.status}</StatusBadge></td>
                 <td className="px-4 py-4">
                   <p className="font-semibold text-slate-900">{scan.backendName || scan.backendId}</p>
@@ -1054,7 +1054,7 @@ function AutoScanPanel({
 
   return (
     <section className="grid gap-4 lg:grid-cols-[360px_1fr]">
-      <div className="rounded-md border bg-white p-5">
+      <div className="rounded-lg border border-slate-200 bg-white p-5">
         <div className="flex items-center gap-3">
           <CalendarClock className="h-5 w-5 text-slate-800" />
           <div>
@@ -1066,7 +1066,7 @@ function AutoScanPanel({
         <label className="mt-5 flex flex-col gap-1 text-sm font-medium text-slate-700">
           Added State
           <select
-            className="h-9 rounded-md border bg-white px-3 text-sm"
+            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-[3px] focus:ring-slate-200"
             value={selectedBackendId}
             onChange={event => onSelectedBackendChange(event.target.value)}
           >
@@ -1079,7 +1079,7 @@ function AutoScanPanel({
         </label>
 
         {selectedBackend && (
-          <div className="mt-4 rounded-md border bg-slate-50 p-3 text-sm text-slate-600">
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
             <p className="font-medium text-slate-900">{selectedBackend.name}</p>
             <p className="mt-1 break-all">s3://{selectedBackend.bucket}/{selectedBackend.key}</p>
             <p className="mt-1">{selectedBackend.region}</p>
@@ -1099,14 +1099,14 @@ function AutoScanPanel({
         </Button>
       </div>
 
-      <section className="rounded-md border bg-white">
+      <section className="rounded-lg border border-slate-200 bg-white">
         <div className="border-b p-4">
           <h2 className="text-base font-semibold text-slate-900">Autoscan History</h2>
           <p className="mt-1 text-sm text-slate-500">Recent scans for the selected added state.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] text-left text-sm">
-            <thead className="border-b bg-slate-50 text-xs uppercase text-slate-500">
+            <thead className="border-b border-slate-200 bg-white text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Backend</th>
@@ -1117,7 +1117,7 @@ function AutoScanPanel({
             </thead>
             <tbody className="divide-y">
               {rows.map(scan => (
-                <tr key={scan.scanId} className="hover:bg-slate-50">
+                <tr key={scan.scanId} className="hover:bg-slate-50/80">
                   <td className="px-4 py-4"><StatusBadge>{scan.status}</StatusBadge></td>
                   <td className="px-4 py-4">
                     <p className="font-semibold text-slate-900">{scan.backendName || scan.backendId}</p>
@@ -1236,7 +1236,7 @@ function AddStateBackendForm({
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               AWS Credential
               <select
-                className="h-9 rounded-md border bg-white px-3 text-sm"
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-[3px] focus:ring-slate-200"
                 value={form.credentialId}
                 onChange={event => {
                   setBuckets([])
@@ -1276,7 +1276,7 @@ function AddStateBackendForm({
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               Service
               <select
-                className="h-9 rounded-md border bg-white px-3 text-sm"
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-[3px] focus:ring-slate-200"
                 value={form.service}
                 onChange={event => {
                   const service = isScanService(event.target.value) ? event.target.value : "s3"
@@ -1300,7 +1300,7 @@ function AddStateBackendForm({
             </label>
           </div>
 
-          <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
             <div className="flex flex-wrap items-end gap-2">
               <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-sm font-medium text-slate-700">
                 Bucket
@@ -1336,7 +1336,7 @@ function AddStateBackendForm({
                       <button
                         key={bucket.name}
                         type="button"
-                        className={`flex w-full items-center justify-between gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-50 ${
+                        className={`flex w-full items-center justify-between gap-3 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-50/80 ${
                           form.bucket === bucket.name ? "bg-slate-100 font-semibold text-slate-950" : "text-slate-700"
                         }`}
                         onClick={() => setForm(current => ({ ...current, bucket: bucket.name }))}
@@ -1635,8 +1635,8 @@ export default function ResourceCatalogPage() {
   )
 
   return (
-    <main className="min-h-screen bg-slate-100">
-      <header className="border-b bg-white">
+    <main className="min-h-screen bg-white">
+      <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-[1800px] flex-wrap items-center justify-between gap-4 px-6 py-5">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
@@ -1686,7 +1686,7 @@ export default function ResourceCatalogPage() {
 
         <CloudriftAnalyticsChart rows={resourceRows} scans={scans} backends={backends} />
 
-        <nav className="flex flex-wrap gap-2 border-b border-slate-300">
+        <nav className="flex flex-wrap gap-2 border-b border-slate-200">
           {tabs.map(tab => {
             const Icon = tab.icon
             const isActive = activeTab === tab.value
@@ -1752,7 +1752,7 @@ export default function ResourceCatalogPage() {
         {activeTab === "scans" && <ScanHistoryTable scans={scans} />}
 
           {!isCatalogLoading && scans.length === 0 && (
-          <div className="rounded-md border bg-white p-5 text-sm text-slate-600">
+          <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-600">
             <div className="flex items-center gap-2 font-medium text-slate-900">
               <CheckCircle2 className="h-4 w-4" />
               Waiting for Cloudrift data

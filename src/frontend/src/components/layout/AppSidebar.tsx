@@ -6,7 +6,9 @@ import {
   GitPullRequest,
   Loader2,
   LogOut,
-  MessageSquare,
+  MoreHorizontal,
+  Pencil,
+  Pin,
   Plus,
   Settings,
   Trash2,
@@ -14,7 +16,6 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
-import infraqLogo from "@/assets/infraq-logo.svg"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +27,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { ChatSession } from "@/components/chat/types"
 import { useRunningSessions } from "@/components/chat/running-sessions"
 import { hasFirstAgentResponse } from "@/components/chat/session-utils"
@@ -44,16 +46,20 @@ type AppSidebarProps = {
   onCollapsedChange?: (collapsed: boolean) => void
 }
 
-function relativeTime(value?: string) {
-  if (!value) return ""
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ""
-  const diff = Date.now() - date.getTime()
-  const minutes = Math.max(1, Math.round(diff / 60000))
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
+function chatTitle(session: ChatSession) {
+  return session.name || session.repository?.fullName || "New chat"
+}
+
+function chatMetadata(session: ChatSession) {
+  return [
+    session.stateBackend?.name,
+    session.repository?.fullName,
+  ].filter(Boolean).join(" · ")
+}
+
+function sessionTime(session: ChatSession) {
+  const time = Date.parse(session.endDate || session.startDate || "")
+  return Number.isNaN(time) ? 0 : time
 }
 
 export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarProps) {
@@ -66,9 +72,8 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
       [...storedSessions]
         .filter(hasFirstAgentResponse)
         .sort((a, b) => {
-          const bTime = Date.parse(b.endDate || b.startDate || "")
-          const aTime = Date.parse(a.endDate || a.startDate || "")
-          return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime)
+          if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+          return sessionTime(b) - sessionTime(a)
         }),
     [storedSessions]
   )
@@ -78,6 +83,8 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
   const requestNewChat = useWebAppStore(state => state.requestNewChat)
   const deleteChatSession = useWebAppStore(state => state.deleteChatSession)
   const hydrateChatSessions = useWebAppStore(state => state.hydrateChatSessions)
+  const setSessions = useWebAppStore(state => state.setSessions)
+  const persistChatSessions = useWebAppStore(state => state.persistChatSessions)
   const profile = auth.user?.profile as Record<string, unknown> | undefined
   const accountLabel = String(
     profile?.email || profile?.preferred_username || profile?.name || profile?.sub || "Signed in"
@@ -113,6 +120,26 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
     }
   }
 
+  function updateChatSession(sessionId: string, updater: (session: ChatSession) => ChatSession) {
+    const idToken = auth.user?.id_token
+    const latestSessions = useWebAppStore.getState().sessions
+    const nextSessions = latestSessions.map(session => (
+      session.id === sessionId ? updater(session) : session
+    ))
+    setSessions(nextSessions)
+    if (idToken) void persistChatSessions(idToken)
+  }
+
+  function togglePinned(session: ChatSession) {
+    updateChatSession(session.id, current => ({ ...current, pinned: !current.pinned }))
+  }
+
+  function renameChatSession(session: ChatSession) {
+    const nextName = window.prompt("Rename chat", chatTitle(session))?.trim()
+    if (!nextName) return
+    updateChatSession(session.id, current => ({ ...current, name: nextName }))
+  }
+
   useEffect(() => {
     const idToken = auth.user?.id_token
     if (!idToken) return
@@ -127,7 +154,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
       )}
     >
       <div className={cn("flex items-center border-b py-4", collapsed ? "justify-center px-2" : "justify-between px-5")}>
-        <img src={infraqLogo} alt="InfraQ" className={cn("h-11 w-auto", collapsed && "h-8 max-w-8")} />
+        {!collapsed && <span className="text-lg font-semibold tracking-normal text-slate-950">InfraQ</span>}
         <Button
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           className={cn("h-8 w-8", collapsed && "absolute left-12 top-4 bg-white shadow-sm")}
@@ -186,6 +213,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
               <div className="flex flex-col gap-1">
                 {sessions.map(session => {
                   const isRunning = Boolean(runningSessions[session.id])
+                  const metadata = chatMetadata(session)
                   return (
                     <div
                       className={cn(
@@ -197,13 +225,13 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
                       key={session.id}
                     >
                       <button
-                        aria-label={`Open chat ${session.repository?.fullName ?? session.name ?? "New chat"}`}
+                        aria-label={`Open chat ${chatTitle(session)}`}
                         className={cn(
                           "flex min-w-0 flex-1 items-start text-left",
-                          collapsed ? "justify-center gap-0" : "gap-2"
+                          collapsed ? "justify-center" : "gap-2"
                         )}
                         onClick={() => openChatSession(session)}
-                        title={collapsed ? session.repository?.fullName ?? session.name ?? "New chat" : undefined}
+                        title={collapsed ? chatTitle(session) : undefined}
                         type="button"
                       >
                         {isRunning ? (
@@ -211,39 +239,63 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
                             aria-label="Agent responding"
                             className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-sky-600"
                           />
-                        ) : (
-                          <MessageSquare className="mt-0.5 h-4 w-4 shrink-0" />
-                        )}
+                        ) : collapsed ? (
+                          <span className="text-sm font-medium">{chatTitle(session).slice(0, 1).toUpperCase()}</span>
+                        ) : null}
                         {!collapsed && <span className="min-w-0 flex-1">
                           <span className="flex min-w-0 items-center gap-1.5">
                             <span className="block min-w-0 truncate text-sm font-medium">
-                              {session.repository?.fullName ?? session.name ?? "New chat"}
+                              {chatTitle(session)}
                             </span>
                           </span>
-                          <span className="mt-1 flex items-center gap-1 text-xs">
-                            {isRunning ? (
-                              "Responding..."
-                            ) : session.pullRequest?.number ? (
-                              <>
-                                <GitPullRequest className="h-3 w-3" />
-                                PR #{session.pullRequest.number}
-                              </>
-                            ) : (
-                              relativeTime(session.endDate)
-                            )}
-                          </span>
+                          {(isRunning || metadata) && (
+                            <span className="mt-0.5 block min-w-0 truncate text-xs text-slate-400">
+                              {isRunning ? "Responding..." : metadata}
+                            </span>
+                          )}
                         </span>}
                       </button>
-                      {!collapsed && <Button
-                        aria-label={`Delete ${session.repository?.fullName ?? session.name ?? "chat"}`}
-                        className="h-7 w-7 shrink-0 text-slate-400 opacity-0 hover:bg-red-50 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100"
-                        onClick={() => removeChatSession(session.id)}
-                        size="icon"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>}
+                      {!collapsed && (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              aria-label={`Chat actions for ${chatTitle(session)}`}
+                              className="h-7 w-7 shrink-0 text-slate-400 opacity-0 hover:bg-slate-100 hover:text-slate-950 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+                              size="icon"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent align="end" className="w-44 p-1">
+                            <button
+                              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 hover:text-slate-950"
+                              onClick={() => togglePinned(session)}
+                              type="button"
+                            >
+                              <Pin className="h-4 w-4" />
+                              {session.pinned ? "Unpin" : "Pin"}
+                            </button>
+                            <button
+                              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 hover:text-slate-950"
+                              onClick={() => renameChatSession(session)}
+                              type="button"
+                            >
+                              <Pencil className="h-4 w-4" />
+                              Rename
+                            </button>
+                            <button
+                              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                              onClick={() => removeChatSession(session.id)}
+                              type="button"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </button>
+                          </PopoverContent>
+                        </Popover>
+                      )}
                     </div>
                   )
                 })}

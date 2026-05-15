@@ -142,13 +142,7 @@ export function ChatMessage({
   onEdit,
 }: ChatMessageProps) {
   const [copied, setCopied] = useState(false)
-
-  const formatTime = (timestamp: string) => {
-    return new Date(timestamp).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-  }
+  const canCopyAssistantResponse = message.role === "assistant" && message.status === "complete" && Boolean(message.content)
 
   const handleCopyResponse = async () => {
     try {
@@ -192,16 +186,6 @@ export function ChatMessage({
 
   return (
     <div className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
-      {message.role === "assistant" && message.agent && (
-        <div className="mb-1 flex flex-wrap items-center gap-2 px-1">
-          <span className="inline-flex items-center gap-2">
-            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${message.agent.className}`}>
-              {message.agent.avatar}
-            </span>
-            <span className="text-xs font-medium text-slate-600">{message.agent.name}</span>
-          </span>
-        </div>
-      )}
       <div
         className={`max-w-[80%] break-words ${
           message.role === "user"
@@ -237,12 +221,9 @@ export function ChatMessage({
         )}
       </div>
 
-      {/* Timestamp and assistant message actions */}
-      <div className="flex items-center gap-2 mt-1 px-1">
-        <div className="text-xs text-neutral-500">{formatTime(message.timestamp)}</div>
-
-        {message.role === "assistant" && message.content && (
-          <div className="flex items-center gap-1 ml-2">
+      {(canCopyAssistantResponse || (message.role === "user" && onEdit)) && (
+        <div className="mt-1 flex items-center gap-2 px-1">
+          {canCopyAssistantResponse && (
             <button
               onClick={() => void handleCopyResponse()}
               className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950"
@@ -251,21 +232,21 @@ export function ChatMessage({
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
-          </div>
-        )}
-        {message.role === "user" && onEdit && (
-          <button
-            type="button"
-            onClick={onEdit}
-            disabled={!canEdit}
-            className="ml-2 rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
-            aria-label="Edit message"
-            title={!canEdit && editDisabledReason ? editDisabledReason : "Edit message"}
-          >
-            <Pencil size={14} />
-          </button>
-        )}
-      </div>
+          )}
+          {message.role === "user" && onEdit && (
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={!canEdit}
+              className="rounded p-1 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-500"
+              aria-label="Edit message"
+              title={!canEdit && editDisabledReason ? editDisabledReason : "Edit message"}
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -287,7 +268,7 @@ function ThinkingIndicator() {
       aria-live="polite"
       aria-label="thinking"
     >
-      <ShinyText text={word} shineColor="#dd1616" speed={3.2} />
+      <ShinyText text={word.toUpperCase()} shineColor="#dd1616" speed={3.2} />
       <span className="relative ml-0.5 inline-block w-4 overflow-hidden align-baseline">
         <span className="animate-[thinking-dots_1.2s_steps(3,end)_infinite]">...</span>
       </span>

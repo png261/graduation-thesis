@@ -48,7 +48,7 @@ function statusTone(status?: string): string {
 
 function StatusBadge({ value }: { value?: string }) {
   return (
-    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${statusTone(value)}`}>
+    <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusTone(value)}`}>
       {value || "unknown"}
     </span>
   )
@@ -111,7 +111,7 @@ function SummaryCard({
   tone: string
 }) {
   return (
-    <div className="rounded-lg border bg-white p-4">
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase text-slate-500">{label}</p>
@@ -240,8 +240,8 @@ export default function PullRequestsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b bg-white px-6 py-4">
+    <main className="min-h-screen bg-white">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-5">
         <div>
           <h1 className="text-xl font-semibold text-slate-900">Pull Requests</h1>
           <p className="mt-1 text-sm text-slate-500">
@@ -260,7 +260,7 @@ export default function PullRequestsPage() {
       </header>
 
       <section className="mx-auto flex max-w-7xl flex-col gap-4 p-6">
-        <section className="rounded-lg border bg-white p-5">
+        <section className="rounded-lg border border-slate-200 bg-white p-5">
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex min-w-72 flex-1 flex-col gap-1 text-sm font-medium text-slate-700">
               Repository
@@ -278,7 +278,7 @@ export default function PullRequestsPage() {
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               State
               <select
-                className="h-9 rounded-md border bg-white px-3 text-sm"
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400 focus:ring-[3px] focus:ring-slate-200"
                 value={state}
                 onChange={event => setState(event.target.value as PullRequestState)}
               >
@@ -331,7 +331,7 @@ export default function PullRequestsPage() {
           </p>
         )}
 
-        <section className="rounded-lg border bg-white">
+        <section className="rounded-lg border border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b p-5">
             <div>
               <h2 className="text-base font-semibold text-slate-900">Pull Request Timeline</h2>
@@ -339,7 +339,7 @@ export default function PullRequestsPage() {
                 Showing {state === "all" ? "all" : state} GitHub bot-created pull request records.
               </p>
             </div>
-            <span className="rounded-md border bg-slate-50 px-2 py-1 text-xs text-slate-600">
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600">
               {displayedPullRequests.length} of {pullRequests.length} pull requests
             </span>
           </div>
@@ -353,7 +353,7 @@ export default function PullRequestsPage() {
               {displayedPullRequests.map(pr => {
                 const chatSession = pullRequestChatSession(pr, sessions)
                 return (
-                  <article key={`${pr.repository}-${pr.number}`} className="p-5 hover:bg-slate-50">
+                  <article key={`${pr.repository}-${pr.number}`} className="p-5 hover:bg-slate-50/80">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
@@ -380,7 +380,7 @@ export default function PullRequestsPage() {
                         {pr.labels && pr.labels.length > 0 && (
                           <div className="mt-3 flex flex-wrap gap-1">
                             {pr.labels.map(label => (
-                              <span key={label} className="rounded border bg-white px-2 py-0.5 text-xs text-slate-600">
+                              <span key={label} className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-600">
                                 {label}
                               </span>
                             ))}
@@ -411,7 +411,7 @@ export default function PullRequestsPage() {
 
                     <div className="mt-5 grid gap-3 md:grid-cols-4">
                       {timelineItems(pr).map(item => (
-                        <div key={item.label} className="rounded-md border bg-white p-3">
+                        <div key={item.label} className="rounded-lg border border-slate-200 bg-white p-3">
                           <p className="flex items-center gap-2 text-xs font-medium uppercase text-slate-500">
                             <Clock3 className="h-3.5 w-3.5" />
                             {item.label}

@@ -605,9 +605,12 @@ def main() -> int:
     print()
     log_info(f"S3 Package: s3://{deployment_bucket}/{s3_key}")
     log_info("Console: https://console.aws.amazon.com/amplify/apps")
+    log_info(f"App URL: {outputs['AmplifyUrl']}")
     try:
         app_domain = get_amplify_app_domain(app_id)
-        log_info(f"App URL: https://{BRANCH_NAME}.{app_domain}")
+        default_url = f"https://{BRANCH_NAME}.{app_domain}"
+        if default_url != outputs["AmplifyUrl"]:
+            log_info(f"Default Amplify URL: {default_url}")
     except subprocess.CalledProcessError:
         log_warning("Could not retrieve app URL - check Amplify console")
 

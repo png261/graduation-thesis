@@ -64,6 +64,7 @@ export interface DeploymentSecrets {
 
 export interface AppConfig {
   stack_name_base: string
+  domain?: string
   admin_user_email?: string | null
   backend: {
     deployment_type: DeploymentType
@@ -156,6 +157,26 @@ export class ConfigManager {
     return value
   }
 
+  private _optionalDomain(): string | undefined {
+    const value = this.env.DOMAIN?.trim()
+    if (!value) return undefined
+
+    const normalized = value
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/+$/g, "")
+      .toLowerCase()
+
+    const hostnamePattern =
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/
+    if (!hostnamePattern.test(normalized)) {
+      throw new Error(
+        `Invalid DOMAIN '${value}'. Set DOMAIN to a hostname like example.com or app.example.com.`
+      )
+    }
+
+    return normalized
+  }
+
   private _loadConfig(configFile: string): AppConfig {
     let configPath: string
 
@@ -229,6 +250,7 @@ export class ConfigManager {
       }
       return {
         stack_name_base: stackNameBase,
+        domain: this._optionalDomain(),
         admin_user_email: parsedConfig.admin_user_email || null,
         backend: {
           deployment_type: deploymentType,

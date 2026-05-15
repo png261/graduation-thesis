@@ -93,6 +93,11 @@ export class FastMainStack extends cdk.Stack {
       description: "Amplify Frontend URL (available after deployment)",
     })
 
+    new cdk.CfnOutput(this, "DefaultAmplifyUrl", {
+      value: this.amplifyHostingStack.defaultAmplifyUrl,
+      description: "Default Amplify Frontend URL",
+    })
+
     new cdk.CfnOutput(this, "StagingBucketName", {
       value: this.amplifyHostingStack.stagingBucket.bucketName,
       description: "S3 bucket for Amplify deployment staging",

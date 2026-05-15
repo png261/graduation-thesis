@@ -1,9 +1,19 @@
 "use client"
 
 import { useState } from "react"
-import { Wrench, Loader2, CheckCircle2, ChevronRight, ChevronDown, ExternalLink, CircleStop } from "lucide-react"
+import { Wrench, Loader2, ChevronRight, ChevronDown, ExternalLink, CircleStop } from "lucide-react"
 import type { ToolRenderProps } from "@/hooks/useToolRenderer"
 import type { ToolProgressEntry } from "./types"
+
+type DiagramSuccess = {
+  ok?: boolean
+  public_url: string
+  public_url_expires_in?: number | null
+  image_key?: string
+  image_path?: string
+  source_path?: string
+  mime_type?: string
+}
 
 export function parseDiagramResult(name: string, result?: string) {
   if (name !== "diagram" || !result) return null
@@ -26,16 +36,30 @@ export function parseDiagramResult(name: string, result?: string) {
   }
 }
 
+function isDiagramSuccess(diagram: ReturnType<typeof parseDiagramResult>): diagram is DiagramSuccess {
+  return Boolean(diagram && "public_url" in diagram && diagram.public_url)
+}
+
 export function ToolCallDisplay({ name, args, status, progress, result, agent }: ToolRenderProps) {
   const [expanded, setExpanded] = useState(false)
   const diagram = parseDiagramResult(name, result)
   const activity = normalizeProgress(progress)
+  const displayName = formatToolDisplayName(name)
+  const latestActivity = activity.length > 0 ? activity[activity.length - 1] : undefined
+  const statusText = latestActivity ? stripToolPrefix(latestActivity.message, name, agent?.name) : formatToolStatus(status)
+
+  if (status === "complete") {
+    if (isDiagramSuccess(diagram)) {
+      return <DiagramResultFigure diagram={diagram} />
+    }
+    return null
+  }
 
   return (
     <div className="my-1 text-sm">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-gray-200/50 transition-colors w-full text-left"
+        className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left transition-colors hover:bg-slate-100"
       >
         {expanded ? (
           <ChevronDown size={12} className="text-gray-400" />
@@ -43,26 +67,20 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
           <ChevronRight size={12} className="text-gray-400" />
         )}
         <Wrench size={12} className="text-gray-400" />
-        {agent && (
-          <span className="ml-0.5 inline-flex min-w-0 items-center gap-1.5">
-            <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold ${agent.className}`}>
-              {agent.avatar}
-            </span>
-            <span className="max-w-[160px] truncate text-xs font-medium text-slate-600">{agent.name}</span>
-          </span>
-        )}
-        <span className="text-gray-600">{name}</span>
+        <span className="min-w-0 flex-1 truncate text-slate-600">
+          <span className="font-medium text-slate-700">{displayName}</span>
+          {statusText && <span className="text-slate-500"> {statusText}</span>}
+        </span>
         {status === "streaming" && (
           <Loader2 size={12} className="animate-spin text-blue-500 ml-auto" />
         )}
         {status === "executing" && (
           <Loader2 size={12} className="animate-spin text-amber-500 ml-auto" />
         )}
-        {status === "complete" && <CheckCircle2 size={12} className="text-green-500 ml-auto" />}
         {status === "stopped" && <CircleStop size={12} className="text-slate-400 ml-auto" />}
       </button>
 
-      {activity.length > 0 && status !== "complete" && status !== "stopped" && (
+      {activity.length > 0 && status !== "stopped" && (
         <div className="ml-6 mt-1 space-y-1 border-l-2 border-sky-100 pl-3 text-xs text-slate-500">
           {activity.slice(-3).map((item, index) => (
             <div key={`${index}-${item.phase}-${item.message}`} className="flex items-start gap-1.5">
@@ -73,42 +91,20 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
         </div>
       )}
 
-      {diagram && "public_url" in diagram && (
-        <figure className="my-2 overflow-hidden rounded border border-gray-200 bg-white">
-          <img
-            src={diagram.public_url}
-            alt="Rendered architecture diagram"
-            className="max-h-[520px] w-full object-contain"
-          />
-          {(diagram.image_path || diagram.public_url) && (
-            <figcaption className="flex items-center justify-between gap-2 border-t border-gray-200 px-2 py-1 text-xs text-gray-500">
-              <span className="min-w-0 truncate">{diagram.image_path}</span>
-              <a
-                className="inline-flex shrink-0 items-center gap-1 text-sky-700 underline"
-                href={diagram.public_url}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Open
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            </figcaption>
-          )}
-        </figure>
-      )}
+      {isDiagramSuccess(diagram) && <DiagramResultFigure diagram={diagram} />}
 
       {expanded && (
-        <div className="ml-6 mt-1 border-l-2 border-gray-200 pl-3 space-y-2">
+        <div className="ml-6 mt-1 space-y-2 border-l-2 border-slate-200 pl-3">
           {activity.length > 0 && (
             <div>
-              <div className="text-xs text-gray-400">Agent reasoning and tools</div>
+              <div className="text-xs text-slate-400">Agent reasoning and tools</div>
               <div className="mt-1 space-y-1.5">
                 {activity.map((item, index) => (
                   <div key={`${index}-${item.phase}-${item.message}`} className="flex items-start gap-2 text-xs">
                     <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 font-medium ${progressPhaseClass(item.phase)}`}>
                       {progressPhaseLabel(item.phase)}
                     </span>
-                    <span className="min-w-0 whitespace-pre-wrap break-words text-gray-600">
+                    <span className="min-w-0 whitespace-pre-wrap break-words text-slate-600">
                       {item.message}
                     </span>
                   </div>
@@ -118,16 +114,16 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
           )}
           {args && (
             <div>
-              <div className="text-xs text-gray-400">Input</div>
-              <pre className="text-xs text-gray-600 whitespace-pre-wrap break-words mt-0.5">
+              <div className="text-xs text-slate-400">Input</div>
+              <pre className="mt-0.5 whitespace-pre-wrap break-words text-xs text-slate-600">
                 {args}
               </pre>
             </div>
           )}
           {result && (
             <div>
-              <div className="text-xs text-gray-400">Result</div>
-              <pre className="text-xs text-gray-600 whitespace-pre-wrap break-words mt-0.5">
+              <div className="text-xs text-slate-400">Result</div>
+              <pre className="mt-0.5 whitespace-pre-wrap break-words text-xs text-slate-600">
                 {diagram && "public_url" in diagram
                   ? JSON.stringify(
                       {
@@ -149,6 +145,71 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
         </div>
       )}
     </div>
+  )
+}
+
+function formatToolDisplayName(name: string) {
+  const normalized = name.toLowerCase()
+  if (normalized.includes("architect")) return "Architecture"
+  if (normalized === "diagram") return "Diagram"
+  return name
+    .replace(/_agent$/i, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, letter => letter.toUpperCase())
+}
+
+function formatToolStatus(status: string) {
+  switch (status) {
+    case "streaming":
+      return "is preparing..."
+    case "executing":
+      return "is working..."
+    case "stopped":
+      return "stopped"
+    default:
+      return ""
+  }
+}
+
+function stripToolPrefix(message: string, name: string, agentName?: string) {
+  const prefixes = [name, agentName].filter(Boolean) as string[]
+  for (const prefix of prefixes) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const pattern = new RegExp(`^${escaped}\\s+`, "i")
+    if (pattern.test(message)) {
+      return message.replace(pattern, "")
+    }
+  }
+  return message
+}
+
+function DiagramResultFigure({
+  diagram,
+}: {
+  diagram: DiagramSuccess
+}) {
+  return (
+    <figure className="my-2 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <img
+        src={diagram.public_url}
+        alt="Rendered architecture diagram"
+        className="max-h-[520px] w-full object-contain"
+      />
+      {(diagram.image_path || diagram.public_url) && (
+        <figcaption className="flex items-center justify-between gap-2 border-t border-slate-200 px-2 py-1 text-xs text-slate-500">
+          <span className="min-w-0 truncate">{diagram.image_path}</span>
+          <a
+            className="inline-flex shrink-0 items-center gap-1 text-sky-700 underline"
+            href={diagram.public_url}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Open
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </figcaption>
+      )}
+    </figure>
   )
 }
 
@@ -195,6 +256,6 @@ function progressPhaseClass(phase: string) {
     case "thinking":
       return "bg-slate-100 text-slate-600"
     default:
-      return "bg-gray-100 text-gray-600"
+      return "bg-slate-100 text-slate-600"
   }
 }

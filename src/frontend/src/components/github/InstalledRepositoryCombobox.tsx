@@ -45,7 +45,7 @@ export function InstalledRepositoryCombobox({
         <Button
           type="button"
           variant="outline"
-          className="w-full justify-between"
+          className="w-full justify-between rounded-lg"
           disabled={disabled || isLoading}
           aria-expanded={open}
         >
@@ -66,7 +66,7 @@ export function InstalledRepositoryCombobox({
               className="pl-8"
             />
           </div>
-          <div className="max-h-72 overflow-y-auto rounded-md border">
+          <div className="max-h-72 overflow-y-auto rounded-lg border border-slate-200">
             {filteredRepositories.length === 0 ? (
               <p className="p-3 text-sm text-muted-foreground">
                 {isLoading ? "Loading repositories..." : "No installed repositories found"}
@@ -77,8 +77,8 @@ export function InstalledRepositoryCombobox({
                   type="button"
                   key={repository.fullName}
                   className={cn(
-                    "flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground",
-                    repository.fullName === value && "bg-accent text-accent-foreground"
+                    "flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 hover:text-slate-950",
+                    repository.fullName === value && "bg-slate-100 text-slate-950"
                   )}
                   onClick={() => {
                     onValueChange(repository.fullName)

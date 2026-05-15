@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { ToolCallDisplay, parseDiagramResult } from "@/components/chat/ToolCallDisplay"
 
 describe("ToolCallDisplay", () => {
-  it("shows completed agent reasoning and tool activity when expanded", () => {
+  it("hides completed non-diagram tool calls", () => {
     render(
       <ToolCallDisplay
         name="architect_agent"
@@ -26,17 +26,45 @@ describe("ToolCallDisplay", () => {
     )
 
     expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
-    expect(screen.getByText("IQ")).toBeInTheDocument()
-    expect(screen.getByText("InfraQ Orchestrator")).toBeInTheDocument()
+    expect(screen.queryByText("IQ")).not.toBeInTheDocument()
+    expect(screen.queryByText("InfraQ Orchestrator")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /architect_agent/i })).not.toBeInTheDocument()
+    expect(screen.queryByText("Minimal architecture output")).not.toBeInTheDocument()
+  })
 
-    fireEvent.click(screen.getByRole("button", { name: /architect_agent/i }))
+  it("shows active agent reasoning and tool activity when expanded", () => {
+    render(
+      <ToolCallDisplay
+        name="architect_agent"
+        args='{"input":"Design a test architecture"}'
+        status="executing"
+        progress={[
+          { phase: "thinking", message: "architect_agent is thinking" },
+          { phase: "tool", message: "architect_agent is using list_aws_services" },
+          { phase: "text", message: "Drafting a minimal VPC and EC2 testing design" },
+        ]}
+        agent={{
+          id: "agent1",
+          name: "InfraQ Orchestrator",
+          avatar: "IQ",
+          className: "bg-slate-950 text-white",
+        }}
+      />
+    )
+
+    expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
+    expect(screen.queryByText("IQ")).not.toBeInTheDocument()
+    expect(screen.queryByText("InfraQ Orchestrator")).not.toBeInTheDocument()
+    expect(screen.getByText("Architecture")).toBeInTheDocument()
+    expect(screen.getAllByText("Drafting a minimal VPC and EC2 testing design").length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole("button", { name: /Architecture/i }))
 
     expect(screen.getByText("Agent reasoning and tools")).toBeInTheDocument()
     expect(screen.getByText("Thinking")).toBeInTheDocument()
     expect(screen.getByText("Tool")).toBeInTheDocument()
-    expect(screen.getByText("architect_agent is using list_aws_services")).toBeInTheDocument()
-    expect(screen.getByText("Drafting a minimal VPC and EC2 testing design")).toBeInTheDocument()
-    expect(screen.getByText("Minimal architecture output")).toBeInTheDocument()
+    expect(screen.getAllByText("architect_agent is using list_aws_services").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Drafting a minimal VPC and EC2 testing design").length).toBeGreaterThan(0)
   })
 
   it("renders architecture diagrams from a public URL instead of a data URL", () => {
@@ -61,6 +89,7 @@ describe("ToolCallDisplay", () => {
 
     const image = screen.getByAltText("Rendered architecture diagram")
     expect(image).toHaveAttribute("src", "https://example.com/diagram.svg?signature=test")
+    expect(screen.queryByRole("button", { name: /diagram/i })).not.toBeInTheDocument()
     expect(screen.getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",
       "https://example.com/diagram.svg?signature=test"
