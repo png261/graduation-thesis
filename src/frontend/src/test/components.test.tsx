@@ -55,14 +55,15 @@ describe("Component Integration Tests", () => {
   })
 
   describe("AuthProvider Component", () => {
-    it("should use react-oidc-context AuthProvider", () => {
+    it("should use Amplify Auth for custom Cognito authentication", () => {
       const authProviderContent = readFileSync(
         resolve(__dirname, "../components/auth/AuthProvider.tsx"),
         "utf-8"
       )
-      expect(authProviderContent).toContain(
-        'import { AuthProvider as OidcAuthProvider } from "react-oidc-context"'
-      )
+      expect(authProviderContent).toContain('import { Amplify } from "aws-amplify"')
+      expect(authProviderContent).toContain('from "aws-amplify/auth"')
+      expect(authProviderContent).toContain("amplifySignIn")
+      expect(authProviderContent).toContain("amplifySignUp")
     })
 
     it("should load auth configuration", () => {
@@ -78,7 +79,7 @@ describe("Component Integration Tests", () => {
         resolve(__dirname, "../components/auth/AuthProvider.tsx"),
         "utf-8"
       )
-      expect(authProviderContent).toContain("Loading authentication configuration")
+      expect(authProviderContent).toContain("Loading...")
     })
 
     it("should handle auth config loading errors", () => {
@@ -86,16 +87,17 @@ describe("Component Integration Tests", () => {
         resolve(__dirname, "../components/auth/AuthProvider.tsx"),
         "utf-8"
       )
-      expect(authProviderContent).toContain("Failed to load authentication configuration")
+      expect(authProviderContent).toContain("Cognito user pool configuration is incomplete")
     })
 
-    it("should wrap children with OidcAuthProvider", () => {
+    it("should render a custom sign-in and sign-up screen before children", () => {
       const authProviderContent = readFileSync(
         resolve(__dirname, "../components/auth/AuthProvider.tsx"),
         "utf-8"
       )
-      expect(authProviderContent).toContain("<OidcAuthProvider")
-      expect(authProviderContent).toContain("</OidcAuthProvider>")
+      expect(authProviderContent).toContain("<AuthScreen")
+      expect(authProviderContent).toContain("Create account")
+      expect(authProviderContent).toContain("Confirm account")
     })
   })
 

@@ -399,6 +399,7 @@ export class BackendStack extends cdk.NestedStack {
         config.backend.github?.credential_provider_name || `${config.stack_name_base}-github-app`,
       GITHUB_APP_ID: config.backend.github?.app_id || "",
       GITHUB_APP_SLUG: config.backend.github?.app_slug || "",
+      INFRACOST_API_KEY: config.backend.secrets.infracost_api_key || "",
       // Controls whether the agent activates long-term semantic memory retrieval.
       // The memory resource always includes the SemanticMemoryStrategy (no cost to define it),
       // but retrieval is only performed when this is "true". See config.yaml: use_long_term_memory.

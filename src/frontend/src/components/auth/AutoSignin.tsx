@@ -1,7 +1,7 @@
 "use client"
 
 import { ReactNode, useEffect, useState, PropsWithChildren } from "react"
-import { useAuth } from "react-oidc-context"
+import { useAuth } from "@/hooks/useAuth"
 import { Button } from "@/components/ui/button"
 
 function AutoSigninContent({ children }: PropsWithChildren) {
@@ -15,7 +15,7 @@ function AutoSigninContent({ children }: PropsWithChildren) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-4">
         <p className="text-4xl">Please sign in</p>
-        <Button onClick={() => auth.signinRedirect()}>Sign In</Button>
+        <Button onClick={() => void auth.signIn()}>Sign In</Button>
       </div>
     )
   }

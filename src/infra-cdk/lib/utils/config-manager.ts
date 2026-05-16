@@ -60,6 +60,7 @@ export interface GitHubConfig {
 export interface DeploymentSecrets {
   openai_api_key: string
   github_app_private_key: string
+  infracost_api_key?: string
 }
 
 export interface AppConfig {
@@ -204,6 +205,7 @@ export class ConfigManager {
       const parsedConfig = yaml.parse(fileContent) as AppConfig
       const openaiApiKey = this._requiredEnv("OPENAI_API_KEY")
       const githubAppPrivateKey = this._requiredEnv("GITHUB_APP_PRIVATE_KEY")
+      const infracostApiKey = this.env.INFRACOST_API_KEY?.trim()
 
       const deploymentType = parsedConfig.backend?.deployment_type || "zip"
       if (deploymentType !== "docker" && deploymentType !== "zip") {
@@ -284,6 +286,7 @@ export class ConfigManager {
           secrets: {
             openai_api_key: openaiApiKey,
             github_app_private_key: githubAppPrivateKey,
+            infracost_api_key: infracostApiKey || undefined,
           },
           s3_files: {
             enabled: s3FilesEnabled,

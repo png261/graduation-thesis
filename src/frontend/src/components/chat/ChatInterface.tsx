@@ -7,7 +7,7 @@ import type { ChatAttachment, ChatSession, CheckpointState, Message, MessageSegm
 import { ORCHESTRATOR_AGENT } from "./agents"
 
 import { AgentCoreClient } from "@/lib/agentcore-client"
-import { useAuth } from "react-oidc-context"
+import { useAuth } from "@/hooks/useAuth"
 import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
 import { FileSystemPanel } from "@/components/files/FileSystemPanel"
@@ -778,7 +778,6 @@ export default function ChatInterface() {
     }
 
     try {
-      // Get auth token from react-oidc-context
       const accessToken = auth.user?.access_token
 
       if (!accessToken) {

@@ -57,12 +57,18 @@ vi.mock("@/app/context/GlobalContext", () => ({
   useGlobal: () => ({ isLoading: false, setIsLoading: vi.fn() }),
 }))
 
-vi.mock("react-oidc-context", () => ({
+vi.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({
+    isAuthenticated: true,
     user: {
       access_token: "access-token",
       id_token: "id-token",
     },
+    signIn: vi.fn(),
+    signOut: vi.fn(),
+    isLoading: false,
+    error: null,
+    token: "id-token",
   }),
 }))
 

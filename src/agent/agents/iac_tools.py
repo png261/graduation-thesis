@@ -83,6 +83,65 @@ def _run(command: list[str], cwd: Path, timeout: int = 180) -> str:
         )
 
 
+def _configure_infracost_api_key(cwd: Path) -> dict | None:
+    api_key = os.environ.get("INFRACOST_API_KEY", "").strip()
+    command = ["infracost", "configure", "set", "api_key", "<redacted>"]
+    if not api_key:
+        return {
+            "ok": False,
+            "error": "missing_api_key",
+            "cwd": str(cwd),
+            "command": command,
+            "message": "INFRACOST_API_KEY is not configured in the runtime environment.",
+        }
+    if not shutil.which("infracost"):
+        return {
+            "ok": False,
+            "error": "not_installed",
+            "cwd": str(cwd),
+            "command": "infracost",
+        }
+    try:
+        completed = subprocess.run(
+            ["infracost", "configure", "set", "api_key", api_key],
+            cwd=str(cwd),
+            env={**os.environ, "TF_INPUT": "0", "TOFU_INPUT": "0"},
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error": "timeout",
+            "cwd": str(cwd),
+            "command": command,
+            "stdout": (exc.stdout or "")[-MAX_OUTPUT_CHARS:] if isinstance(exc.stdout, str) else "",
+            "stderr": (exc.stderr or "")[-MAX_OUTPUT_CHARS:] if isinstance(exc.stderr, str) else "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": type(exc).__name__,
+            "message": str(exc),
+            "cwd": str(cwd),
+            "command": command,
+        }
+
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "returncode": completed.returncode,
+            "cwd": str(cwd),
+            "command": command,
+            "stdout": completed.stdout[-MAX_OUTPUT_CHARS:],
+            "stderr": completed.stderr[-MAX_OUTPUT_CHARS:],
+            "truncated": len(completed.stdout) > MAX_OUTPUT_CHARS or len(completed.stderr) > MAX_OUTPUT_CHARS,
+        }
+    return None
+
+
 @tool
 def terraform_init(
     path: str = ".",
@@ -156,6 +215,9 @@ def tflint_scan(path: str = ".") -> str:
 def infracost_breakdown(path: str = ".") -> str:
     """Run infracost breakdown for Terraform/OpenTofu code in a workspace-relative directory."""
     cwd = _workspace_path(path)
+    configure_error = _configure_infracost_api_key(cwd)
+    if configure_error:
+        return json.dumps(configure_error)
     return _run(["infracost", "breakdown", "--path", str(cwd), "--format", "json"], cwd, timeout=300)
 
 

@@ -1,7 +1,7 @@
 import { WebStorageStateStore } from "oidc-client-ts"
 
 // Configuration type matching the cognitoAuthConfig structure
-type AwsExportsConfig = {
+export type AwsExportsConfig = {
   authority?: string
   client_id?: string
   redirect_uri?: string
@@ -10,6 +10,15 @@ type AwsExportsConfig = {
   scope?: string
   automaticSilentRenew?: boolean
   userStore: WebStorageStateStore | undefined
+}
+
+export function userPoolIdFromAuthority(authority?: string): string {
+  if (!authority) return ""
+  return authority.replace(/\/+$/g, "").split("/").pop() ?? ""
+}
+
+export function regionFromUserPoolId(userPoolId?: string): string {
+  return userPoolId?.split("_")[0] ?? ""
 }
 
 /**

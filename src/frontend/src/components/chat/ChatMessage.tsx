@@ -185,7 +185,7 @@ export function ChatMessage({
   }
 
   return (
-    <div className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
+    <div className={`group/message flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
       <div
         className={`max-w-[80%] break-words ${
           message.role === "user"
@@ -222,7 +222,7 @@ export function ChatMessage({
       </div>
 
       {(canCopyAssistantResponse || (message.role === "user" && onEdit)) && (
-        <div className="mt-1 flex items-center gap-2 px-1">
+        <div className="mt-1 flex items-center gap-2 px-1 opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
           {canCopyAssistantResponse && (
             <button
               onClick={() => void handleCopyResponse()}
