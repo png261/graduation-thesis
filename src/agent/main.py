@@ -39,6 +39,7 @@ from agents.iac_tools import (
     terraform_init,
     terraform_plan,
     terraform_validate,
+    ministack_terratest,
     tflint_scan,
 )
 from agents.orchestator.agent import create_agent as create_orchestrator_agent
@@ -791,6 +792,7 @@ def create_strands_agent(
         terraform_init=terraform_init,
         terraform_plan=terraform_plan,
         terraform_validate=terraform_validate,
+        ministack_terratest=ministack_terratest,
         tflint_scan=tflint_scan,
         infracost_breakdown=infracost_breakdown,
         checkov_scan=checkov_scan,

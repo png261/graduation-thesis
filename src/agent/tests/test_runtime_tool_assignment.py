@@ -74,6 +74,12 @@ class RuntimeToolAssignmentTests(unittest.TestCase):
         self.assertIn("terraform_init", DEVOPS_TOOLS)
         self.assertIn("terraform_plan", DEVOPS_TOOLS)
         self.assertIn("terraform_validate", DEVOPS_TOOLS)
+        self.assertIn("ministack_terratest", DEVOPS_TOOLS)
+
+    def test_ministack_terratest_tool_is_only_assigned_to_devops(self):
+        self.assertIn("ministack_terratest", DEVOPS_TOOLS)
+        for tool_names in (ARCHITECT_TOOLS, ENGINEER_TOOLS, REVIEWER_TOOLS, COST_TOOLS, SECURITY_TOOLS, ORCHESTRATOR_TOOLS):
+            self.assertNotIn("ministack_terratest", tool_names)
 
     def test_raw_shell_tool_is_not_exposed_to_any_agent(self):
         all_tool_sets = (

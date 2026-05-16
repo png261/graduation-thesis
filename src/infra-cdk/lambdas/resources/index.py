@@ -43,6 +43,7 @@ scheduler = boto3.client("scheduler")
 sns = boto3.client("sns")
 s3 = boto3.client("s3")
 RESOURCE_GRAPH_BUCKET = os.environ.get("RESOURCE_GRAPH_BUCKET", "")
+CHAT_ATTACHMENT_BUCKET = os.environ.get("CHAT_ATTACHMENT_BUCKET") or RESOURCE_GRAPH_BUCKET
 AWS_ICONS_PATH = os.environ.get("AWS_ICONS_PATH", "/opt/aws-official-icons")
 GITHUB_API = "https://api.github.com"
 
@@ -945,7 +946,13 @@ def _chat_session_id(value: Any) -> str:
     return session_id
 
 
-def _sanitize_message(message: Any) -> dict[str, Any]:
+def _sanitize_message(
+    message: Any,
+    *,
+    user_id: str = "",
+    session_id: str = "",
+    message_index: int = 0,
+) -> dict[str, Any]:
     if not isinstance(message, dict):
         raise ValueError("message must be an object")
     role = str(message.get("role") or "").strip()
@@ -975,7 +982,189 @@ def _sanitize_message(message: Any) -> dict[str, Any]:
         serialized_segments = json.loads(json.dumps(segments, default=_json_default))
         if len(json.dumps(serialized_segments[:40], default=_json_default).encode("utf-8")) <= 20000:
             sanitized["segments"] = serialized_segments[:40]
+    attachments = message.get("attachments")
+    if isinstance(attachments, list):
+        sanitized_attachments = [
+            attachment
+            for attachment in (
+                _sanitize_chat_attachment(
+                    attachment,
+                    user_id=user_id,
+                    session_id=session_id,
+                    message_index=message_index,
+                    attachment_index=attachment_index,
+                )
+                for attachment_index, attachment in enumerate(attachments[:6])
+            )
+            if attachment
+        ]
+        if sanitized_attachments:
+            sanitized["attachments"] = sanitized_attachments
     return sanitized
+
+
+def _decode_chat_attachment_data_url(data_url: str) -> bytes | None:
+    if not data_url.startswith("data:") or ";base64," not in data_url[:160]:
+        return None
+    try:
+        _, encoded = data_url.split(",", 1)
+        return base64.b64decode(encoded, validate=True)
+    except Exception:
+        return None
+
+
+def _safe_chat_attachment_key_part(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "-", value.strip()).strip(".-")
+    return (cleaned or fallback)[:120]
+
+
+def _chat_attachment_object_key(
+    *,
+    user_id: str,
+    session_id: str,
+    message_index: int,
+    attachment_id: str,
+    name: str,
+) -> str:
+    user_hash = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:24]
+    safe_session_id = _safe_chat_attachment_key_part(session_id, "session")
+    safe_attachment_id = _safe_chat_attachment_key_part(attachment_id, "attachment")
+    safe_name = _safe_chat_attachment_key_part(name, "attachment")
+    return (
+        f"chat-attachments/{user_hash}/{safe_session_id}/"
+        f"message-{message_index:03d}/{safe_attachment_id}-{safe_name}"
+    )
+
+
+def _store_chat_attachment_data(
+    data_url: str,
+    *,
+    content_type: str,
+    user_id: str,
+    session_id: str,
+    message_index: int,
+    attachment_id: str,
+    name: str,
+) -> tuple[str, int] | None:
+    if not CHAT_ATTACHMENT_BUCKET or not user_id or not session_id:
+        return None
+    content = _decode_chat_attachment_data_url(data_url)
+    if content is None or len(content) > 4 * 1024 * 1024:
+        return None
+    object_key = _chat_attachment_object_key(
+        user_id=user_id,
+        session_id=session_id,
+        message_index=message_index,
+        attachment_id=attachment_id,
+        name=name,
+    )
+    try:
+        s3.put_object(
+            Bucket=CHAT_ATTACHMENT_BUCKET,
+            Key=object_key,
+            Body=content,
+            ContentType=content_type,
+        )
+    except Exception:
+        return None
+    return object_key, len(content)
+
+
+def _sanitize_chat_attachment(
+    attachment: Any,
+    *,
+    user_id: str = "",
+    session_id: str = "",
+    message_index: int = 0,
+    attachment_index: int = 0,
+) -> dict[str, Any] | None:
+    if not isinstance(attachment, dict):
+        return None
+    attachment_id = str(attachment.get("id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}", attachment_id):
+        attachment_id = str(uuid.uuid4())
+    name = str(attachment.get("name") or "attachment").strip().replace("\x00", "")[:240] or "attachment"
+    content_type = str(attachment.get("type") or "application/octet-stream").strip()[:120]
+    if not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", content_type):
+        content_type = "application/octet-stream"
+    try:
+        size = int(attachment.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    data_url = str(attachment.get("dataUrl") or "")
+    data_key = str(attachment.get("dataKey") or "").strip()
+    sanitized = {
+        "id": attachment_id,
+        "name": name,
+        "type": content_type,
+        "size": max(0, min(size, 4 * 1024 * 1024)),
+    }
+    if data_url:
+        stored = _store_chat_attachment_data(
+            data_url,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            message_index=message_index,
+            attachment_id=attachment_id or f"attachment-{attachment_index}",
+            name=name,
+        )
+        if stored:
+            stored_key, stored_size = stored
+            sanitized["dataKey"] = stored_key
+            sanitized["size"] = stored_size
+        elif len(data_url.encode("utf-8")) <= 300000 and _decode_chat_attachment_data_url(data_url) is not None:
+            sanitized["dataUrl"] = data_url
+    elif data_key.startswith("chat-attachments/"):
+        sanitized["dataKey"] = data_key
+    return sanitized
+
+
+def _attachment_data_url(content_type: str, content: bytes) -> str:
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def _hydrate_chat_attachment(attachment: Any) -> Any:
+    if not isinstance(attachment, dict):
+        return attachment
+    if attachment.get("dataUrl") or not CHAT_ATTACHMENT_BUCKET:
+        return attachment
+    data_key = str(attachment.get("dataKey") or "")
+    if not data_key.startswith("chat-attachments/"):
+        return attachment
+    try:
+        response = s3.get_object(Bucket=CHAT_ATTACHMENT_BUCKET, Key=data_key)
+        content = response["Body"].read()
+    except Exception:
+        return attachment
+    if len(content) > 4 * 1024 * 1024:
+        return attachment
+    content_type = str(attachment.get("type") or response.get("ContentType") or "application/octet-stream")
+    return {
+        **attachment,
+        "dataUrl": _attachment_data_url(content_type, content),
+        "size": len(content),
+    }
+
+
+def _hydrate_session_attachments(session: dict[str, Any]) -> dict[str, Any]:
+    history = session.get("history")
+    if not isinstance(history, list):
+        return session
+    hydrated_history = []
+    changed = False
+    for message in history:
+        if not isinstance(message, dict) or not isinstance(message.get("attachments"), list):
+            hydrated_history.append(message)
+            continue
+        attachments = [_hydrate_chat_attachment(attachment) for attachment in message["attachments"]]
+        if attachments != message["attachments"]:
+            changed = True
+        hydrated_history.append({**message, "attachments": attachments})
+    if not changed:
+        return session
+    return {**session, "history": hydrated_history}
 
 
 def _sanitize_repository(repository: Any) -> dict[str, Any] | None:
@@ -1058,7 +1247,7 @@ def _sanitize_pull_request(pull_request: Any) -> dict[str, Any] | None:
     return sanitized or None
 
 
-def _sanitize_chat_session(session: Any) -> dict[str, Any]:
+def _sanitize_chat_session(session: Any, user_id: str = "") -> dict[str, Any]:
     if not isinstance(session, dict):
         raise ValueError("session must be an object")
     session_id = _chat_session_id(session.get("id"))
@@ -1070,7 +1259,10 @@ def _sanitize_chat_session(session: Any) -> dict[str, Any]:
         "sessionId": session_id,
         "id": session_id,
         "name": name,
-        "history": [_sanitize_message(message) for message in history[-80:]],
+        "history": [
+            _sanitize_message(message, user_id=user_id, session_id=session_id, message_index=index)
+            for index, message in enumerate(history[-80:])
+        ],
         "startDate": str(session.get("startDate") or _now()),
         "endDate": str(session.get("endDate") or _now()),
         "repository": repository,
@@ -1088,7 +1280,10 @@ def _list_chat_sessions(user_id: str) -> dict[str, Any]:
         ExpressionAttributeValues={":pk": user_id, ":prefix": "SESSION#"},
         ScanIndexForward=False,
     )
-    sessions = sorted(response.get("Items", []), key=lambda item: item.get("endDate", ""), reverse=True)
+    sessions = [
+        _hydrate_session_attachments(session)
+        for session in sorted(response.get("Items", []), key=lambda item: item.get("endDate", ""), reverse=True)
+    ]
     config = _get_user_config(user_id, "activeChatSessionId")
     return {"sessions": sessions, "activeSessionId": config.get("value") or ""}
 
@@ -1099,7 +1294,7 @@ def _save_chat_sessions(user_id: str, payload: dict[str, Any]) -> dict[str, Any]
         raise ValueError("sessions must be an array")
     if len(incoming) > 50:
         raise ValueError("A maximum of 50 chat sessions is supported")
-    sessions = [_sanitize_chat_session(session) for session in incoming if isinstance(session, dict)]
+    sessions = [_sanitize_chat_session(session, user_id=user_id) for session in incoming if isinstance(session, dict)]
     timestamp = _now()
     existing = table.query(
         KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",

@@ -5,11 +5,17 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from strands import tool
 
 
 MAX_OUTPUT_CHARS = 12000
+MINISTACK_DEFAULT_ENDPOINT = "http://127.0.0.1:4566"
+_MINISTACK_PROCESS: subprocess.Popen | None = None
 
 
 def _workspace_path(path: str | None) -> Path:
@@ -79,6 +85,201 @@ def _run(command: list[str], cwd: Path, timeout: int = 180) -> str:
                 "message": str(exc),
                 "cwd": str(cwd),
                 "command": command,
+            }
+        )
+
+
+def _ministack_env(endpoint: str, region: str = "us-east-1") -> dict[str, str]:
+    return {
+        **os.environ,
+        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+        "AWS_DEFAULT_REGION": region,
+        "AWS_REGION": region,
+        "AWS_ENDPOINT_URL": endpoint,
+        "MINISTACK_ENDPOINT_URL": endpoint,
+        "TF_INPUT": "0",
+        "TOFU_INPUT": "0",
+    }
+
+
+def _ministack_health_url(endpoint: str) -> str:
+    return urllib.parse.urljoin(endpoint.rstrip("/") + "/", "_ministack/health")
+
+
+def _ministack_reset_url(endpoint: str) -> str:
+    return urllib.parse.urljoin(endpoint.rstrip("/") + "/", "_ministack/reset")
+
+
+def _ministack_is_healthy(endpoint: str) -> bool:
+    try:
+        with urllib.request.urlopen(_ministack_health_url(endpoint), timeout=2) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+
+def _ensure_ministack(endpoint: str, services: str = "", timeout_seconds: int = 30) -> dict:
+    global _MINISTACK_PROCESS
+
+    if _ministack_is_healthy(endpoint):
+        return {"ok": True, "endpoint": endpoint, "started": False}
+
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return {
+            "ok": False,
+            "error": "ministack_unreachable",
+            "endpoint": endpoint,
+            "message": "Configured MiniStack endpoint is not healthy and cannot be auto-started because it is not local.",
+        }
+
+    command = shutil.which("ministack")
+    if not command:
+        return {
+            "ok": False,
+            "error": "not_installed",
+            "command": "ministack",
+            "endpoint": endpoint,
+        }
+
+    port = str(parsed.port or 4566)
+    env = {
+        **os.environ,
+        "GATEWAY_PORT": port,
+        "MINISTACK_HOST": parsed.hostname or "127.0.0.1",
+        "AWS_ACCESS_KEY_ID": "test",
+        "AWS_SECRET_ACCESS_KEY": "test",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_ENDPOINT_URL": endpoint,
+    }
+    if services.strip():
+        env["SERVICES"] = services.strip()
+
+    if _MINISTACK_PROCESS is None or _MINISTACK_PROCESS.poll() is not None:
+        _MINISTACK_PROCESS = subprocess.Popen(
+            [command],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _ministack_is_healthy(endpoint):
+            return {
+                "ok": True,
+                "endpoint": endpoint,
+                "started": True,
+                "pid": _MINISTACK_PROCESS.pid if _MINISTACK_PROCESS else None,
+            }
+        if _MINISTACK_PROCESS and _MINISTACK_PROCESS.poll() is not None:
+            return {
+                "ok": False,
+                "error": "ministack_exited",
+                "returncode": _MINISTACK_PROCESS.returncode,
+                "endpoint": endpoint,
+            }
+        time.sleep(0.5)
+
+    return {
+        "ok": False,
+        "error": "ministack_start_timeout",
+        "endpoint": endpoint,
+        "timeoutSeconds": timeout_seconds,
+    }
+
+
+def _reset_ministack(endpoint: str) -> dict:
+    request = urllib.request.Request(_ministack_reset_url(endpoint), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return {"ok": 200 <= response.status < 300, "status": response.status}
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
+
+
+def _go_test_args(test_pattern: str, timeout_seconds: int) -> list[str]:
+    args = ["go", "test", "./...", "-timeout", f"{max(1, timeout_seconds)}s"]
+    if test_pattern.strip():
+        args.extend(["-run", test_pattern.strip()])
+    return args
+
+
+def _run_ministack_terratest(
+    cwd: Path,
+    endpoint: str,
+    test_pattern: str,
+    timeout_seconds: int,
+    reset_before: bool,
+) -> str:
+    args = _go_test_args(test_pattern, timeout_seconds)
+    if not shutil.which(args[0]):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "not_installed",
+                "command": args[0],
+                "endpoint": endpoint,
+            }
+        )
+    reset_result = _reset_ministack(endpoint) if reset_before else {"ok": True, "skipped": True}
+    if not reset_result.get("ok"):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "ministack_reset_failed",
+                "endpoint": endpoint,
+                "reset": reset_result,
+            }
+        )
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(cwd),
+            env=_ministack_env(endpoint),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=max(1, timeout_seconds + 30),
+        )
+        stdout = completed.stdout[-MAX_OUTPUT_CHARS:]
+        stderr = completed.stderr[-MAX_OUTPUT_CHARS:]
+        return json.dumps(
+            {
+                "ok": completed.returncode == 0,
+                "returncode": completed.returncode,
+                "cwd": str(cwd),
+                "endpoint": endpoint,
+                "command": args,
+                "reset": reset_result,
+                "stdout": stdout,
+                "stderr": stderr,
+                "truncated": len(completed.stdout) > MAX_OUTPUT_CHARS or len(completed.stderr) > MAX_OUTPUT_CHARS,
+            }
+        )
+    except subprocess.TimeoutExpired as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "timeout",
+                "cwd": str(cwd),
+                "endpoint": endpoint,
+                "command": args,
+                "stdout": (exc.stdout or "")[-MAX_OUTPUT_CHARS:] if isinstance(exc.stdout, str) else "",
+                "stderr": (exc.stderr or "")[-MAX_OUTPUT_CHARS:] if isinstance(exc.stderr, str) else "",
+            }
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": type(exc).__name__,
+                "message": str(exc),
+                "cwd": str(cwd),
+                "endpoint": endpoint,
+                "command": args,
             }
         )
 
@@ -202,6 +403,57 @@ def terraform_validate(path: str = ".") -> str:
     cwd = _workspace_path(path)
     command = _which("tofu", "terraform")
     return _run([command or "tofu", "validate", "-no-color"], cwd, timeout=180)
+
+
+@tool
+def ministack_terratest(
+    path: str = ".",
+    test_pattern: str = "",
+    endpoint: str = "",
+    services: str = "",
+    timeout_seconds: int = 1800,
+    reset_before: bool = True,
+) -> str:
+    """Run Go Terratest tests against a local MiniStack AWS emulator.
+
+    The tool starts MiniStack in the AgentCore runtime when the endpoint is local and not already
+    healthy, then runs `go test ./...` from the workspace-relative path. Tests receive dummy AWS
+    credentials plus `AWS_ENDPOINT_URL`, `MINISTACK_ENDPOINT_URL`, `AWS_REGION`, and
+    `AWS_DEFAULT_REGION` pointed at MiniStack. Terraform providers should use endpoint overrides
+    or read `AWS_ENDPOINT_URL`/`MINISTACK_ENDPOINT_URL` from the test code.
+
+    Args:
+        path: Directory containing Go Terratest files. Must be inside the session workspace.
+        test_pattern: Optional Go `-run` regex for selecting tests.
+        endpoint: MiniStack endpoint. Defaults to MINISTACK_ENDPOINT_URL, MINISTACK_ENDPOINT, or http://127.0.0.1:4566.
+        services: Optional MiniStack SERVICES filter used when the tool auto-starts MiniStack.
+        timeout_seconds: Go test timeout in seconds.
+        reset_before: Whether to call `/_ministack/reset` before running tests.
+
+    Returns:
+        JSON string with command, cwd, MiniStack endpoint, reset result, return code, stdout, and stderr.
+    """
+    cwd = _workspace_path(path)
+    selected_endpoint = (
+        endpoint.strip()
+        or os.environ.get("MINISTACK_ENDPOINT_URL", "").strip()
+        or os.environ.get("MINISTACK_ENDPOINT", "").strip()
+        or MINISTACK_DEFAULT_ENDPOINT
+    )
+    startup = _ensure_ministack(selected_endpoint, services=services)
+    if not startup.get("ok"):
+        return json.dumps(startup)
+    result = json.loads(
+        _run_ministack_terratest(
+            cwd,
+            selected_endpoint,
+            test_pattern,
+            max(1, int(timeout_seconds)),
+            reset_before,
+        )
+    )
+    result["ministack"] = startup
+    return json.dumps(result)
 
 
 @tool

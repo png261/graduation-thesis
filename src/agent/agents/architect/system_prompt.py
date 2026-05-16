@@ -1,3 +1,4 @@
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT
 
 
@@ -66,4 +67,4 @@ SYSTEM_PROMPT = """# Architect
   ambiguities are resolved
 - MUST NOT hardcode region, instance type, or budget when those were not provided by the user
 - MUST call `write_ir_plan()` after producing implementation-ready P0
-""" + STRUCTURED_OUTPUT_CONTRACT
+""" + INPUT_SAFETY_CONTRACT + STRUCTURED_OUTPUT_CONTRACT

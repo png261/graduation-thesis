@@ -212,6 +212,140 @@ describe("web app store chat persistence", () => {
     expect(state.sessions[0].stateBackend?.backendId).toBe("backend-1")
   })
 
+  it("restores local image attachments when saved sessions omit attachment data", async () => {
+    resources.listChatSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "session-with-image",
+          name: "Image chat",
+          history: [
+            {
+              role: "user",
+              content: "Review this image",
+              timestamp: "2026-05-15T04:00:00.000Z",
+            },
+          ],
+          startDate: "2026-05-15T04:00:00.000Z",
+          endDate: "2026-05-15T04:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "session-with-image",
+    })
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "session-with-image",
+          name: "Image chat",
+          history: [
+            {
+              role: "user",
+              content: "Review this image",
+              timestamp: "2026-05-15T04:00:00.000Z",
+              attachments: [
+                {
+                  id: "image-1",
+                  name: "diagram.png",
+                  type: "image/png",
+                  size: 128,
+                  dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+                },
+              ],
+            },
+          ],
+          startDate: "2026-05-15T04:00:00.000Z",
+          endDate: "2026-05-15T04:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "session-with-image",
+    })
+
+    await useWebAppStore.getState().hydrateChatSessions("id-token", { force: true })
+
+    expect(useWebAppStore.getState().sessions[0].history[0].attachments?.[0]).toMatchObject({
+      name: "diagram.png",
+      dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+    })
+  })
+
+  it("keeps locally completed last messages when saved session is stale after reload", async () => {
+    resources.listChatSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "session-with-last-message",
+          name: "Reload chat",
+          history: [
+            {
+              role: "user",
+              content: "Earlier message",
+              timestamp: "2026-05-15T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Earlier response",
+              timestamp: "2026-05-15T04:00:01.000Z",
+              status: "complete",
+            },
+          ],
+          startDate: "2026-05-15T04:00:00.000Z",
+          endDate: "2026-05-15T04:00:01.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "session-with-last-message",
+    })
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "session-with-last-message",
+          name: "Reload chat",
+          history: [
+            {
+              role: "user",
+              content: "Earlier message",
+              timestamp: "2026-05-15T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Earlier response",
+              timestamp: "2026-05-15T04:00:01.000Z",
+              status: "complete",
+            },
+            {
+              role: "user",
+              content: "Last message",
+              timestamp: "2026-05-15T04:01:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Last response",
+              timestamp: "2026-05-15T04:01:01.000Z",
+              status: "complete",
+            },
+          ],
+          startDate: "2026-05-15T04:00:00.000Z",
+          endDate: "2026-05-15T04:01:01.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "session-with-last-message",
+    })
+
+    await useWebAppStore.getState().hydrateChatSessions("id-token", { force: true })
+
+    expect(useWebAppStore.getState().sessions[0].history.map(message => message.content)).toEqual([
+      "Earlier message",
+      "Earlier response",
+      "Last message",
+      "Last response",
+    ])
+  })
+
   it("caches the resource catalog until a forced reload", async () => {
     const backend = {
       backendId: "backend-1",

@@ -1,5 +1,6 @@
 """System prompt for the DevOps agent."""
 
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT
 
 
@@ -35,4 +36,4 @@ SYSTEM_PROMPT = """# DevOps SOP
 - MUST NOT use raw shell.
 - MUST NOT run destructive deployment actions unless explicitly delegated.
 - MUST distinguish verified deployment state from recommended follow-up.
-""" + STRUCTURED_OUTPUT_CONTRACT
+""" + INPUT_SAFETY_CONTRACT + STRUCTURED_OUTPUT_CONTRACT

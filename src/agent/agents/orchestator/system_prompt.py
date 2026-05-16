@@ -1,5 +1,8 @@
 """System prompt and chat metadata for the orchestrator agent."""
 
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
+
+
 SYSTEM_PROMPT = """# Orchestrator SOP
 
 **Role**: Understand the user's infrastructure goal, coordinate specialist agents, and synthesize one clear final response.
@@ -38,7 +41,7 @@ SYSTEM_PROMPT = """# Orchestrator SOP
 - MUST NOT call OpenTofu, file read, or file write tools directly.
 - MUST NOT run git commands, create commits, or push branches directly.
 - MUST NOT create a pull request until specialist agents have completed and verified the requested repository edits.
-"""
+""" + INPUT_SAFETY_CONTRACT
 
 def _state_backend_prompt(state_backend: dict | None) -> str:
     if not state_backend:

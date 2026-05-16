@@ -186,35 +186,34 @@ export function ChatMessage({
 
   return (
     <div className={`group/message flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
-      <div
-        className={`max-w-[80%] break-words ${
-          message.role === "user"
-            ? "rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-6 text-slate-950 whitespace-pre-wrap"
-            : "text-slate-950"
-        }`}
-      >
+      <div className={`max-w-[80%] break-words ${message.role === "user" ? "text-[15px] leading-6 text-slate-950" : "text-slate-950"}`}>
         {message.role === "assistant" ? (
           renderAssistantContent()
         ) : (
-          <div className="flex flex-col gap-2">
-            {message.content && <div>{message.content}</div>}
+          <div className="flex flex-col items-end gap-2">
             {message.attachments && message.attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 {message.attachments.map(attachment => (
                   <div
                     key={attachment.id}
-                    className="max-w-[220px] overflow-hidden rounded-2xl border border-slate-200 bg-white text-xs text-slate-700"
+                    className="max-w-[260px] overflow-hidden rounded-xl border border-slate-200 bg-transparent text-xs text-slate-700"
                   >
                     {attachment.type.startsWith("image/") ? (
                       <img
                         src={attachment.dataUrl}
                         alt={attachment.name}
-                        className="max-h-40 w-full object-cover"
+                        className="max-h-56 w-full object-cover"
                       />
-                    ) : null}
-                    <div className="truncate px-2 py-1">{attachment.name}</div>
+                    ) : (
+                      <div className="truncate bg-slate-100 px-2 py-1">{attachment.name}</div>
+                    )}
                   </div>
                 ))}
+              </div>
+            )}
+            {message.content && (
+              <div className="rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 whitespace-pre-wrap">
+                {message.content}
               </div>
             )}
           </div>

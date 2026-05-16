@@ -6,7 +6,8 @@ ENV UV_SYSTEM_PYTHON=1 \
     UV_COMPILE_BYTECODE=1 \
     DOCKER_CONTAINER=1 \
     OTEL_PYTHON_LOG_CORRELATION=true \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/usr/local/go/bin:${PATH}"
 
 COPY agent/requirements.txt requirements.txt
 RUN uv pip install --no-cache -r requirements.txt && \
@@ -16,6 +17,16 @@ RUN uv pip install --no-cache requests>=2.31.0
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends bash ca-certificates curl git gnupg jq unzip && \
+    go_arch="$(dpkg --print-architecture)" && \
+    case "$go_arch" in \
+      amd64) go_arch="amd64"; go_sha256="2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556" ;; \
+      arm64) go_arch="arm64"; go_sha256="9d89a3ea57d141c2b22d70083f2c8459ba3890f2d9e818e7e933b75614936565" ;; \
+      *) echo "Unsupported Go architecture: $go_arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://go.dev/dl/go1.26.3.linux-${go_arch}.tar.gz" -o /tmp/go.tar.gz && \
+    echo "${go_sha256}  /tmp/go.tar.gz" | sha256sum -c - && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm -f /tmp/go.tar.gz && \
     curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh && \
     chmod +x install-opentofu.sh && \
     ./install-opentofu.sh --install-method deb && \
@@ -36,7 +47,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN uv pip install --no-cache checkov && \
-    uv pip install --no-cache boto3==1.43.7 botocore==1.43.7 s3transfer==0.17.0
+    uv pip install --no-cache boto3==1.43.7 botocore==1.43.7 s3transfer==0.17.0 && \
+    uv pip install --no-cache ministack==1.3.39
 
 RUN useradd -m -u 1000 bedrock_agentcore
 USER bedrock_agentcore

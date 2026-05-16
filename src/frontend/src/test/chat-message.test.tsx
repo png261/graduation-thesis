@@ -23,11 +23,38 @@ describe("ChatMessage", () => {
       />
     )
 
-    expect(screen.getByText("Run terraform plan").parentElement?.parentElement).toHaveClass(
+    expect(screen.getByText("Run terraform plan")).toHaveClass(
       "rounded-[1.35rem]",
       "bg-[#f4f4f4]",
-      "text-slate-950"
+      "whitespace-pre-wrap"
     )
+  })
+
+  it("renders user images without filenames and keeps prompt text in a gray bubble underneath", () => {
+    const { container } = render(
+      <ChatMessage
+        message={{
+          role: "user",
+          content: "Please review this diagram.",
+          timestamp: "2026-05-11T03:00:00.000Z",
+          attachments: [
+            {
+              id: "attachment-1",
+              name: "network-diagram.png",
+              type: "image/png",
+              size: 128,
+              dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+            },
+          ],
+        }}
+      />
+    )
+
+    expect(screen.getByAltText("network-diagram.png")).toHaveAttribute("src", "data:image/png;base64,iVBORw0KGgo=")
+    expect(screen.queryByText("network-diagram.png")).not.toBeInTheDocument()
+    expect(screen.getByText("Please review this diagram.")).toHaveClass("bg-[#f4f4f4]")
+    const renderedText = container.textContent ?? ""
+    expect(renderedText).toBe("Please review this diagram.")
   })
 
   it("rotates random animated thinking words over time", () => {

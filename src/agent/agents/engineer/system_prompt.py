@@ -1,5 +1,6 @@
 """System prompt for the engineer agent."""
 
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT
 
 
@@ -36,4 +37,4 @@ SYSTEM_PROMPT = """# Engineer SOP
 - MUST NOT run raw shell or destructive commands.
 - SHOULD prefer small, reviewable changes over broad rewrites.
 - MUST NOT create a pull request; report changed files and verification so the orchestrator can create it.
-""" + STRUCTURED_OUTPUT_CONTRACT
+""" + INPUT_SAFETY_CONTRACT + STRUCTURED_OUTPUT_CONTRACT

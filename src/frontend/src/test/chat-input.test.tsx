@@ -38,6 +38,61 @@ describe("ChatInput", () => {
     expect(screen.queryByText(/^Send$/)).not.toBeInTheDocument()
   })
 
+  it("uses the requested message placeholder", () => {
+    render(
+      <ChatInput
+        input=""
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+      />
+    )
+
+    expect(screen.getByPlaceholderText("Type your message...")).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(/Ctrl\+Enter/)).not.toBeInTheDocument()
+  })
+
+  it("auto-grows the message input until the maximum height", () => {
+    const { rerender } = render(
+      <ChatInput
+        input="short"
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+      />
+    )
+    const textarea = screen.getByRole("textbox")
+    Object.defineProperty(textarea, "scrollHeight", { value: 240, configurable: true })
+
+    rerender(
+      <ChatInput
+        input={"long\n".repeat(20)}
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+      />
+    )
+
+    expect(textarea).toHaveStyle({ height: "200px", overflowY: "auto" })
+  })
+
+  it("keeps the message input editable while a response is running", () => {
+    const setInput = vi.fn()
+    render(
+      <ChatInput
+        input="Draft next prompt"
+        setInput={setInput}
+        handleSubmit={vi.fn()}
+        isLoading
+      />
+    )
+
+    const textarea = screen.getByRole("textbox")
+    expect(textarea).not.toBeDisabled()
+    fireEvent.change(textarea, { target: { value: "Draft next prompt while running" } })
+    expect(setInput).toHaveBeenCalledWith("Draft next prompt while running")
+  })
+
   it("renders a GitHub repository selector and reports changes", () => {
     const onRepositoryChange = vi.fn()
     render(
@@ -126,5 +181,30 @@ describe("ChatInput", () => {
 
     expect(screen.getByRole("button", { name: /stop/i })).toHaveClass("bg-red-600")
     expect(container.querySelector("[style*='--border-width']")).not.toBeNull()
+  })
+
+  it("renders attached files as transparent boxes with gray filename labels", () => {
+    const { container } = render(
+      <ChatInput
+        input=""
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+        attachments={[
+          {
+            id: "image-1",
+            name: "diagram.png",
+            type: "image/png",
+            size: 128,
+            dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+          },
+        ]}
+        onAttachmentsChange={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText("diagram.png")).toHaveClass("bg-slate-100")
+    expect(container.querySelector("img")).toBeNull()
+    expect(screen.getByText("diagram.png").parentElement).toHaveClass("bg-transparent", "border")
   })
 })

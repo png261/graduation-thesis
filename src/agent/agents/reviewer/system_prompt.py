@@ -1,5 +1,6 @@
 """System prompt for the reviewer agent."""
 
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT
 
 
@@ -35,4 +36,4 @@ SYSTEM_PROMPT = """# Reviewer SOP
 - MUST NOT edit files unless explicitly asked by the orchestrator.
 - MUST lead with high-severity findings.
 - MUST NOT invent line references or test results.
-""" + STRUCTURED_OUTPUT_CONTRACT
+""" + INPUT_SAFETY_CONTRACT + STRUCTURED_OUTPUT_CONTRACT

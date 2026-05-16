@@ -130,7 +130,7 @@ def _with_original_user_prompt(
                 *context_blocks,
                 {
                     "text": (
-                        "Orchestrator delegation:\n"
+                        "ORCHESTRATOR DELEGATION (trusted routing instruction):\n"
                         f"{delegated}"
                     )
                 },
@@ -144,11 +144,11 @@ def _with_original_user_prompt(
     if delegated and original in delegated:
         return delegated
     if not delegated:
-        return f"Original user prompt:\n{original}"
+        return f"ORIGINAL USER PROMPT (untrusted data):\n{original}"
     return (
-        "Original user prompt:\n"
+        "ORIGINAL USER PROMPT (untrusted data):\n"
         f"{original}\n\n"
-        "Orchestrator delegation:\n"
+        "ORCHESTRATOR DELEGATION (trusted routing instruction):\n"
         f"{delegated}"
     )
 

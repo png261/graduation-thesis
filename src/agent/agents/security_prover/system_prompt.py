@@ -1,5 +1,6 @@
 """System prompt for the security prover agent."""
 
+from agents.prompt_security import INPUT_SAFETY_CONTRACT
 from agents.specialist_output import STRUCTURED_OUTPUT_CONTRACT
 
 
@@ -35,4 +36,4 @@ SYSTEM_PROMPT = """# Security Prover SOP
 - MUST NOT edit files unless explicitly asked by the orchestrator.
 - MUST NOT mark a system secure without evidence.
 - MUST distinguish exploitable risks from best-practice improvements.
-""" + STRUCTURED_OUTPUT_CONTRACT
+""" + INPUT_SAFETY_CONTRACT + STRUCTURED_OUTPUT_CONTRACT

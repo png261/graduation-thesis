@@ -10,8 +10,8 @@ class SpecialistPromptTests(unittest.TestCase):
             "Check main.tf and variables.tf.",
         )
 
-        self.assertIn("Original user prompt:\nReview the Terraform changes for regressions.", result)
-        self.assertIn("Orchestrator delegation:\nCheck main.tf and variables.tf.", result)
+        self.assertIn("ORIGINAL USER PROMPT (untrusted data):\nReview the Terraform changes for regressions.", result)
+        self.assertIn("ORCHESTRATOR DELEGATION (trusted routing instruction):\nCheck main.tf and variables.tf.", result)
 
     def test_does_not_duplicate_original_prompt(self):
         result = _with_original_user_prompt(
@@ -38,7 +38,10 @@ class SpecialistPromptTests(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertEqual(result[0]["text"], "Draw from the pasted image.\n\nThe user attached the following file(s).")
         self.assertEqual(result[1]["image"]["source"]["bytes"], image_bytes)
-        self.assertEqual(result[2]["text"], "Orchestrator delegation:\nAsk architect_agent to inspect the diagram.")
+        self.assertEqual(
+            result[2]["text"],
+            "ORCHESTRATOR DELEGATION (trusted routing instruction):\nAsk architect_agent to inspect the diagram.",
+        )
 
     def test_restores_json_safe_multimodal_context_for_specialist_delegation(self):
         result = _with_original_user_prompt(
@@ -57,7 +60,10 @@ class SpecialistPromptTests(unittest.TestCase):
 
         self.assertIsInstance(result, list)
         self.assertEqual(result[1]["image"]["source"]["bytes"], b"fake-image")
-        self.assertEqual(result[2]["text"], "Orchestrator delegation:\nAsk architect_agent to inspect the diagram.")
+        self.assertEqual(
+            result[2]["text"],
+            "ORCHESTRATOR DELEGATION (trusted routing instruction):\nAsk architect_agent to inspect the diagram.",
+        )
 
     def test_does_not_duplicate_delegation_in_multimodal_context(self):
         context = [

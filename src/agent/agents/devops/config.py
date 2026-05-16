@@ -11,4 +11,5 @@ TOOL_NAMES = (
     "terraform_init",
     "terraform_plan",
     "terraform_validate",
+    "ministack_terratest",
 )

@@ -14,6 +14,7 @@ class AgentRuntimeTools:
     terraform_init: Any
     terraform_plan: Any
     terraform_validate: Any
+    ministack_terratest: Any
     tflint_scan: Any
     infracost_breakdown: Any
     checkov_scan: Any

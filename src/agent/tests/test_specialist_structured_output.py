@@ -127,7 +127,10 @@ class SpecialistStructuredOutputTests(unittest.TestCase):
         asyncio.run(collect())
         self.assertIsInstance(dummy_agent.input_text, list)
         self.assertEqual(dummy_agent.input_text[1]["image"]["source"]["bytes"], image_bytes)
-        self.assertEqual(dummy_agent.input_text[2]["text"], "Orchestrator delegation:\nInspect the pasted image.")
+        self.assertEqual(
+            dummy_agent.input_text[2]["text"],
+            "ORCHESTRATOR DELEGATION (trusted routing instruction):\nInspect the pasted image.",
+        )
 
     def test_adapter_propagates_specialist_handoff_to_parent_and_stops(self):
         handoff = {

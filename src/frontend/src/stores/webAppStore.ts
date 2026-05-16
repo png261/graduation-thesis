@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
-import type { ChatSession } from "@/components/chat/types"
+import type { ChatSession, Message } from "@/components/chat/types"
 import type { SelectedRepository } from "@/lib/agentcore-client/types"
 import {
   AwsCredentialMetadata,
@@ -115,11 +115,42 @@ function isEmptyNewChatSession(session: ChatSession): boolean {
   return !session.repository && !session.stateBackend && !session.pullRequest && (session.history?.length ?? 0) === 0
 }
 
+function messageKey(message: Message): string {
+  return `${message.role}\u0000${message.timestamp}\u0000${message.content}`
+}
+
+function mergeSavedHistory(savedHistory: Message[] = [], localHistory: Message[] = []): Message[] {
+  const localMessagesByKey = new Map(localHistory.map(message => [messageKey(message), message]))
+  const savedMessageKeys = new Set(savedHistory.map(messageKey))
+  const mergedHistory = savedHistory.map(message => {
+    if (message.attachments && message.attachments.length > 0) return message
+    const localMessage = localMessagesByKey.get(messageKey(message))
+    if (!localMessage?.attachments?.length) return message
+    return {
+      ...message,
+      attachments: localMessage.attachments,
+    }
+  })
+  return [
+    ...mergedHistory,
+    ...localHistory.filter(message => !savedMessageKeys.has(messageKey(message))),
+  ]
+}
+
+function mergeSavedSession(localSession: ChatSession | undefined, savedSession: ChatSession): ChatSession {
+  if (!localSession) return savedSession
+  return {
+    ...savedSession,
+    history: mergeSavedHistory(savedSession.history, localSession.history),
+  }
+}
+
 function mergeSavedSessions(localSessions: ChatSession[], savedSessions: ChatSession[]): ChatSession[] {
+  const localSessionsById = new Map(localSessions.map(session => [session.id, session]))
   const savedSessionIds = new Set(savedSessions.map(session => session.id))
   return [
     ...localSessions.filter(session => !savedSessionIds.has(session.id)),
-    ...savedSessions,
+    ...savedSessions.map(session => mergeSavedSession(localSessionsById.get(session.id), session)),
   ]
 }
 
