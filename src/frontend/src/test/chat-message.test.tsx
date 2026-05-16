@@ -1,6 +1,6 @@
-import { act, render, screen } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ChatMessage, THINKING_WORDS } from "@/components/chat/ChatMessage"
+import { ChatMessage } from "@/components/chat/ChatMessage"
 
 vi.mock("@/components/chat/MarkdownRenderer", () => ({
   MarkdownRenderer: ({ content }: { content: string }) => <div>{content}</div>,
@@ -57,12 +57,30 @@ describe("ChatMessage", () => {
     expect(renderedText).toBe("Please review this diagram.")
   })
 
-  it("rotates random animated thinking words over time", () => {
-    vi.useFakeTimers()
-    const randomSpy = vi.spyOn(Math, "random")
-    randomSpy.mockReturnValueOnce(0)
-    randomSpy.mockReturnValueOnce(0.999999)
+  it("does not crash when an old image attachment has metadata but no persisted preview payload", () => {
+    render(
+      <ChatMessage
+        message={{
+          role: "user",
+          content: "Give me terraform code for this architecture [Image #1]",
+          timestamp: "2026-05-11T03:00:00.000Z",
+          attachments: [
+            {
+              id: "attachment-1",
+              name: "architecture.png",
+              type: "image/png",
+              size: 640000,
+            },
+          ],
+        }}
+      />
+    )
 
+    expect(screen.getByText("Image preview unavailable")).toBeInTheDocument()
+    expect(screen.getByText("Give me terraform code for this architecture [Image #1]")).toBeInTheDocument()
+  })
+
+  it("shows a clear animated response loading state", () => {
     render(
       <ChatMessage
         message={{
@@ -80,11 +98,7 @@ describe("ChatMessage", () => {
     )
 
     expect(screen.getByRole("status", { name: "thinking" })).toBeInTheDocument()
-    expect(screen.getByText(THINKING_WORDS[0].toUpperCase())).toBeInTheDocument()
-    act(() => {
-      vi.advanceTimersByTime(1400)
-    })
-    expect(screen.getByText(THINKING_WORDS[THINKING_WORDS.length - 1].toUpperCase())).toBeInTheDocument()
+    expect(screen.getByText("Agent is responding")).toBeInTheDocument()
     expect(screen.queryByText("MACOG Agent is working")).not.toBeInTheDocument()
     expect(screen.queryByText("Preparing a response")).not.toBeInTheDocument()
   })

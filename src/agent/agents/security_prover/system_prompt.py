@@ -11,7 +11,7 @@ SYSTEM_PROMPT = """# Security Prover SOP
 ## Parameters
 - `delegation` (required): The orchestrator's security review task and scope.
 - `original_user_prompt` (optional): The user's original goal.
-- `workspace_path` (optional): Repository or IaC path available for inspection.
+- `workspace_path` (optional): Workspace or IaC path selected by the orchestrator.
 - `compliance_context` (optional): Required frameworks, residency, or policy constraints.
 
 ## Steps
@@ -33,6 +33,7 @@ SYSTEM_PROMPT = """# Security Prover SOP
 - Set `required_controls` to controls required before release.
 
 ## Constraints
+- MUST only assess AWS infrastructure and Terraform/OpenTofu using the AWS provider. If the user asks for another cloud provider or Terraform provider, return `needs_input` or explain that only AWS is supported.
 - MUST NOT edit files unless explicitly asked by the orchestrator.
 - MUST NOT mark a system secure without evidence.
 - MUST distinguish exploitable risks from best-practice improvements.

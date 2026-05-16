@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import { ChatInput, NO_REPOSITORY_VALUE } from "@/components/chat/ChatInput"
 
@@ -32,10 +32,18 @@ describe("ChatInput", () => {
     )
 
     expect(screen.getByRole("form", { name: "chat input" })).toHaveClass("rounded-[28px]")
+    expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-input-layout", "compact-inline")
     expect(screen.getByRole("textbox")).toHaveClass("border-0", "bg-transparent")
-    expect(screen.getByRole("button", { name: "Attach file" })).toHaveClass("rounded-full")
+    expect(screen.getByRole("button", { name: "Add context" })).toHaveClass("rounded-full", "border-0")
+    expect(screen.getByRole("button", { name: "Add context" })).not.toHaveClass("border-slate-200")
+    expect(screen.queryByLabelText("Selected repository: No repository")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Selected state backend: No state backend")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Send message" })).toHaveClass("h-9", "w-9", "rounded-full")
     expect(screen.queryByText(/^Send$/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Add context" }))
+
+    expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument()
   })
 
   it("uses the requested message placeholder", () => {
@@ -52,7 +60,7 @@ describe("ChatInput", () => {
     expect(screen.queryByPlaceholderText(/Ctrl\+Enter/)).not.toBeInTheDocument()
   })
 
-  it("auto-grows the message input until the maximum height", () => {
+  it("auto-grows the message input until the maximum height and stacks controls below it", async () => {
     const { rerender } = render(
       <ChatInput
         input="short"
@@ -74,6 +82,10 @@ describe("ChatInput", () => {
     )
 
     expect(textarea).toHaveStyle({ height: "200px", overflowY: "auto" })
+    await waitFor(() => {
+      expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-input-layout", "stacked")
+    })
+    expect(screen.getByRole("textbox")).toHaveStyle({ height: "200px" })
   })
 
   it("keeps the message input editable while a response is running", () => {
@@ -107,6 +119,7 @@ describe("ChatInput", () => {
       />
     )
 
+    fireEvent.click(screen.getByRole("button", { name: "Add context" }))
     fireEvent.click(screen.getByRole("combobox", { name: "GitHub repository" }))
     fireEvent.click(screen.getByRole("option", { name: "png261/hcp-terraform" }))
 
@@ -127,11 +140,12 @@ describe("ChatInput", () => {
       />
     )
 
+    fireEvent.click(screen.getByRole("button", { name: "Add context" }))
     expect(screen.getByRole("combobox", { name: "GitHub repository" })).toBeDisabled()
     expect(screen.queryByText("Repository locked")).not.toBeInTheDocument()
   })
 
-  it("compacts repository and state selectors for the filesystem layout", () => {
+  it("expands the composer with selected repository and state chips", () => {
     render(
       <ChatInput
         input=""
@@ -156,16 +170,18 @@ describe("ChatInput", () => {
         ]}
         selectedStateBackendId="backend-prod"
         onStateBackendChange={vi.fn()}
-        compactControls
       />
     )
 
-    const repositoryTrigger = screen.getByRole("combobox", { name: "GitHub repository" })
-    const stateTrigger = screen.getByRole("combobox", { name: "Terraform state backend" })
-    expect(repositoryTrigger).toHaveClass("w-9", "px-0")
-    expect(stateTrigger).toHaveClass("w-9", "px-0")
-    expect(repositoryTrigger).not.toHaveTextContent("png261/hcp-terraform")
-    expect(stateTrigger).not.toHaveTextContent("prod-state")
+    expect(screen.getByLabelText("Selected repository: png261/hcp-terraform")).toHaveTextContent("png261/hcp-terraform")
+    expect(screen.getByLabelText("Selected state backend: prod-state")).toHaveTextContent("prod-state")
+    expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-input-layout", "stacked")
+    expect(screen.queryByRole("combobox", { name: "GitHub repository" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Add context" }))
+
+    expect(screen.getByRole("combobox", { name: "GitHub repository" })).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "Terraform state backend" })).toBeInTheDocument()
   })
 
   it("uses destructive red styling for the stop button while loading", () => {
@@ -183,7 +199,7 @@ describe("ChatInput", () => {
     expect(container.querySelector("[style*='--border-width']")).not.toBeNull()
   })
 
-  it("renders attached files as transparent boxes with gray filename labels", () => {
+  it("renders attached images as previews without filenames", () => {
     const { container } = render(
       <ChatInput
         input=""
@@ -203,8 +219,31 @@ describe("ChatInput", () => {
       />
     )
 
-    expect(screen.getByText("diagram.png")).toHaveClass("bg-slate-100")
-    expect(container.querySelector("img")).toBeNull()
-    expect(screen.getByText("diagram.png").parentElement).toHaveClass("bg-transparent", "border")
+    expect(screen.getByAltText("diagram.png")).toHaveAttribute("src", "data:image/png;base64,iVBORw0KGgo=")
+    expect(screen.queryByText("diagram.png")).not.toBeInTheDocument()
+    expect(container.querySelector("img")?.parentElement).toHaveClass("h-20", "w-20", "border")
+  })
+
+  it("keeps non-image attachment filenames visible", () => {
+    render(
+      <ChatInput
+        input=""
+        setInput={vi.fn()}
+        handleSubmit={vi.fn()}
+        isLoading={false}
+        attachments={[
+          {
+            id: "file-1",
+            name: "main.tf",
+            type: "text/plain",
+            size: 128,
+            dataUrl: "data:text/plain;base64,dmFyaWFibGU=",
+          },
+        ]}
+        onAttachmentsChange={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText("main.tf")).toHaveClass("bg-slate-100")
   })
 })

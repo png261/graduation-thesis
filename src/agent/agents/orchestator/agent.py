@@ -6,7 +6,6 @@ from agents.orchestator.config import DESCRIPTION, NAME
 from agents.orchestator.system_prompt import repo_prompt
 from agents.orchestator.tool import create_tools
 from agents.runtime import AgentRuntimeTools
-from agents.skills.terrashark_plugin import create_terrashark_plugin
 
 
 def create_agent(
@@ -23,7 +22,6 @@ def create_agent(
         description=DESCRIPTION,
         system_prompt=repo_prompt(repository, state_backend),
         tools=create_tools(model, runtime_tools, trace_attributes),
-        plugins=[create_terrashark_plugin()],
         session_manager=session_manager,
         trace_attributes=trace_attributes,
     )

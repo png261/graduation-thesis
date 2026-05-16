@@ -231,6 +231,7 @@ describe("ChatInterface new repository chat", () => {
     expect(screen.getByRole("form", { name: "chat input" })).toBeInTheDocument()
     expect(screen.queryByText("Connect a GitHub Repository")).not.toBeInTheDocument()
     expect(screen.queryByTestId("filesystem-panel")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Open filesystem" })).toBeInTheDocument()
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
   })
 
@@ -284,6 +285,8 @@ describe("ChatInterface new repository chat", () => {
     expect(screen.queryByText(/No repository connected/i)).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Connect Repository" })).not.toBeInTheDocument()
     expect(screen.queryByTestId("filesystem-panel")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Open filesystem" }))
+    expect(screen.getByTestId("filesystem-panel")).toBeInTheDocument()
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
   })
 
@@ -362,6 +365,13 @@ describe("ChatInterface new repository chat", () => {
 
   it("does not auto-scroll messages and shows a latest response button when scrolled up", async () => {
     const scrollIntoView = vi.fn()
+    let finishInvoke: (() => void) | null = null
+    agentCoreClientMock.invoke.mockImplementation(
+      async () =>
+        new Promise<void>(resolve => {
+          finishInvoke = resolve
+        })
+    )
     Element.prototype.scrollIntoView = scrollIntoView
     store.useWebAppStore.setState({
       sessions: [
@@ -406,8 +416,64 @@ describe("ChatInterface new repository chat", () => {
     expect(latestButton).toHaveClass("h-10", "w-10", "rounded-full")
     expect(latestButton).not.toHaveTextContent("Latest response")
     fireEvent.click(latestButton)
-
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "end" })
+
+    fireEvent.click(screen.getByRole("button", { name: "Type plan prompt" }))
+    await waitFor(() =>
+      expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-input", "Run terraform plan")
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Send prompt" }))
+    await waitFor(() => expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-is-loading", "true"))
+    expect(screen.queryByRole("button", { name: "Agent responding" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Scroll to latest response" })).not.toBeInTheDocument()
+
+    act(() => {
+      finishInvoke?.()
+    })
+    await waitFor(() => expect(screen.getByRole("form", { name: "chat input" })).toHaveAttribute("data-is-loading", "false"))
+  })
+
+  it("keeps the latest response button positioned inside the chat pane when filesystem is open", async () => {
+    store.useWebAppStore.setState({
+      sessions: [
+        {
+          id: "session-with-filesystem",
+          name: "Filesystem chat",
+          history: [
+            {
+              role: "user",
+              content: "Initial question",
+              timestamp: "2026-05-11T04:00:00.000Z",
+            },
+            {
+              role: "assistant",
+              content: "Long response",
+              timestamp: "2026-05-11T04:01:00.000Z",
+            },
+          ],
+          startDate: "2026-05-11T04:00:00.000Z",
+          endDate: "2026-05-11T04:01:00.000Z",
+          repository: null,
+        },
+      ],
+      activeSessionId: "session-with-filesystem",
+      newChatRequestId: 0,
+      repositoryChatRequest: null,
+      chatSessionsLoadedFor: "id-token",
+    })
+
+    render(<ChatInterface />)
+    fireEvent.click(screen.getByRole("button", { name: "Open filesystem" }))
+    expect(screen.getByTestId("filesystem-panel")).toBeInTheDocument()
+
+    const messageContainer = screen.getByTestId("chat-messages")
+    Object.defineProperty(messageContainer, "scrollHeight", { configurable: true, value: 1200 })
+    Object.defineProperty(messageContainer, "clientHeight", { configurable: true, value: 400 })
+    Object.defineProperty(messageContainer, "scrollTop", { configurable: true, value: 200 })
+    fireEvent.scroll(messageContainer)
+
+    const latestButton = await screen.findByRole("button", { name: "Scroll to latest response" })
+    expect(latestButton.closest("section")).not.toBeNull()
   })
 
   it("keeps following the latest response as streamed text grows", async () => {

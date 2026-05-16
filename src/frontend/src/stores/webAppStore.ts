@@ -88,6 +88,7 @@ type WebAppStore = {
 }
 
 const cacheKey = (repository: string, state: PullRequestState) => `${repository}::${state}`
+const MAX_PERSISTED_ATTACHMENT_DATA_URL_BYTES = 512 * 1024
 
 const emptyResourceCatalog = (): ResourceCatalogData => ({
   backends: [],
@@ -119,11 +120,39 @@ function messageKey(message: Message): string {
   return `${message.role}\u0000${message.timestamp}\u0000${message.content}`
 }
 
+function hasUsableAttachmentData(message: Message): boolean {
+  return Boolean(message.attachments?.some(attachment => attachment.dataUrl))
+}
+
+function stripLargeAttachmentPayloads(message: Message): Message {
+  if (!message.attachments?.length) return message
+  return {
+    ...message,
+    attachments: message.attachments.map(attachment => {
+      if (
+        !attachment.dataUrl ||
+        new Blob([attachment.dataUrl]).size <= MAX_PERSISTED_ATTACHMENT_DATA_URL_BYTES
+      ) {
+        return attachment
+      }
+      const { dataUrl: _dataUrl, ...metadata } = attachment
+      return metadata
+    }),
+  }
+}
+
+function sanitizeSessionsForPersistence(sessions: ChatSession[]): ChatSession[] {
+  return sessions.map(session => ({
+    ...session,
+    history: (session.history ?? []).map(stripLargeAttachmentPayloads),
+  }))
+}
+
 function mergeSavedHistory(savedHistory: Message[] = [], localHistory: Message[] = []): Message[] {
   const localMessagesByKey = new Map(localHistory.map(message => [messageKey(message), message]))
   const savedMessageKeys = new Set(savedHistory.map(messageKey))
   const mergedHistory = savedHistory.map(message => {
-    if (message.attachments && message.attachments.length > 0) return message
+    if (hasUsableAttachmentData(message)) return message
     const localMessage = localMessagesByKey.get(messageKey(message))
     if (!localMessage?.attachments?.length) return message
     return {
@@ -256,7 +285,7 @@ export const useWebAppStore = create<WebAppStore>()(
       persistChatSessions: async idToken => {
         const state = get()
         const payload = {
-          sessions: state.sessions,
+          sessions: sanitizeSessionsForPersistence(state.sessions),
           activeSessionId: state.activeSessionId,
         }
         const serializedPayload = JSON.stringify(payload)
@@ -366,7 +395,7 @@ export const useWebAppStore = create<WebAppStore>()(
       name: "agentcore:web-app-store",
       storage: createJSONStorage(() => localStorage),
       partialize: state => ({
-        sessions: state.sessions,
+        sessions: sanitizeSessionsForPersistence(state.sessions),
         activeSessionId: state.activeSessionId,
         selectedRepository: state.selectedRepository,
         pullRequestsByKey: state.pullRequestsByKey,

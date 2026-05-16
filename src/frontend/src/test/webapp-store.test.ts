@@ -271,6 +271,53 @@ describe("web app store chat persistence", () => {
     })
   })
 
+  it("does not persist large image data URLs into browser storage or remote chat history", async () => {
+    const largeDataUrl = `data:image/png;base64,${"a".repeat(600 * 1024)}`
+    resources.saveChatSessions.mockImplementation(async payload => JSON.parse(JSON.stringify(payload)))
+
+    useWebAppStore.getState().setSessions([
+      {
+        id: "session-large-image",
+        name: "Large image chat",
+        history: [
+          {
+            role: "user",
+            content: "Give me terraform code for this architecture [Image #1]",
+            timestamp: "2026-05-15T04:00:00.000Z",
+            attachments: [
+              {
+                id: "image-1",
+                name: "architecture.png",
+                type: "image/png",
+                size: 460000,
+                dataUrl: largeDataUrl,
+              },
+            ],
+          },
+        ],
+        startDate: "2026-05-15T04:00:00.000Z",
+        endDate: "2026-05-15T04:00:00.000Z",
+        repository: null,
+        pullRequest: null,
+      },
+    ])
+    useWebAppStore.getState().setActiveSessionId("session-large-image")
+
+    expect(JSON.stringify(storage.localStorage.setItem.mock.calls)).not.toContain(largeDataUrl)
+
+    await useWebAppStore.getState().persistChatSessions("id-token")
+
+    const savedPayload = resources.saveChatSessions.mock.calls[0][0]
+    const savedAttachment = savedPayload.sessions[0].history[0].attachments[0]
+    expect(savedAttachment).toMatchObject({
+      id: "image-1",
+      name: "architecture.png",
+      type: "image/png",
+      size: 460000,
+    })
+    expect(savedAttachment.dataUrl).toBeUndefined()
+  })
+
   it("keeps locally completed last messages when saved session is stale after reload", async () => {
     resources.listChatSessions.mockResolvedValue({
       sessions: [

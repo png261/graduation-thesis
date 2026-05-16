@@ -163,7 +163,7 @@ export class AgentCoreClient {
   }
 
   async filesystemAction(
-    action: "listFiles" | "getFileContent",
+    action: "listFiles" | "getFileContent" | "downloadSourceZip",
     sessionId: string,
     accessToken: string,
     repository?: SelectedRepository | null,

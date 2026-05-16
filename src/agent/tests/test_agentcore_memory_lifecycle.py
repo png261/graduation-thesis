@@ -1,12 +1,16 @@
 import asyncio
+import base64
 import os
 from pathlib import Path
 import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def _install_module(name: str, **attrs):
@@ -75,6 +79,7 @@ _install_module(
     terraform_init=object(),
     terraform_plan=object(),
     terraform_validate=object(),
+    ministack_terratest=object(),
     tflint_scan=object(),
 )
 _install_module("agents.orchestator", __path__=[])
@@ -289,6 +294,26 @@ class AgentCoreMemoryLifecycleTests(unittest.TestCase):
 
         self.assertTrue(restored)
         self.assertEqual(agent.loaded_snapshot["restored"]["schema_version"], "1.0")
+
+    def test_runtime_files_zip_archives_scratch_workspace_without_git_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.tf").write_text("resource test", encoding="utf-8")
+            (root / ".git").mkdir()
+            (root / ".git" / "config").write_text("private", encoding="utf-8")
+
+            with patch.object(agent_main, "scratch_workspace_path", return_value=root):
+                archive = agent_main._runtime_files_zip(None, "session-123")
+
+            zip_path = root / "source.zip"
+            zip_path.write_bytes(base64.b64decode(archive["content"]))
+            with zipfile.ZipFile(zip_path) as zip_file:
+                names = zip_file.namelist()
+
+        self.assertEqual(archive["filename"], "session-123-source.zip")
+        self.assertEqual(archive["fileCount"], 1)
+        self.assertIn("main.tf", names)
+        self.assertNotIn(".git/config", names)
 
 
 if __name__ == "__main__":

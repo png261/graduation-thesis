@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Wrench, Loader2, ChevronRight, ChevronDown, ExternalLink, CircleStop } from "lucide-react"
+import { Wrench, Loader2, ChevronRight, ChevronDown, ExternalLink, CircleStop, CheckCircle2 } from "lucide-react"
 import type { ToolRenderProps } from "@/hooks/useToolRenderer"
 import type { ToolProgressEntry } from "./types"
 
@@ -48,13 +48,6 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
   const latestActivity = activity.length > 0 ? activity[activity.length - 1] : undefined
   const statusText = latestActivity ? stripToolPrefix(latestActivity.message, name, agent?.name) : formatToolStatus(status)
 
-  if (status === "complete") {
-    if (isDiagramSuccess(diagram)) {
-      return <DiagramResultFigure diagram={diagram} />
-    }
-    return null
-  }
-
   return (
     <div className="my-1 text-sm">
       <button
@@ -77,10 +70,11 @@ export function ToolCallDisplay({ name, args, status, progress, result, agent }:
         {status === "executing" && (
           <Loader2 size={12} className="animate-spin text-amber-500 ml-auto" />
         )}
+        {status === "complete" && <CheckCircle2 size={12} className="text-emerald-500 ml-auto" />}
         {status === "stopped" && <CircleStop size={12} className="text-slate-400 ml-auto" />}
       </button>
 
-      {activity.length > 0 && status !== "stopped" && (
+      {activity.length > 0 && (status === "streaming" || status === "executing") && (
         <div className="ml-6 mt-1 space-y-1 border-l-2 border-sky-100 pl-3 text-xs text-slate-500">
           {activity.slice(-3).map((item, index) => (
             <div key={`${index}-${item.phase}-${item.message}`} className="flex items-start gap-1.5">
@@ -166,6 +160,8 @@ function formatToolStatus(status: string) {
       return "is working..."
     case "stopped":
       return "stopped"
+    case "complete":
+      return "completed"
     default:
       return ""
   }

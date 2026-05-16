@@ -213,6 +213,30 @@ describe("Component Integration Tests", () => {
       expect(filePanelContent).toContain('"listFiles"')
     })
 
+    it("should refresh immediately when chat tool actions change the runtime filesystem", () => {
+      const chatInterfaceContent = readFileSync(
+        resolve(__dirname, "../components/chat/ChatInterface.tsx"),
+        "utf-8"
+      )
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      const fileEventsServiceContent = readFileSync(
+        resolve(__dirname, "../services/fileEventsService.ts"),
+        "utf-8"
+      )
+      expect(chatInterfaceContent).toContain("notifyFilesystemChanged")
+      expect(chatInterfaceContent).toContain("toolCallChangedFilesystem(tc)")
+      expect(filePanelContent).toContain("subscribeFilesystemChanges")
+      expect(filePanelContent).toContain("FILE_SYNC_DEBOUNCE_MS")
+      expect(filePanelContent).toContain("setSelectedKey(nextKey)")
+      expect(filePanelContent).toContain("setSelectedDisplayPath(focusPath)")
+      expect(filePanelContent).toContain('setFileView("file")')
+      expect(fileEventsServiceContent).toContain("subscribeFilesystemChanges")
+      expect(fileEventsServiceContent).toContain("clearCachedFileContentForSession")
+    })
+
     it("should provide a reload filesystem button", () => {
       const filePanelContent = readFileSync(
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
@@ -221,6 +245,21 @@ describe("Component Integration Tests", () => {
       expect(filePanelContent).toContain('aria-label="Reload filesystem"')
       expect(filePanelContent).toContain("refreshFiles({ showLoading: true })")
       expect(filePanelContent).toContain("ml-auto h-7 w-7")
+    })
+
+    it("should allow downloading the current workspace source as a ZIP", () => {
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      const agentClientContent = readFileSync(
+        resolve(__dirname, "../lib/agentcore-client/client.ts"),
+        "utf-8"
+      )
+      expect(filePanelContent).toContain('aria-label="Download source as ZIP"')
+      expect(filePanelContent).toContain("downloadSourceZip")
+      expect(filePanelContent).toContain("downloadBase64Archive")
+      expect(agentClientContent).toContain('"downloadSourceZip"')
     })
 
     it("should remove the global app header while keeping filesystem status controls out of the file panel", () => {
@@ -252,6 +291,28 @@ describe("Component Integration Tests", () => {
       expect(filePanelContent).toContain("return []")
       expect(filePanelContent).not.toContain("Set up a GitHub repository to browse files")
       expect(filePanelContent).not.toContain("HardDrive")
+      expect(filePanelContent).toContain("No changed files in this chat workspace.")
+    })
+
+    it("should expose the filesystem toggle without requiring a repository", () => {
+      const chatInterfaceContent = readFileSync(
+        resolve(__dirname, "../components/chat/ChatInterface.tsx"),
+        "utf-8"
+      )
+      expect(chatInterfaceContent).toContain("const showFilesystem = isFilesystemOpen")
+      expect(chatInterfaceContent).toContain('aria-label={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}')
+      expect(chatInterfaceContent).toContain("{isFilesystemOpen && (")
+      expect(chatInterfaceContent).not.toContain("repository && isFilesystemOpen")
+    })
+
+    it("should show scratch workspace files by default when no repository is connected", () => {
+      const filePanelContent = readFileSync(
+        resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
+        "utf-8"
+      )
+      expect(filePanelContent).toContain('if (!repository) setFileScope("all")')
+      expect(filePanelContent).toContain("disabled={!repository}")
+      expect(filePanelContent).toContain('"downloadSourceZip"')
     })
 
     it("should support installed GitHub repositories and changed-file status preview", () => {
@@ -273,23 +334,28 @@ describe("Component Integration Tests", () => {
       expect(agentClientContent).toContain("throw new Error")
     })
 
-    it("should expose a direct Terraform plan graph tab in the filesystem panel", () => {
+    it("should not expose a Terraform graph tab in the filesystem panel", () => {
       const filePanelContent = readFileSync(
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
         "utf-8"
       )
-      const agentClientContent = readFileSync(
-        resolve(__dirname, "../lib/agentcore-client/client.ts"),
-        "utf-8"
-      )
-      expect(filePanelContent).toContain("Graph")
-      expect(filePanelContent).toContain("Run plan")
-      expect(filePanelContent).toContain("refreshTerraformGraph")
-      expect(filePanelContent).toContain("TerraformGraphPreview")
-      expect(agentClientContent).toContain("generateTerraformGraph")
+      expect(filePanelContent).not.toContain("TerraformGraphPreview")
+      expect(filePanelContent).not.toContain("refreshTerraformGraph")
+      expect(filePanelContent).not.toContain("Run plan")
+      expect(filePanelContent).not.toContain(">Graph<")
     })
 
-    it("should expose resizable filesystem panes and chat follow-scroll behavior", () => {
+    it("should offer a scratch architecture starter prompt", () => {
+      const chatInterfaceContent = readFileSync(
+        resolve(__dirname, "../components/chat/ChatInterface.tsx"),
+        "utf-8"
+      )
+      expect(chatInterfaceContent).toContain("Create architecture")
+      expect(chatInterfaceContent).toContain("Create a new cloud architecture from scratch")
+      expect(chatInterfaceContent).toContain("source files in this chat workspace")
+    })
+
+    it("should open the filesystem wider than chat and keep chat follow-scroll behavior", () => {
       const chatInterfaceContent = readFileSync(
         resolve(__dirname, "../components/chat/ChatInterface.tsx"),
         "utf-8"
@@ -302,8 +368,10 @@ describe("Component Integration Tests", () => {
         resolve(__dirname, "../components/files/FileSystemPanel.tsx"),
         "utf-8"
       )
-      expect(chatInterfaceContent).toContain("filesystemPanelWidth")
-      expect(chatInterfaceContent).toContain("handleFilesystemResize")
+      expect(chatInterfaceContent).toContain("minmax(320px,0.8fr) minmax(560px,1.2fr)")
+      expect(chatInterfaceContent).not.toContain("0px minmax(560px,1.2fr)")
+      expect(chatInterfaceContent).not.toContain("filesystemPanelWidth")
+      expect(chatInterfaceContent).not.toContain("handleFilesystemResize")
       expect(chatInterfaceContent).toContain("shouldFollowLatestRef")
       expect(chatInterfaceContent).toContain("window.requestAnimationFrame")
       expect(chatInterfaceContent).not.toContain("absolute bottom-4")
@@ -323,6 +391,10 @@ describe("Component Integration Tests", () => {
       expect(sidebarContent).not.toContain("max-h-[min(460px,calc(100vh-300px))]")
       expect(sidebarContent).toContain("[scrollbar-width:none]")
       expect(sidebarContent).toContain("[&::-webkit-scrollbar]:hidden")
+      expect(sidebarContent).toContain("border-r")
+      expect(sidebarContent).not.toContain("border-b")
+      expect(sidebarContent).not.toContain("border-t")
+      expect(sidebarContent).not.toContain("border-slate-300")
     })
 
     it("should render a static Cloudrift analytics chart in resource catalog", () => {

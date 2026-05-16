@@ -3,8 +3,8 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { ToolCallDisplay, parseDiagramResult } from "@/components/chat/ToolCallDisplay"
 
 describe("ToolCallDisplay", () => {
-  it("hides completed non-diagram tool calls", () => {
-    render(
+  it("keeps completed non-diagram tool calls visible and expandable", () => {
+    const { container } = render(
       <ToolCallDisplay
         name="architect_agent"
         args='{"input":"Design a test architecture"}'
@@ -25,11 +25,18 @@ describe("ToolCallDisplay", () => {
       />
     )
 
-    expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Architecture/i })).toBeInTheDocument()
+    expect(screen.getByText(/completed/i)).toBeInTheDocument()
+    expect(container.querySelector(".animate-spin")).not.toBeInTheDocument()
     expect(screen.queryByText("IQ")).not.toBeInTheDocument()
     expect(screen.queryByText("InfraQ Orchestrator")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /architect_agent/i })).not.toBeInTheDocument()
-    expect(screen.queryByText("Minimal architecture output")).not.toBeInTheDocument()
+    expect(screen.queryByText("Agent reasoning and tools")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /Architecture/i }))
+
+    expect(screen.getByText("Agent reasoning and tools")).toBeInTheDocument()
+    expect(screen.getByText("Minimal architecture output")).toBeInTheDocument()
+    expect(screen.getByText("Input")).toBeInTheDocument()
   })
 
   it("shows active agent reasoning and tool activity when expanded", () => {
@@ -89,7 +96,7 @@ describe("ToolCallDisplay", () => {
 
     const image = screen.getByAltText("Rendered architecture diagram")
     expect(image).toHaveAttribute("src", "https://example.com/diagram.svg?signature=test")
-    expect(screen.queryByRole("button", { name: /diagram/i })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /diagram/i })).toBeInTheDocument()
     expect(screen.getByRole("link", { name: /open/i })).toHaveAttribute(
       "href",
       "https://example.com/diagram.svg?signature=test"

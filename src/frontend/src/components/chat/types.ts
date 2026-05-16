@@ -15,7 +15,7 @@ export interface ChatAttachment {
   name: string
   type: string
   size: number
-  dataUrl: string
+  dataUrl?: string
 }
 
 export interface UserHandoffQuestion {

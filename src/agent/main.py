@@ -2,12 +2,14 @@
 
 import base64
 from datetime import datetime, timezone
+import io
 import json
 import logging
 import mimetypes
 import os
 import re
 import stat
+import zipfile
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
@@ -320,6 +322,32 @@ def _get_runtime_file_content(repository: dict | None, session_id: str, key: str
         "encoding": encoding,
         "size": size,
         "lastModified": _iso_mtime(path),
+    }
+
+
+def _runtime_files_zip(repository: dict | None, session_id: str) -> dict:
+    root = _runtime_filesystem_root(repository, session_id)
+    buffer = io.BytesIO()
+    file_count = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        if root.exists():
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+                relative_parts = path.relative_to(root).parts
+                if ".git" in relative_parts:
+                    continue
+                archive.write(path, path.relative_to(root).as_posix())
+                file_count += 1
+
+    content = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return {
+        "filename": f"{session_id}-source.zip",
+        "content": content,
+        "encoding": "base64",
+        "contentType": "application/zip",
+        "size": len(buffer.getvalue()),
+        "fileCount": file_count,
     }
 
 
@@ -895,6 +923,9 @@ async def invocations(payload, context: RequestContext):
                 yield {"status": "ok", "file": _get_runtime_file_content(repository, session_id, file_key)}
             except FileNotFoundError:
                 yield {"status": "error", "error": f"file not found: {file_key}"}
+            return
+        if filesystem_action == "downloadSourceZip":
+            yield {"status": "ok", "archive": _runtime_files_zip(repository, session_id)}
             return
 
         if github_action == "createPullRequest":

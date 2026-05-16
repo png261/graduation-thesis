@@ -1,138 +1,16 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Check, Copy, Pencil } from "lucide-react"
 import { Message } from "./types"
 import { getToolRenderer } from "@/hooks/useToolRenderer"
 import { MarkdownRenderer } from "./MarkdownRenderer"
-import { ShinyText } from "@/components/ui/shiny-text"
 
 interface ChatMessageProps {
   message: Message
   canEdit?: boolean
   editDisabledReason?: string
   onEdit?: () => void
-}
-
-export const THINKING_WORDS = [
-  "beaming",
-  "booping",
-  "bouncing",
-  "brewing",
-  "bubbling",
-  "chasing",
-  "churning",
-  "coalescing",
-  "conjuring",
-  "cooking",
-  "crafting",
-  "crunching",
-  "cuddling",
-  "dancing",
-  "dazzling",
-  "discovering",
-  "doodling",
-  "dreaming",
-  "drifting",
-  "enchanting",
-  "exploring",
-  "finding",
-  "floating",
-  "fluttering",
-  "foraging",
-  "forging",
-  "frolicking",
-  "gathering",
-  "giggling",
-  "gliding",
-  "greeting",
-  "growing",
-  "hatching",
-  "herding",
-  "honking",
-  "hopping",
-  "hugging",
-  "humming",
-  "imagining",
-  "inventing",
-  "jingling",
-  "juggling",
-  "jumping",
-  "kindling",
-  "knitting",
-  "launching",
-  "leaping",
-  "mapping",
-  "marinating",
-  "meandering",
-  "mixing",
-  "moseying",
-  "munching",
-  "napping",
-  "nibbling",
-  "noodling",
-  "orbiting",
-  "painting",
-  "percolating",
-  "petting",
-  "plotting",
-  "pondering",
-  "popping",
-  "prancing",
-  "purring",
-  "puzzling",
-  "questing",
-  "riding",
-  "roaming",
-  "rolling",
-  "sauteeing",
-  "scribbling",
-  "seeking",
-  "shimmying",
-  "singing",
-  "skipping",
-  "sleeping",
-  "snacking",
-  "sniffing",
-  "snuggling",
-  "soaring",
-  "sparking",
-  "spinning",
-  "splashing",
-  "sprouting",
-  "squishing",
-  "stargazing",
-  "stirring",
-  "strolling",
-  "swimming",
-  "swinging",
-  "tickling",
-  "tinkering",
-  "toasting",
-  "tumbling",
-  "twirling",
-  "waddling",
-  "wandering",
-  "watching",
-  "weaving",
-  "whistling",
-  "wibbling",
-  "wiggling",
-  "wishing",
-  "wobbling",
-  "wondering",
-  "yawning",
-  "zooming",
-] as const
-
-const THINKING_WORD_INTERVAL_MS = 1400
-
-function randomThinkingWord(current?: string) {
-  let next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]
-  while (next === current) {
-    next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]
-  }
-  return next
 }
 
 export function ChatMessage({
@@ -198,12 +76,14 @@ export function ChatMessage({
                     key={attachment.id}
                     className="max-w-[260px] overflow-hidden rounded-xl border border-slate-200 bg-transparent text-xs text-slate-700"
                   >
-                    {attachment.type.startsWith("image/") ? (
+                    {attachment.type.startsWith("image/") && attachment.dataUrl ? (
                       <img
                         src={attachment.dataUrl}
                         alt={attachment.name}
                         className="max-h-56 w-full object-cover"
                       />
+                    ) : attachment.type.startsWith("image/") ? (
+                      <div className="bg-slate-100 px-3 py-2 text-slate-500">Image preview unavailable</div>
                     ) : (
                       <div className="truncate bg-slate-100 px-2 py-1">{attachment.name}</div>
                     )}
@@ -251,30 +131,23 @@ export function ChatMessage({
 }
 
 function ThinkingIndicator() {
-  const [word, setWord] = useState(() => randomThinkingWord())
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setWord(current => randomThinkingWord(current))
-    }, THINKING_WORD_INTERVAL_MS)
-    return () => window.clearInterval(timer)
-  }, [])
-
   return (
     <span
-      className="inline-flex items-baseline px-1 text-sm font-medium text-slate-500"
+      className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-500"
       role="status"
       aria-live="polite"
       aria-label="thinking"
     >
-      <ShinyText text={word.toUpperCase()} shineColor="#dd1616" speed={3.2} />
-      <span className="relative ml-0.5 inline-block w-4 overflow-hidden align-baseline">
-        <span className="animate-[thinking-dots_1.2s_steps(3,end)_infinite]">...</span>
+      <span>Agent is responding</span>
+      <span className="inline-flex items-center gap-1" aria-hidden="true">
+        <span className="h-1.5 w-1.5 animate-[thinking-dot_1.2s_ease-in-out_infinite] rounded-full bg-slate-400" />
+        <span className="h-1.5 w-1.5 animate-[thinking-dot_1.2s_ease-in-out_0.15s_infinite] rounded-full bg-slate-400" />
+        <span className="h-1.5 w-1.5 animate-[thinking-dot_1.2s_ease-in-out_0.3s_infinite] rounded-full bg-slate-400" />
       </span>
       <style>{`
-        @keyframes thinking-dots {
-          0% { width: 0; }
-          100% { width: 1rem; }
+        @keyframes thinking-dot {
+          0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+          40% { opacity: 1; transform: translateY(-2px); }
         }
       `}</style>
     </span>

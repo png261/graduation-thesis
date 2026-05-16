@@ -48,8 +48,58 @@ class AgentSopPromptTests(unittest.TestCase):
         self.assertIn("structured JSON envelope", ORCHESTRATOR_PROMPT)
         self.assertIn("handoff_questions", ORCHESTRATOR_PROMPT)
         self.assertIn("verifications", ORCHESTRATOR_PROMPT)
+        self.assertIn("MAY answer general, non-repository questions directly", ORCHESTRATOR_PROMPT)
+        self.assertIn("MUST delegate code generation", ORCHESTRATOR_PROMPT)
+        self.assertIn("review", ORCHESTRATOR_PROMPT)
+        self.assertIn("do not pass repository metadata", ORCHESTRATOR_PROMPT)
         self.assertIn("MUST NOT call OpenTofu, file read, or file write tools directly", ORCHESTRATOR_PROMPT)
+        self.assertIn("MUST NOT generate code, Terraform/OpenTofu, tests, review findings", ORCHESTRATOR_PROMPT)
         self.assertIn("call `create_pull_request` exactly once", ORCHESTRATOR_PROMPT)
+
+    def test_engineer_prompt_writes_delegated_code_changes(self):
+        self.assertIn("Treat every delegation as an implementation task", ENGINEER_PROMPT)
+        self.assertIn("MUST use `file_write`", ENGINEER_PROMPT)
+        self.assertIn("MUST NOT return code-only snippets", ENGINEER_PROMPT)
+        self.assertIn("orchestrator should not route those to engineer_agent", ENGINEER_PROMPT)
+        self.assertNotIn("response_only", ENGINEER_PROMPT)
+        self.assertNotIn("repository_edit", ENGINEER_PROMPT)
+
+    def test_specialist_prompts_do_not_include_repository_metadata(self):
+        prompts = {
+            "architect": ARCHITECT_PROMPT,
+            "cost": COST_PROMPT,
+            "devops": DEVOPS_PROMPT,
+            "engineer": ENGINEER_PROMPT,
+            "reviewer": REVIEWER_PROMPT,
+            "security": SECURITY_PROMPT,
+        }
+
+        blocked_terms = ("repository", "GitHub", "fullName", "full_name", "connected")
+        for name, prompt in prompts.items():
+            with self.subTest(agent=name):
+                for term in blocked_terms:
+                    self.assertNotIn(term, prompt)
+
+    def test_all_agent_prompts_limit_infrastructure_scope_to_aws_provider(self):
+        prompts = {
+            "architect": ARCHITECT_PROMPT,
+            "cost": COST_PROMPT,
+            "devops": DEVOPS_PROMPT,
+            "engineer": ENGINEER_PROMPT,
+            "orchestrator": ORCHESTRATOR_PROMPT,
+            "reviewer": REVIEWER_PROMPT,
+            "security": SECURITY_PROMPT,
+        }
+
+        for name, prompt in prompts.items():
+            with self.subTest(agent=name):
+                self.assertIn("AWS", prompt)
+                self.assertIn("AWS provider", prompt)
+                self.assertIn("only", prompt.lower())
+
+        self.assertIn("`resources[].provider` — `aws`", ARCHITECT_PROMPT)
+        self.assertNotIn("google", ARCHITECT_PROMPT.lower())
+        self.assertNotIn("azurerm", ARCHITECT_PROMPT.lower())
 
     def test_agent_prompts_treat_external_text_as_untrusted(self):
         prompts = (

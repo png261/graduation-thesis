@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react"
 import { ChatInput } from "./ChatInput"
 import { ChatMessages, type UserMessageEditState } from "./ChatMessages"
 import type { ChatAttachment, ChatSession, CheckpointState, Message, MessageSegment, PullRequestInfo, ToolCall, UserHandoff } from "./types"
@@ -11,9 +11,10 @@ import { useAuth } from "@/hooks/useAuth"
 import { useDefaultTool } from "@/hooks/useToolRenderer"
 import { ToolCallDisplay } from "./ToolCallDisplay"
 import { FileSystemPanel } from "@/components/files/FileSystemPanel"
-import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
+import type { ChatAttachmentPayload, SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 import { useWebAppStore } from "@/stores/webAppStore"
 import { listStateBackends } from "@/services/resourcesService"
+import { notifyFilesystemChanged } from "@/services/fileEventsService"
 import { CursorDrivenParticleTypography } from "@/components/ui/cursor-driven-particle-typography"
 import { ensureToolCallSegment } from "./tool-call-state"
 import {
@@ -44,6 +45,10 @@ function createChatSession(
   }
 }
 
+function attachmentsWithPayload(attachments: ChatAttachment[]): ChatAttachmentPayload[] {
+  return attachments.filter((attachment): attachment is ChatAttachmentPayload => Boolean(attachment.dataUrl))
+}
+
 const NO_REPOSITORY_VALUE = "__no_repository__"
 const NO_STATE_BACKEND_VALUE = "__no_state_backend__"
 const CODEBASE_MUTATING_TOOL_NAMES = new Set(["file_write", "create_pull_request"])
@@ -56,6 +61,11 @@ const EMPTY_STATE_SUGGESTIONS = [
   {
     label: "Write Terraform",
     prompt: "Help me write or update Terraform for this infrastructure.",
+    icon: FileText,
+  },
+  {
+    label: "Create architecture",
+    prompt: "Create a new cloud architecture from scratch. Ask me for any missing requirements, then generate the source files in this chat workspace.",
     icon: FileText,
   },
   {
@@ -135,6 +145,58 @@ function normalizeStalePendingSessions(sessions: ChatSession[]): ChatSession[] {
 function textMentionsChangedFiles(text: string | undefined): boolean {
   if (!text) return false
   return /"changed_files"\s*:\s*\[\s*["{]/i.test(text) || /"changedFiles"\s*:\s*\[\s*["{]/i.test(text)
+}
+
+function collectStringPaths(value: unknown, paths: Set<string>) {
+  if (typeof value === "string" && value.trim()) {
+    paths.add(value.trim())
+    return
+  }
+  if (!value || typeof value !== "object") return
+  const item = value as Record<string, unknown>
+  const path = item.path ?? item.filePath ?? item.key ?? item.name
+  if (typeof path === "string" && path.trim()) paths.add(path.trim())
+}
+
+function collectPathsFromParsedValue(value: unknown, paths: Set<string>) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectPathsFromParsedValue(item, paths)
+    return
+  }
+  collectStringPaths(value, paths)
+  if (!value || typeof value !== "object") return
+  const item = value as Record<string, unknown>
+  for (const key of ["changed_files", "changedFiles", "files", "filePaths", "paths"]) {
+    collectPathsFromParsedValue(item[key], paths)
+  }
+}
+
+function extractChangedFilePaths(text: string | undefined): string[] {
+  if (!text) return []
+  const paths = new Set<string>()
+  try {
+    collectPathsFromParsedValue(JSON.parse(text), paths)
+  } catch {
+    // Tool streams can be partial text or prose; regex extraction below handles common cases.
+  }
+
+  const matches = text.matchAll(/"changed_files"\s*:\s*(\[[\s\S]*?\])|"changedFiles"\s*:\s*(\[[\s\S]*?\])/gi)
+  for (const match of matches) {
+    const rawArray = match[1] ?? match[2]
+    try {
+      const values = JSON.parse(rawArray)
+      if (Array.isArray(values)) {
+        for (const value of values) collectStringPaths(value, paths)
+      }
+    } catch {
+      // Tool output is best-effort metadata; fall back to a full refresh when parsing fails.
+    }
+  }
+  const pathMatches = text.matchAll(/"(?:path|filePath|file_path|key)"\s*:\s*"([^"]+)"/gi)
+  for (const match of pathMatches) {
+    if (match[1]?.trim()) paths.add(match[1].trim())
+  }
+  return Array.from(paths)
 }
 
 function toolCallChangedFilesystem(toolCall: ToolCall): boolean {
@@ -220,7 +282,6 @@ export default function ChatInterface() {
   const [setupError, setSetupError] = useState<string | null>(null)
   const [stateBackendError, setStateBackendError] = useState<string | null>(null)
   const [isFilesystemOpen, setIsFilesystemOpen] = useState(false)
-  const [filesystemPanelWidth, setFilesystemPanelWidth] = useState(560)
   const [isSessionStoreReady, setIsSessionStoreReady] = useState(() => storedSessions.length > 0)
   const runningSessions = useRunningSessions()
 
@@ -947,6 +1008,17 @@ export default function ChatInterface() {
             if (tc) {
               tc.result = event.result
               tc.status = "complete"
+              if (toolCallChangedFilesystem(tc)) {
+                const changedPaths = [
+                  ...extractChangedFilePaths(tc.result),
+                  ...extractChangedFilePaths(tc.input),
+                ]
+                notifyFilesystemChanged({
+                  sessionId: targetSessionId,
+                  paths: Array.from(new Set(changedPaths)),
+                  reason: tc.name,
+                })
+              }
             }
             scheduleMessageUpdate()
             break
@@ -977,6 +1049,13 @@ export default function ChatInterface() {
             forceMessageUpdate()
             const nextPullRequest = event.pullRequest as PullRequestInfo
             updateSessionState(targetSessionId, session => ({ ...session, pullRequest: nextPullRequest }))
+            if (pullRequestChangedFilesystem(nextPullRequest)) {
+              notifyFilesystemChanged({
+                sessionId: targetSessionId,
+                paths: nextPullRequest.changedFiles,
+                reason: "pull_request",
+              })
+            }
             break
           }
           case "session_title": {
@@ -1005,7 +1084,7 @@ export default function ChatInterface() {
             break
           }
         }
-      }, selectedRepository, messageAttachments, selectedStateBackend, abortController.signal)
+      }, selectedRepository, attachmentsWithPayload(messageAttachments), selectedStateBackend, abortController.signal)
       forceMessageUpdate()
       updateSessionMessages(targetSessionId, prev => {
         const updated = [...prev]
@@ -1211,21 +1290,7 @@ export default function ChatInterface() {
   const hasSelectedStateBackend = selectedStateBackendValue !== NO_STATE_BACKEND_VALUE
   const isRepositoryLocked = hasSelectedStateBackend || (Boolean(repository) && (messages.length > 0 || activeSessionRunning))
   const selectedRepositoryFullName = repository?.fullName || selectedInstalledRepository || NO_REPOSITORY_VALUE
-  const showFilesystem = Boolean(repository && isFilesystemOpen)
-  const handleFilesystemResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    const move = (moveEvent: PointerEvent) => {
-      const maxWidth = Math.max(420, Math.min(window.innerWidth - 420, Math.round(window.innerWidth * 0.72)))
-      const nextWidth = window.innerWidth - moveEvent.clientX
-      setFilesystemPanelWidth(Math.min(maxWidth, Math.max(420, nextWidth)))
-    }
-    const up = () => {
-      window.removeEventListener("pointermove", move)
-      window.removeEventListener("pointerup", up)
-    }
-    window.addEventListener("pointermove", move)
-    window.addEventListener("pointerup", up)
-  }, [])
+  const showFilesystem = isFilesystemOpen
   const renderChatInput = (className = "bg-transparent p-0") => (
     <ChatInput
       input={input}
@@ -1236,7 +1301,6 @@ export default function ChatInterface() {
       isLoading={activeSessionRunning}
       onStop={stopMessage}
       className={className}
-      compactControls={isFilesystemOpen}
       repositories={installedRepositories}
       selectedRepositoryFullName={selectedRepositoryFullName}
       onRepositoryChange={value => void setupRepositoryWorkspaceForSelection(value)}
@@ -1258,11 +1322,11 @@ export default function ChatInterface() {
       className="relative grid h-full w-full grid-cols-1 overflow-hidden bg-white transition-[grid-template-columns] duration-300 lg:grid-cols-[var(--chat-layout-columns)]"
       style={{
         ["--chat-layout-columns" as string]: showFilesystem
-          ? `minmax(360px,1fr) 6px minmax(420px,${filesystemPanelWidth}px)`
-          : "minmax(0,1fr) 0px minmax(0,0px)",
+          ? "minmax(320px,0.8fr) minmax(560px,1.2fr)"
+          : "minmax(0,1fr) minmax(0,0px)",
       }}
     >
-      <section className="flex min-h-0 min-w-0 flex-col bg-white text-slate-950">
+      <section className="relative flex min-h-0 min-w-0 flex-col bg-white text-slate-950">
       <div className="flex-none bg-white">
         {pullRequest?.number && (
           <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2">
@@ -1333,7 +1397,6 @@ export default function ChatInterface() {
           {renderChatInput()}
         </div>
       )}
-      </section>
       {showScrollToLatest && (
         <button
           type="button"
@@ -1345,31 +1408,23 @@ export default function ChatInterface() {
           <ArrowDown className="h-4 w-4" />
         </button>
       )}
-      {repository && (
-        <button
-          type="button"
-          className={`absolute top-1/2 z-50 hidden h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition-[right,background-color] hover:bg-slate-50 lg:flex ${isFilesystemOpen ? "" : "right-3"}`}
-          style={isFilesystemOpen ? { right: `${filesystemPanelWidth + 12}px` } : undefined}
-          onClick={() => setIsFilesystemOpen(open => !open)}
-          aria-label={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
-          title={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
-        >
-          {isFilesystemOpen ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-        </button>
-      )}
-      <div
-        aria-orientation="vertical"
-        className={showFilesystem ? "hidden cursor-col-resize bg-slate-200 transition hover:bg-slate-300 lg:block" : "hidden"}
-        onPointerDown={handleFilesystemResize}
-        role="separator"
-      />
+      </section>
+      <button
+        type="button"
+        className={`absolute top-1/2 z-50 hidden h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition-[right,background-color] hover:bg-slate-50 lg:flex ${isFilesystemOpen ? "" : "right-3"}`}
+        style={isFilesystemOpen ? { right: "calc(60% + 12px)" } : undefined}
+        onClick={() => setIsFilesystemOpen(open => !open)}
+        aria-label={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
+        title={isFilesystemOpen ? "Collapse filesystem" : "Open filesystem"}
+      >
+        {isFilesystemOpen ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+      </button>
       <div className="hidden min-h-0 min-w-0 overflow-hidden border-l border-slate-200 bg-white lg:block">
-        {repository && isFilesystemOpen && (
+        {isFilesystemOpen && (
           <FileSystemPanel
             accessToken={auth.user?.access_token ?? null}
             client={client}
             repository={repository}
-            stateBackend={stateBackend}
             sessionId={sessionId}
           />
         )}

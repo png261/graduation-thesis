@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { BrowserRouter } from "react-router-dom"
+import { BrowserRouter, MemoryRouter } from "react-router-dom"
 import ChatInterface from "@/components/chat/ChatInterface"
 import { AppSidebar } from "@/components/layout/AppSidebar"
 import { useWebAppStore } from "@/stores/webAppStore"
@@ -223,6 +223,21 @@ describe("New Chat from sidebar", () => {
     unregisterRunningSession("repo-session")
   })
 
+  it("keeps only the right edge border on the app sidebar", () => {
+    const { container } = render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    const sidebar = screen.getByRole("complementary")
+    expect(sidebar).toHaveClass("border-r")
+    expect(sidebar).not.toHaveClass("border-t", "border-b", "border-l")
+    expect(container.querySelector("aside [class*='border-t']")).toBeNull()
+    expect(container.querySelector("aside [class*='border-b']")).toBeNull()
+    expect(container.querySelector("aside [class*='border-l']")).toBeNull()
+  })
+
   it("orders the menu like ChatGPT with recents after settings", () => {
     render(
       <BrowserRouter>
@@ -246,6 +261,63 @@ describe("New Chat from sidebar", () => {
     expect(resourceCatalog.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(settings.compareDocumentPosition(recents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(recents.compareDocumentPosition(chat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("opens a recent chat when clicking anywhere on the recent item row", () => {
+    useWebAppStore.setState({
+      sessions: [
+        {
+          id: "repo-session",
+          name: "Repository chat",
+          history: answeredHistory,
+          startDate: "2026-05-11T04:00:00.000Z",
+          endDate: "2026-05-11T04:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+        {
+          id: "other-session",
+          name: "Other chat",
+          history: answeredHistory,
+          startDate: "2026-05-11T05:00:00.000Z",
+          endDate: "2026-05-11T05:00:00.000Z",
+          repository: null,
+          pullRequest: null,
+        },
+      ],
+      activeSessionId: "repo-session",
+      chatSessionsLoadedFor: "id-token",
+    })
+
+    render(
+      <BrowserRouter>
+        <AppSidebar />
+      </BrowserRouter>
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Open chat Other chat" }))
+
+    expect(useWebAppStore.getState().activeSessionId).toBe("other-session")
+  })
+
+  it("does not highlight the active recent chat outside the chat route", () => {
+    render(
+      <MemoryRouter initialEntries={["/pull-requests"]}>
+        <AppSidebar />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByRole("button", { name: "Open chat Repository chat" })).not.toHaveClass("bg-slate-100")
+  })
+
+  it("highlights the active recent chat on the chat route", () => {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AppSidebar />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByRole("button", { name: "Open chat Repository chat" })).toHaveClass("bg-slate-100")
   })
 
   it("does not mark a stale reloaded pending chat as responding without a live run", () => {

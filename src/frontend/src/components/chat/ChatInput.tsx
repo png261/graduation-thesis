@@ -1,8 +1,9 @@
 "use client"
 
-import { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react"
+import { ChangeEvent, ClipboardEvent, FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { BorderBeam } from "@/components/ui/border-beam"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -12,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { Database, FileText, Github, ImageIcon, Paperclip, Send, Square, X } from "lucide-react"
+import { Database, FileText, Github, Paperclip, Plus, Send, Square, X } from "lucide-react"
 import type { ChatAttachment, UserHandoff } from "./types"
 import type { SelectedRepository, SelectedStateBackend } from "@/lib/agentcore-client/types"
 
@@ -21,6 +22,7 @@ export const NO_STATE_BACKEND_VALUE = "__no_state_backend__"
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024
 const MAX_ATTACHMENTS = 6
 const CHAT_INPUT_MAX_HEIGHT = 200
+const CHAT_INPUT_INLINE_HEIGHT = 56
 
 interface ChatInputProps {
   input: string
@@ -30,7 +32,6 @@ interface ChatInputProps {
   onStop?: () => void
   disabled?: boolean
   className?: string
-  compactControls?: boolean
   attachments?: ChatAttachment[]
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void
   repositories?: SelectedRepository[]
@@ -56,7 +57,6 @@ export function ChatInput({
   onStop,
   disabled = false,
   className = "",
-  compactControls = false,
   attachments = [],
   onAttachmentsChange,
   repositories = [],
@@ -78,9 +78,10 @@ export function ChatInput({
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [handoffAnswers, setHandoffAnswers] = useState<Record<string, string>>({})
   const [activeHandoffIndex, setActiveHandoffIndex] = useState(0)
+  const [inputIsTall, setInputIsTall] = useState(false)
 
-  // Auto-resize the textarea based on content
-  useEffect(() => {
+  // Auto-resize before paint so layout switches do not hide freshly typed text.
+  useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (textarea) {
       textarea.style.height = "auto"
@@ -88,6 +89,8 @@ export function ChatInput({
       const nextHeight = Math.min(scrollHeight, CHAT_INPUT_MAX_HEIGHT)
       textarea.style.height = nextHeight + "px"
       textarea.style.overflowY = scrollHeight > CHAT_INPUT_MAX_HEIGHT ? "auto" : "hidden"
+      const nextInputIsTall = scrollHeight > CHAT_INPUT_INLINE_HEIGHT || input.includes("\n")
+      setInputIsTall(current => (current === nextInputIsTall ? current : nextInputIsTall))
     }
   }, [input])
 
@@ -153,7 +156,27 @@ export function ChatInput({
   }
 
   const canSubmit = input.trim().length > 0 || attachments.length > 0
+  const hasSelectedRepository =
+    Boolean(selectedRepositoryFullName) && selectedRepositoryFullName !== NO_REPOSITORY_VALUE
+  const hasSelectedStateBackend =
+    Boolean(selectedStateBackendId) && selectedStateBackendId !== NO_STATE_BACKEND_VALUE
+  const hasSelectedContext = hasSelectedRepository || hasSelectedStateBackend
+  const selectedRepositoryLabel =
+    hasSelectedRepository
+      ? selectedRepositoryFullName
+      : "No repository"
+  const selectedStateBackend = stateBackends.find(backend => backend.backendId === selectedStateBackendId)
+  const selectedStateBackendLabel =
+    selectedStateBackendId && selectedStateBackendId !== NO_STATE_BACKEND_VALUE
+      ? selectedStateBackend?.name ?? selectedStateBackendId
+      : "No state backend"
   const handoffQuestions = userHandoff?.questions ?? []
+  const shouldStackControls =
+    inputIsTall ||
+    hasSelectedContext ||
+    attachments.length > 0 ||
+    handoffQuestions.length > 0 ||
+    Boolean(repositoryError || stateBackendError || attachmentError)
   const activeHandoffQuestion = handoffQuestions[activeHandoffIndex]
   const activeHandoffAnswer = activeHandoffQuestion ? handoffAnswers[activeHandoffQuestion.id] ?? "" : ""
   const canAdvanceHandoff = activeHandoffAnswer.trim().length > 0
@@ -203,11 +226,181 @@ export function ChatInput({
     }
   }
 
+  const messageInput = (
+    <Textarea
+      ref={textareaRef}
+      value={input}
+      onChange={e => {
+        setInput(e.target.value)
+      }}
+      onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
+      placeholder="Type your message..."
+      disabled={disabled}
+      className={`min-h-[48px] max-h-[200px] resize-none overflow-hidden border-0 bg-transparent py-2 text-[15px] leading-6 text-slate-950 shadow-none outline-none placeholder:text-slate-400 focus-visible:ring-0 focus-visible:ring-offset-0 ${
+        shouldStackControls ? "w-full px-0" : "min-w-0 flex-1 px-1"
+      }`}
+      style={{ gridArea: "input" }}
+      rows={1}
+      autoFocus
+    />
+  )
+
+  const addContextControl = (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          aria-label="Add context"
+          className="h-9 w-9 shrink-0 rounded-full border-0 bg-white p-0 text-slate-700 shadow-none hover:bg-slate-50"
+          disabled={disabled}
+          type="button"
+          variant="ghost"
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-2">
+        <div className="flex flex-col gap-1">
+          <Button
+            aria-label="Add file"
+            className="h-10 justify-start gap-2 rounded-md px-2 text-slate-700"
+            disabled={disabled || attachments.length >= MAX_ATTACHMENTS}
+            onClick={() => fileInputRef.current?.click()}
+            type="button"
+            variant="ghost"
+          >
+            <Paperclip className="h-4 w-4" />
+            Add file
+          </Button>
+          <div className="px-1 py-1">
+            <Select
+              value={selectedRepositoryFullName || NO_REPOSITORY_VALUE}
+              onValueChange={onRepositoryChange}
+              disabled={repositoryLocked || isLoadingRepositories || disabled}
+            >
+              <SelectTrigger
+                aria-label="GitHub repository"
+                className="h-10 w-full justify-start gap-2 rounded-md border-slate-200 bg-white px-2 text-slate-700 shadow-none"
+                size="sm"
+                title={selectedRepositoryFullName && selectedRepositoryFullName !== NO_REPOSITORY_VALUE ? selectedRepositoryFullName : "No repository"}
+              >
+                <Github className="h-4 w-4 shrink-0" />
+                <SelectValue
+                  placeholder={isLoadingRepositories ? "Loading repositories..." : "Choose repository"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value={NO_REPOSITORY_VALUE}>No repository</SelectItem>
+                  {repositories.map(repo => (
+                    <SelectItem key={repo.fullName} value={repo.fullName}>
+                      {repo.fullName}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="px-1 py-1">
+            <Select
+              value={selectedStateBackendId || NO_STATE_BACKEND_VALUE}
+              onValueChange={onStateBackendChange}
+              disabled={isLoadingStateBackends || disabled}
+            >
+              <SelectTrigger
+                aria-label="Terraform state backend"
+                className="h-10 w-full justify-start gap-2 rounded-md border-slate-200 bg-white px-2 text-slate-700 shadow-none"
+                size="sm"
+                title={selectedStateBackendId && selectedStateBackendId !== NO_STATE_BACKEND_VALUE ? selectedStateBackendId : "No state backend"}
+              >
+                <Database className="h-4 w-4 shrink-0" />
+                <SelectValue
+                  placeholder={isLoadingStateBackends ? "Loading states..." : "Choose state backend"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value={NO_STATE_BACKEND_VALUE}>No state backend</SelectItem>
+                  {stateBackends.map(backend => (
+                    <SelectItem key={backend.backendId} value={backend.backendId}>
+                      {backend.name} ({backend.region})
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+
+  const contextChips = hasSelectedContext && (
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
+      {hasSelectedRepository && (
+        <span
+          aria-label={`Selected repository: ${selectedRepositoryLabel}`}
+          className="inline-flex h-9 max-w-[240px] items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+          title={selectedRepositoryLabel}
+        >
+          <Github className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 truncate">{selectedRepositoryLabel}</span>
+        </span>
+      )}
+      {hasSelectedStateBackend && (
+        <span
+          aria-label={`Selected state backend: ${selectedStateBackendLabel}`}
+          className="inline-flex h-9 max-w-[240px] items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700"
+          title={selectedStateBackendLabel}
+        >
+          <Database className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 truncate">{selectedStateBackendLabel}</span>
+        </span>
+      )}
+    </div>
+  )
+
+  const statusMessages = (
+    <>
+      {repositoryError && (
+        <span className="text-xs font-medium text-red-600">{repositoryError}</span>
+      )}
+      {stateBackendError && (
+        <span className="text-xs font-medium text-red-600">{stateBackendError}</span>
+      )}
+      {attachmentError && (
+        <span className="text-xs font-medium text-red-600">{attachmentError}</span>
+      )}
+    </>
+  )
+
+  const sendControl = (
+    <Button
+      type={isLoading ? "button" : "submit"}
+      aria-label={isLoading ? "Stop response" : "Send message"}
+      title={isLoading ? "Stop response" : "Send message"}
+      disabled={isLoading ? disabled : !canSubmit || disabled}
+      className={`h-9 w-9 shrink-0 rounded-full border p-0 text-white shadow-none ${
+        isLoading
+          ? "border-red-600 bg-red-600 hover:bg-red-700"
+          : "border-slate-950 bg-slate-950 hover:bg-slate-800"
+      }`}
+      onClick={isLoading ? onStop : undefined}
+    >
+      {isLoading ? (
+        <Square className="h-4 w-4 fill-current" />
+      ) : (
+        <Send className="h-4 w-4" />
+      )}
+    </Button>
+  )
+
   return (
     <div className={`relative w-full bg-white p-4 ${className}`}>
       <form
         onSubmit={handleSubmit}
         aria-label="chat input"
+        data-input-layout={shouldStackControls ? "stacked" : "compact-inline"}
         className="relative flex w-full flex-col gap-3 overflow-hidden rounded-[28px] border border-slate-200 bg-white px-4 py-3 shadow-[0_10px_35px_rgba(15,23,42,0.12)] focus-within:border-slate-300"
       >
         {isLoading && (
@@ -292,18 +485,32 @@ export function ChatInput({
             {attachments.map(attachment => (
               <div
                 key={attachment.id}
-                className="flex max-w-[220px] items-center gap-2 rounded-xl border border-slate-200 bg-transparent px-2 py-1 text-xs text-slate-700"
+                className={`relative overflow-hidden rounded-xl border border-slate-200 bg-transparent text-xs text-slate-700 ${
+                  attachment.type.startsWith("image/")
+                    ? "h-20 w-20"
+                    : "flex max-w-[220px] items-center gap-2 px-2 py-1"
+                }`}
               >
                 {attachment.type.startsWith("image/") ? (
-                  <ImageIcon className="h-4 w-4 shrink-0" />
+                  <img
+                    src={attachment.dataUrl || ""}
+                    alt={attachment.name}
+                    className="h-full w-full object-cover"
+                  />
                 ) : (
-                  <FileText className="h-4 w-4 shrink-0" />
+                  <>
+                    <FileText className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 truncate rounded bg-slate-100 px-1.5 py-0.5">{attachment.name}</span>
+                  </>
                 )}
-                <span className="min-w-0 truncate rounded bg-slate-100 px-1.5 py-0.5">{attachment.name}</span>
                 <button
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
-                  className="rounded p-0.5 text-slate-500 hover:bg-slate-200 hover:text-slate-950"
+                  className={`rounded p-0.5 text-slate-500 hover:bg-slate-200 hover:text-slate-950 ${
+                    attachment.type.startsWith("image/")
+                      ? "absolute right-1 top-1 bg-white/90 text-slate-700 shadow-sm hover:bg-white"
+                      : ""
+                  }`}
                   onClick={() => removeAttachment(attachment.id)}
                   disabled={disabled}
                 >
@@ -313,130 +520,31 @@ export function ChatInput({
             ))}
           </div>
         )}
-        <Textarea
-          ref={textareaRef}
-          value={input}
-          onChange={e => {
-            setInput(e.target.value)
-          }}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder="Type your message..."
-          disabled={disabled}
-          className="min-h-[48px] max-h-[200px] w-full resize-none overflow-hidden border-0 bg-transparent px-0 py-2 text-[15px] leading-6 text-slate-950 shadow-none outline-none placeholder:text-slate-400 focus-visible:ring-0 focus-visible:ring-offset-0"
-          rows={1}
-          autoFocus
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileChange}
         />
-
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-transparent pt-0">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={handleFileChange}
-            />
-            <Button
-              aria-label="Attach file"
-              className="h-9 w-9 rounded-full border-slate-200 bg-white p-0 text-slate-700 shadow-none hover:bg-slate-50"
-              disabled={disabled || attachments.length >= MAX_ATTACHMENTS}
-              onClick={() => fileInputRef.current?.click()}
-              type="button"
-              variant="outline"
-            >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-            <Select
-              value={selectedRepositoryFullName || NO_REPOSITORY_VALUE}
-              onValueChange={onRepositoryChange}
-              disabled={repositoryLocked || isLoadingRepositories || disabled}
-            >
-              <SelectTrigger
-                aria-label="GitHub repository"
-                className={`h-9 rounded-full border-slate-200 bg-white text-slate-700 shadow-none ${
-                  compactControls ? "w-9 justify-center px-0" : "max-w-[240px] min-w-[170px] px-3"
-                }`}
-                size="sm"
-                title={selectedRepositoryFullName && selectedRepositoryFullName !== NO_REPOSITORY_VALUE ? selectedRepositoryFullName : "No repository"}
-              >
-                <Github className="h-4 w-4" />
-                {!compactControls && (
-                  <SelectValue
-                    placeholder={isLoadingRepositories ? "Loading repositories..." : "Select repository"}
-                  />
-                )}
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value={NO_REPOSITORY_VALUE}>No repository</SelectItem>
-                  {repositories.map(repo => (
-                    <SelectItem key={repo.fullName} value={repo.fullName}>
-                      {repo.fullName}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select
-              value={selectedStateBackendId || NO_STATE_BACKEND_VALUE}
-              onValueChange={onStateBackendChange}
-              disabled={isLoadingStateBackends || disabled}
-            >
-              <SelectTrigger
-                aria-label="Terraform state backend"
-                className={`h-9 rounded-full border-slate-200 bg-white text-slate-700 shadow-none ${
-                  compactControls ? "w-9 justify-center px-0" : "max-w-[240px] min-w-[170px] px-3"
-                }`}
-                size="sm"
-                title={selectedStateBackendId && selectedStateBackendId !== NO_STATE_BACKEND_VALUE ? selectedStateBackendId : "No state backend"}
-              >
-                <Database className="h-4 w-4" />
-                {!compactControls && (
-                  <SelectValue
-                    placeholder={isLoadingStateBackends ? "Loading states..." : "Select state"}
-                  />
-                )}
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value={NO_STATE_BACKEND_VALUE}>No state backend</SelectItem>
-                  {stateBackends.map(backend => (
-                    <SelectItem key={backend.backendId} value={backend.backendId}>
-                      {backend.name} ({backend.region})
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            {repositoryError && (
-              <span className="text-xs font-medium text-red-600">{repositoryError}</span>
-            )}
-            {stateBackendError && (
-              <span className="text-xs font-medium text-red-600">{stateBackendError}</span>
-            )}
-            {attachmentError && (
-              <span className="text-xs font-medium text-red-600">{attachmentError}</span>
-            )}
+        <div
+          className={`grid items-center gap-2 ${shouldStackControls ? "" : "grid-cols-[auto_minmax(0,1fr)_auto]"}`}
+          style={{
+            gridTemplateAreas: shouldStackControls
+              ? '"input input" "context send"'
+              : '"context input send"',
+            gridTemplateColumns: shouldStackControls ? "minmax(0, 1fr) auto" : undefined,
+          }}
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2" style={{ gridArea: "context" }}>
+            {addContextControl}
+            {contextChips}
+            {statusMessages}
           </div>
-          <Button
-            type={isLoading ? "button" : "submit"}
-            aria-label={isLoading ? "Stop response" : "Send message"}
-            title={isLoading ? "Stop response" : "Send message"}
-            disabled={isLoading ? disabled : !canSubmit || disabled}
-            className={`h-9 w-9 rounded-full border p-0 text-white shadow-none ${
-              isLoading
-                ? "border-red-600 bg-red-600 hover:bg-red-700"
-                : "border-slate-950 bg-slate-950 hover:bg-slate-800"
-            }`}
-            onClick={isLoading ? onStop : undefined}
-          >
-            {isLoading ? (
-              <Square className="h-4 w-4 fill-current" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+          {messageInput}
+          <div className="flex justify-end" style={{ gridArea: "send" }}>
+            {sendControl}
+          </div>
         </div>
       </form>
     </div>

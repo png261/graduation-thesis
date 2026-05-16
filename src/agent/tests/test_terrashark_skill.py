@@ -22,7 +22,7 @@ class TerraSharkSkillTests(unittest.TestCase):
         self.assertNotIn('entry.name === "references" && relativePath.includes("skills/terrashark")', content)
         self.assertNotIn('entry.name === "LICENSE" && relativePath.includes("skills/terrashark")', content)
 
-    def test_all_agent_factories_attach_terrashark_plugin(self):
+    def test_specialist_agent_factories_attach_terrashark_plugin(self):
         agents_root = Path(__file__).resolve().parents[1] / "agents"
         agent_files = [
             agents_root / "architect" / "agent.py",
@@ -31,7 +31,6 @@ class TerraSharkSkillTests(unittest.TestCase):
             agents_root / "cost_capacity" / "agent.py",
             agents_root / "security_prover" / "agent.py",
             agents_root / "devops" / "agent.py",
-            agents_root / "orchestator" / "agent.py",
         ]
 
         for agent_file in agent_files:
@@ -39,6 +38,13 @@ class TerraSharkSkillTests(unittest.TestCase):
                 content = agent_file.read_text(encoding="utf-8")
                 self.assertIn("from agents.skills.terrashark_plugin import create_terrashark_plugin", content)
                 self.assertIn("plugins=[create_terrashark_plugin()]", content)
+
+    def test_orchestrator_does_not_attach_terrashark_plugin(self):
+        orchestrator_agent = Path(__file__).resolve().parents[1] / "agents" / "orchestator" / "agent.py"
+        content = orchestrator_agent.read_text(encoding="utf-8")
+
+        self.assertNotIn("create_terrashark_plugin", content)
+        self.assertNotIn("plugins=[create_terrashark_plugin()]", content)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import {
   Trash2,
   UserCircle,
 } from "lucide-react"
-import { useEffect, useMemo } from "react"
+import { type KeyboardEvent, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog,
@@ -101,9 +101,17 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
     return location.search === `?${search}`
   }
 
+  const isChatRoute = location.pathname === "/"
+
   function openChatSession(session: ChatSession) {
     setActiveSessionId(session.id)
     navigate("/")
+  }
+
+  function handleRecentKeyDown(event: KeyboardEvent<HTMLDivElement>, session: ChatSession) {
+    if (event.key !== "Enter" && event.key !== " ") return
+    event.preventDefault()
+    openChatSession(session)
   }
 
   function startNewChat() {
@@ -153,7 +161,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
         collapsed ? "w-16" : "w-64"
       )}
     >
-      <div className={cn("flex items-center border-b py-4", collapsed ? "justify-center px-2" : "justify-between px-5")}>
+      <div className={cn("flex items-center py-4", collapsed ? "justify-center px-2" : "justify-between px-5")}>
         {!collapsed && <span className="text-lg font-semibold tracking-normal text-slate-950">InfraQ</span>}
         <Button
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -170,13 +178,13 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
         <Button
           aria-label="New Chat"
           className={cn(
-            "mb-1 h-9 border-slate-300 bg-white text-slate-950 hover:bg-slate-100",
+            "mb-1 h-9 bg-white text-slate-950 hover:bg-slate-100",
             collapsed ? "w-full justify-center px-0" : "justify-start gap-2"
           )}
           onClick={startNewChat}
           title={collapsed ? "New Chat" : undefined}
           type="button"
-          variant="outline"
+          variant="ghost"
         >
           <Plus className="h-4 w-4" />
           {!collapsed && "New Chat"}
@@ -202,7 +210,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
           )
         })}
 
-        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2 border-t border-slate-200 pt-3">
+        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2 pt-3">
           {!collapsed && (
             <div className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
               Recents
@@ -213,26 +221,29 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
               <div className="flex flex-col gap-1">
                 {sessions.map(session => {
                   const isRunning = Boolean(runningSessions[session.id])
+                  const isActiveRecent = isChatRoute && activeSessionId === session.id
                   const metadata = chatMetadata(session)
                   return (
                     <div
+                      aria-label={`Open chat ${chatTitle(session)}`}
                       className={cn(
-                        "group flex w-full min-w-0 items-start gap-1 rounded-md px-2 py-2 text-left transition",
-                        activeSessionId === session.id
+                        "group flex w-full min-w-0 cursor-pointer items-start gap-1 rounded-md px-2 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400",
+                        isActiveRecent
                           ? "bg-slate-100 text-slate-950"
                           : "text-slate-500 hover:bg-slate-50 hover:text-slate-950"
                       )}
                       key={session.id}
+                      onClick={() => openChatSession(session)}
+                      onKeyDown={event => handleRecentKeyDown(event, session)}
+                      role="button"
+                      tabIndex={0}
+                      title={collapsed ? chatTitle(session) : undefined}
                     >
-                      <button
-                        aria-label={`Open chat ${chatTitle(session)}`}
+                      <div
                         className={cn(
                           "flex min-w-0 flex-1 items-start text-left",
                           collapsed ? "justify-center" : "gap-2"
                         )}
-                        onClick={() => openChatSession(session)}
-                        title={collapsed ? chatTitle(session) : undefined}
-                        type="button"
                       >
                         {isRunning ? (
                           <Loader2
@@ -254,13 +265,14 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
                             </span>
                           )}
                         </span>}
-                      </button>
+                      </div>
                       {!collapsed && (
                         <Popover>
                           <PopoverTrigger asChild>
                             <Button
                               aria-label={`Chat actions for ${chatTitle(session)}`}
                               className="h-7 w-7 shrink-0 text-slate-400 opacity-0 hover:bg-slate-100 hover:text-slate-950 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+                              onClick={event => event.stopPropagation()}
                               size="icon"
                               type="button"
                               variant="ghost"
@@ -309,7 +321,7 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
         </div>
       </nav>
       {auth.isAuthenticated && (
-        <div className="border-t border-slate-200 p-3">
+        <div className="p-3">
           <div className={cn("mb-2 flex min-w-0 items-center rounded-md py-1.5 text-slate-700", collapsed ? "justify-center px-0" : "gap-2 px-2")}>
             <UserCircle className="h-4 w-4 shrink-0" />
             {!collapsed && <span className="truncate text-sm font-medium">{accountLabel}</span>}
@@ -319,11 +331,11 @@ export function AppSidebar({ collapsed = false, onCollapsedChange }: AppSidebarP
               <Button
                 aria-label="Logout"
                 className={cn(
-                  "h-9 w-full border-slate-300 bg-white text-slate-950 hover:bg-slate-100",
+                  "h-9 w-full bg-white text-slate-950 hover:bg-slate-100",
                   collapsed ? "justify-center px-0" : "justify-start gap-2"
                 )}
                 title={collapsed ? "Logout" : undefined}
-                variant="outline"
+                variant="ghost"
               >
                 <LogOut className="h-4 w-4" />
                 {!collapsed && "Logout"}
